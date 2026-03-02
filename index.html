@@ -5337,9 +5337,9 @@ function mpBuildInitialState(hostChampId, guestChampId, firstSeat) {
       createPlayer(1, guestChampId, gChamp.faction),
     ],
     walls: [], decoyTokens: [], trapTokens: [],
-    activePlayer: firstSeat, turnNumber: 1, phase: 'draw',
+    activePlayer: firstSeat, turnNumber: 1, phase: 'action',
     winner: null, log: [], nextWallId: 1, nextTokenId: 1,
-    firstDraw: [true, true],
+    firstDraw: [false, false],  // opening hands drawn below, not via performDraw
     _turnsPlayed: [0, 0],  // Track turns completed per seat (for MP draw logic)
     // Perform opening draws
   };
@@ -5349,9 +5349,7 @@ function mpBuildInitialState(hostChampId, guestChampId, firstSeat) {
     const count = p.champion.cardDraw;
     const drawn = p.deck.splice(0, count);
     state.players[pi].hand = drawn;
-    state.players[pi].firstDraw = false;
   }
-  state.firstDraw = [false, false];
   return state;
 }
 
