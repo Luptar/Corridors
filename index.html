@@ -1866,7 +1866,6 @@ function isWallLegal(anchor, orientation, length, walls, p0pos, p1pos, isPhantom
 
 // ── State mutations ─────────────────────────────────────────────────
 function performDraw() {
-  if (mp_isMultiplayer) { gameState.phase = 'action'; renderAll(); return; }
   const pi = gameState.activePlayer;
   const p = gameState.players[pi];
 
@@ -2049,9 +2048,11 @@ function endTurnHuman() {
   }
   // If a movement card is pending (selected but not yet used), discard it now
   if (selectedCard && selectedCard._pendingMove && selectedCard.idx >= 0) {
-    discardCard(gameState.activePlayer, selectedCard.idx);
-    countCardPlayed(gameState.activePlayer);
-    selectedCard = null; uiMode = 'idle';
+    const pi = gameState.activePlayer;
+    discardCard(pi, selectedCard.idx);
+    countCardPlayed(pi);
+    selectedCard = null;
+    uiMode = 'idle';
   }
   endTurn();
 }
@@ -2295,4 +2296,3430 @@ function bfsDistanceAI(from, goalRow, walls) {
   return pessimistic * 0.5 + optimistic * 0.5;
 }
 
-// Score bonus
+// Score bonus for moves that probe suspect phantom walls.
+// A probe is valuable if: getting adjacent to a suspect wall would reveal it,
+// AND revealing it would meaningfully shorten the AI's path.
+function probeBonus(moveDest, walls) {
+  const oppFaction = gameState.players[0].champion.faction;
+  if (oppFaction !== 'Phantoms') return 0;
+
+  const dirs = [{r:-1,c:0},{r:1,c:0},{r:0,c:1},{r:0,c:-1}];
+  let bonus = 0;
+
+  for (const w of walls) {
+    if (phantomProbability(w) === 0) continue;
+    // Would moving to moveDest put us adjacent to this wall?
+    const isAdjacent = wallEdges(w).some(e =>
+      (e.a.row === moveDest.row && e.a.col === moveDest.col) ||
+      (e.b.row === moveDest.row && e.b.col === moveDest.col)
+    );
+    if (!isAdjacent) continue;
+
+    // How much would revealing (removing) this wall help the AI?
+    const withWall    = bfsDistanceFor(moveDest, BOARD_SIZE - 1, walls, AI_PLAYER);
+    const withoutWall = bfsDistanceFor(moveDest, BOARD_SIZE - 1,
+                          walls.filter(x => x.id !== w.id), AI_PLAYER);
+    const gain = withWall - withoutWall;
+    if (gain > 0) {
+      // Bonus scaled by probability and gain, discounted slightly (might be real)
+      bonus += gain * phantomProbability(w) * 1.5;
+    }
+  }
+  return bonus;
+}
+
+// Called after AI successfully stays adjacent to a wall without it disappearing
+// (i.e. the wall survived a turn being next to it) — mark as confirmed real
+function markProbedWalls() {
+  if (!gameState) return;
+  const aiPos = gameState.players[AI_PLAYER]?.position;
+  if (!aiPos) return;
+  const dirs = [{r:-1,c:0},{r:1,c:0},{r:0,c:1},{r:0,c:-1}];
+  for (const w of gameState.walls) {
+    if (phantomProbability(w) === 0) continue;
+    const adj = wallEdges(w).some(e =>
+      (e.a.row === aiPos.row && e.a.col === aiPos.col) ||
+      (e.b.row === aiPos.row && e.b.col === aiPos.col)
+    );
+    if (adj) aiProbedWallIds.add(w.id);
+  }
+}
+
+function runAI() {
+  if (gameState.phase !== 'action' || gameState.activePlayer !== AI_PLAYER) {
+    aiThinking = false; return;
+  }
+
+  maybeAIUltimate(AI_PLAYER);
+
+  // Mark any walls the AI was adjacent to at start of turn (they survived = real)
+  markProbedWalls();
+
+  const pi        = AI_PLAYER;
+  const aiFaction = gameState.players[pi].champion.faction;
+
+  // ── Helper: snapshot current state for simulation ─────────────────
+  function snap() {
+    return {
+      aiPos:   gameState.players[pi].position,
+      oppPos:  gameState.players[0].position,
+      walls:   gameState.walls,
+      aiHand:  gameState.players[pi].hand,
+      aiWalls: gameState.players[pi].wallsInPlay,
+      aiLimit: gameState.players[pi].wallLimitCurrent,
+    };
+  }
+
+  // ══════════════════════════════════════════════════════════════════
+  // PHASE 1 — choose the CARD action (or no card if hand is empty)
+  // ══════════════════════════════════════════════════════════════════
+  let bestCardScore = -Infinity;
+  let bestCardAction = null;  // null = skip card, play base move only
+
+  const st = snap();
+
+  // ── A: Wall cards (real placement) ────────────────────────────────
+  if (st.aiWalls < st.aiLimit) {
+    const wallCards = st.aiHand.filter(c =>
+      c.type === 'Wall' && !c.phantom && !c.special
+    );
+    for (const card of wallCards) {
+      const len = getCardWallLength(card.id);
+      const cands = generateWallCandidates(st.oppPos, len);
+      for (const {anchor, orientation} of cands) {
+        if (!isWallLegal(anchor, orientation, len, st.walls,
+            st.oppPos, st.aiPos, false)) continue;
+        const s = scoreAction({type:'wall', anchor, orientation, length:len},
+                              st.walls, st.aiPos, st.oppPos);
+        if (s > bestCardScore) {
+          bestCardScore = s;
+          bestCardAction = {kind:'wall', card, anchor, orientation, len};
+        }
+      }
+    }
+  }
+
+  // ── B: Phantom wall cards (Phantoms faction) ────────────────────────
+  if (aiFaction === 'Phantoms' && st.aiWalls < st.aiLimit) {
+    const phantomCards = st.aiHand.filter(c => c.type === 'Wall' && c.phantom && !c.special);
+    for (const card of phantomCards) {
+      const len = 2;
+      const cands = generateWallCandidates(st.oppPos, len);
+      for (const {anchor, orientation} of cands) {
+        // Phantom must not block AI's own real path
+        if (!isWallLegal(anchor, orientation, len, st.walls,
+            st.oppPos, st.aiPos, true)) continue;
+        const s = scoreAction({type:'phantom', anchor, orientation, length:len},
+                              st.walls, st.aiPos, st.oppPos);
+        if (s > bestCardScore) {
+          bestCardScore = s;
+          bestCardAction = {kind:'phantom', card, anchor, orientation, len};
+        }
+      }
+    }
+  }
+
+  // ── C: Special wall cards (Double Bluff, Corner Piece) ────────────
+  if (st.aiWalls < st.aiLimit) {
+    const specialCards = st.aiHand.filter(c => c.type === 'Wall' && c.special);
+    for (const card of specialCards) {
+      // Treat as a standard wall of the base length for scoring
+      const len = getCardWallLength(card.id);
+      const cands = generateWallCandidates(st.oppPos, len);
+      for (const {anchor, orientation} of cands) {
+        if (!isWallLegal(anchor, orientation, len, st.walls,
+            st.oppPos, st.aiPos, false)) continue;
+        const s = scoreAction({type:'wall', anchor, orientation, length:len},
+                              st.walls, st.aiPos, st.oppPos) + 1; // slight bonus for special
+        if (s > bestCardScore) {
+          bestCardScore = s;
+          bestCardAction = {kind:'wall', card, anchor, orientation, len};
+        }
+      }
+    }
+  }
+
+  // ── E: Movement cards — score best move achievable with card boost ──
+  {
+    const moveCards = st.aiHand.filter(c => c.type === 'Movement');
+    for (const card of moveCards) {
+      const speed = card.overrideSpeed || 2;
+      const simState = {...gameState, walls: st.walls};
+      const boostedMoves = getLegalMoves(simState, pi, speed);
+      let bestMoveWithCard = -Infinity;
+      let bestDest = null;
+      for (const to of boostedMoves) {
+        if (to.row === BOARD_SIZE - 1) { bestDest = to; bestMoveWithCard = 1e9; break; }
+        const s = scoreAction({type:'move', to}, st.walls, st.aiPos, st.oppPos) + 1;
+        if (s > bestMoveWithCard) { bestMoveWithCard = s; bestDest = to; }
+      }
+      // A movement card is worthwhile if it scores significantly better than base move
+      const baseBestDist = bfsDistanceAI(st.aiPos, BOARD_SIZE - 1, st.walls);
+      const moveDist = bestDest ? Math.abs(bestDest.row - (BOARD_SIZE - 1)) : baseBestDist;
+      if (bestDest && bestMoveWithCard > bestCardScore && bestMoveWithCard > 2) {
+        bestCardScore = bestMoveWithCard;
+        bestCardAction = {kind:'movement', card, dest: bestDest};
+      }
+    }
+  }
+
+  // ── D: Disruption cards ───────────────────────────────────────────
+  const dispCards = st.aiHand.filter(c => c.type === 'Disruption');
+  for (const card of dispCards) {
+
+    // RC Reconstruction / A3 Reclaim: removes oldest own wall, draws 1.
+    if (card.id === 'A3' || card.id === 'RC') {
+      const myWalls = st.walls.filter(w => w.owner===pi && !w.isPhantom && !w.permanent)
+                               .sort((a,b) => a.placedOnTurn - b.placedOnTurn);
+      if (!myWalls.length) continue;
+      const target = myWalls[0];
+      const simWalls = st.walls.filter(w => w.id !== target.id);
+      const myDistAfter  = bfsDistanceFor(st.aiPos,  BOARD_SIZE-1, simWalls, pi);
+      const oppDistAfter = bfsDistanceFor(st.oppPos, 0,            simWalls, 0);
+      const myGain  = (bfsDistanceFor(st.aiPos, BOARD_SIZE-1, st.walls, pi) - myDistAfter);
+      const oppGain = (bfsDistanceFor(st.oppPos, 0, st.walls, 0) - oppDistAfter);
+      const s = myGain * 8 - oppGain * 6 - 1;
+      if (s > bestCardScore) {
+        bestCardScore = s;
+        bestCardAction = {kind:'disruption', subkind:'reclaim', card};
+      }
+    }
+
+    // AR3 Blueprint Shift / A4 Redeploy: lift own wall, re-place it optimally
+    if (card.id === 'A4' || card.id === 'AR3') {
+      const myWalls = st.walls.filter(w => w.owner===pi && !w.isPhantom && !w.permanent && !w.reinforced);
+      for (const target of myWalls) {
+        const wallsWithout = st.walls.filter(w => w.id !== target.id);
+        const len = target.length;
+        const cands = generateWallCandidates(st.oppPos, len);
+        for (const {anchor, orientation} of cands) {
+          if (anchor.row===target.anchor.row && anchor.col===target.anchor.col &&
+              orientation===target.orientation) continue;
+          if (!isWallLegal(anchor, orientation, len, wallsWithout,
+              st.oppPos, st.aiPos, false)) continue;
+          const simWalls = [...wallsWithout, {
+            id:'__sim__', owner:pi, anchor, orientation, length:len,
+            isPhantom:false, durable:false, durableHits:0, immune:false, reinforced:false,
+            temporary:false, turnsRemaining:null, placedOnTurn:0
+          }];
+          const s = scoreAction({type:'wall', anchor, orientation, length:len},
+                                wallsWithout, st.aiPos, st.oppPos) + 0.5;
+          if (s > bestCardScore) {
+            bestCardScore = s;
+            bestCardAction = {kind:'disruption', subkind:'redeploy', card, target, anchor, orientation, len};
+          }
+        }
+      }
+    }
+
+    // AR2 Reinforce Wall: reinforce most valuable own wall
+    if (card.id === 'A5' || card.id === 'AR2') {
+      const myWalls = gameState.walls.filter(w => w.owner===pi && !w.isPhantom && !w.reinforced);
+      if (!myWalls.length) continue;
+      const best = myWalls[myWalls.length - 1];
+      // Value: how much does this wall contribute to opponent's distance?
+      const withoutWall = st.walls.filter(w => w.id !== best.id);
+      const oppWithout  = bfsDistanceFor(st.oppPos, 0, withoutWall, 0);
+      const oppWith     = bfsDistanceFor(st.oppPos, 0, st.walls,    0);
+      const wallValue   = oppWithout - oppWith;
+      const s = wallValue * 6 - 1;
+      if (s > bestCardScore) {
+        bestCardScore = s;
+        bestCardAction = {kind:'disruption', subkind:'reinforce', card};
+      }
+    }
+
+    // T3 Redirect / WD3 Eviction: move opponent's non-reinforced wall
+    if (card.id === 'T3' || card.id === 'WD3') {
+      const oppWalls = st.walls.filter(w => w.owner===0 && !w.isPhantom && !w.permanent && !w.reinforced && !w.immune);
+      for (const target of oppWalls) {
+        const wallsWithout = st.walls.filter(w => w.id !== target.id);
+        const len = target.length;
+        const cands = generateWallCandidates(st.oppPos, len);
+        for (const {anchor, orientation} of cands) {
+          if (!isWallLegal(anchor, orientation, len, wallsWithout,
+              st.oppPos, st.aiPos, false)) continue;
+          const s = scoreAction({type:'wall', anchor, orientation, length:len},
+                                wallsWithout, st.aiPos, st.oppPos) + 1;
+          if (s > bestCardScore) {
+            bestCardScore = s;
+            bestCardAction = {kind:'disruption', subkind:'redirect', card, target, anchor, orientation, len};
+          }
+        }
+      }
+    }
+
+    // T4 Scatter / WD2 Tax Notice: opponent discards a card
+    if (card.id === 'T4' || card.id === 'WD2') {
+      const oppHandSize = gameState.players[0].hand.length;
+      if (oppHandSize > 0) {
+        const s = 3;
+        if (s > bestCardScore) {
+          bestCardScore = s;
+          bestCardAction = {kind:'disruption', subkind:'scatter', card};
+        }
+      }
+    }
+
+    // T5 Punch Through: shrink/remove most-blocking wall (not reinforced)
+    if (card.id === 'T5') {
+      const breakable = st.walls.filter(w => !w.isPhantom && !w.permanent && !w.reinforced && !w.immune);
+      for (const target of breakable) {
+        const action = target.length <= 1
+          ? {type:'removeWall', wallId:target.id}
+          : {type:'shrinkWall', wallId:target.id};
+        const s = scoreAction(action, st.walls, st.aiPos, st.oppPos) + 0.5;
+        if (s > bestCardScore) {
+          bestCardScore = s;
+          bestCardAction = {kind:'disruption', subkind:'punchthrough', card, target};
+        }
+      }
+    }
+
+    // S5 Seal: permanently protect the AI's best blocking wall
+    if (card.id === 'S5') {
+      const myWalls = st.walls.filter(w => w.owner===pi && !w.isPhantom && !w.permanent);
+      if (!myWalls.length) continue;
+      // Pick the wall that blocks opponent most
+      let bestWall = null, bestVal = -Infinity;
+      for (const w of myWalls) {
+        const without = st.walls.filter(x => x.id !== w.id);
+        const val = bfsDistanceFor(st.oppPos, 0, without, 0) - bfsDistanceFor(st.oppPos, 0, st.walls, 0);
+        if (val > bestVal) { bestVal = val; bestWall = w; }
+      }
+      if (bestWall && bestVal > 1) {
+        const s = bestVal * 5;
+        if (s > bestCardScore) {
+          bestCardScore = s;
+          bestCardAction = {kind:'disruption', subkind:'seal', card, target:bestWall};
+        }
+      }
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════════
+  // PHASE 2 — choose the MOVE action
+  // ══════════════════════════════════════════════════════════════════
+  // Simulate post-card wall state, then find best move
+  let simWallsForMove = st.walls;
+  if (bestCardAction && (bestCardAction.kind === 'wall' || bestCardAction.kind === 'phantom')) {
+    simWallsForMove = [...st.walls, {
+      id:'__premove__', owner:pi,
+      anchor:bestCardAction.anchor, orientation:bestCardAction.orientation, length:bestCardAction.len,
+      isPhantom: bestCardAction.kind === 'phantom',
+      durable:false, durableHits:0, immune:false, temporary:false, turnsRemaining:null, placedOnTurn:0
+    }];
+  }
+
+  const simState = {
+    ...gameState,
+    walls: simWallsForMove
+  };
+  const moves = getLegalMoves(simState, pi);
+
+  let bestMoveScore = -Infinity;
+  let bestMoveDest  = null;
+
+  for (const to of moves) {
+    if (to.row === BOARD_SIZE - 1) { bestMoveDest = to; bestMoveScore = 1e9; break; }
+    const s = scoreAction({type:'move', to}, simWallsForMove, st.aiPos, st.oppPos)
+            + probeBonus(to, simWallsForMove);
+    if (s > bestMoveScore) { bestMoveScore = s; bestMoveDest = to; }
+  }
+
+  // Fallback move if none scored positively
+  if (!bestMoveDest && moves.length) {
+    bestMoveDest = moves.reduce((a, b) =>
+      Math.abs(b.row - (BOARD_SIZE - 1)) < Math.abs(a.row - (BOARD_SIZE - 1)) ? b : a
+    );
+  }
+
+  // ══════════════════════════════════════════════════════════════════
+  // PHASE 3 — execute card action (if any)
+  // ══════════════════════════════════════════════════════════════════
+  if (bestCardAction) {
+    const {kind, card} = bestCardAction;
+    const cardIdx = gameState.players[pi].hand.findIndex(c => c.id === card.id);
+    if (cardIdx === -1) {
+      // Card no longer in hand — skip
+    } else if (kind === 'movement') {
+      // Execute movement card: discard it and use the boosted move destination
+      discardCard(pi, cardIdx);
+      countCardPlayed(pi);
+      addLog(pi, 'card', 'AI played: ' + card.name);
+      // Override best move with the card's boost
+      if (bestCardAction.dest) {
+        bestMoveDest = bestCardAction.dest;
+      }
+    } else if (kind === 'wall' || kind === 'phantom') {
+      discardCard(pi, cardIdx);
+      executePlaceWall(bestCardAction.anchor, bestCardAction.orientation,
+                       bestCardAction.len, kind === 'phantom', false, card.id);
+    } else if (kind === 'disruption') {
+      const sub = bestCardAction.subkind;
+
+      if (sub === 'reclaim') {
+        // Execute RC Reconstruction / A3: remove oldest wall, draw 1
+        const myWalls = gameState.walls.filter(w => w.owner===pi && !w.isPhantom && !w.permanent)
+                                       .sort((a,b) => a.placedOnTurn - b.placedOnTurn);
+        if (myWalls.length) {
+          const target = myWalls[0];
+          gameState.walls = gameState.walls.filter(w => w.id !== target.id);
+          gameState.players[pi] = {...gameState.players[pi],
+            wallsInPlay: Math.max(0, gameState.players[pi].wallsInPlay - 1)};
+          discardCard(pi, cardIdx);
+          drawCards(pi, 1);
+          countCardPlayed(pi);
+          addLog(pi, 'card', 'AI Reconstruction: recycled oldest wall, drew 1');
+        }
+
+      } else if (sub === 'redeploy') {
+        // Execute AR3 Blueprint Shift / A4 Redeploy: lift target wall, place at new location
+        const t = bestCardAction.target;
+        if (gameState.walls.find(w => w.id === t.id)) {
+          gameState.walls = gameState.walls.filter(w => w.id !== t.id);
+          gameState.players[pi] = {...gameState.players[pi],
+            wallsInPlay: Math.max(0, gameState.players[pi].wallsInPlay - 1)};
+          discardCard(pi, cardIdx);
+          executePlaceWall(bestCardAction.anchor, bestCardAction.orientation,
+                           bestCardAction.len, false, t.durable||false, card.id);
+          addLog(pi, 'card', 'AI Blueprint Shift: repositioned wall');
+        }
+
+      } else if (sub === 'reinforce') {
+        const myWalls = gameState.walls.filter(w => w.owner===pi && !w.isPhantom && !w.reinforced);
+        if (myWalls.length) {
+          // Pick most valuable wall
+          let bestWall = myWalls[myWalls.length-1];
+          let bestVal = -1;
+          for (const w of myWalls) {
+            const wo = gameState.walls.filter(x => x.id !== w.id);
+            const val = bfsDistanceFor(gameState.players[0].position, 0, wo, 0) - bfsDistanceFor(gameState.players[0].position, 0, gameState.walls, 0);
+            if (val > bestVal) { bestVal = val; bestWall = w; }
+          }
+          gameState.walls = gameState.walls.map(w =>
+            w.id === bestWall.id ? {...w, reinforced:true, immune:true, permanent:true} : w
+          );
+          discardCard(pi, cardIdx); countCardPlayed(pi);
+          addLog(pi, 'card', 'AI Reinforce: wall permanently reinforced');
+        }
+
+      } else if (sub === 'redirect') {
+        const t = bestCardAction.target;
+        if (gameState.walls.find(w => w.id === t.id)) {
+          // Remove from opponent (but don't decrement wallsInPlay — wall ownership stays with opponent)
+          gameState.walls = gameState.walls.filter(w => w.id !== t.id);
+          discardCard(pi, cardIdx);
+          // Place as opponent's wall at new position
+          selectedCard = {id: card.id, idx:-1, length:bestCardAction.len,
+                          isPhantom:false, isDurable:false, _redirectOwner:0};
+          executePlaceWall(bestCardAction.anchor, bestCardAction.orientation,
+                           bestCardAction.len, false, false, card.id);
+          selectedCard = null;
+          addLog(pi, 'card', 'AI ' + card.name + ': relocated opponent wall');
+        }
+
+      } else if (sub === 'scatter') {
+        // T4 Scatter / WD2 Tax Notice
+        const op = gameState.players[0];
+        if (op.hand.length) {
+          const ridx = Math.floor(Math.random() * op.hand.length);
+          const gone = op.hand[ridx];
+          gameState.players[0] = {...op,
+            hand: op.hand.filter((_,i)=>i!==ridx),
+            discard:[...op.discard, gone]};
+          addLog(pi, 'card', 'AI: discarded opponent card ' + gone.name);
+        }
+        discardCard(pi, cardIdx); countCardPlayed(pi);
+
+      } else if (sub === 'punchthrough') {
+        const t = bestCardAction.target;
+        const live = gameState.walls.find(w => w.id === t.id);
+        if (live && !live.reinforced && !live.immune) {
+          if (live.length <= 1) {
+            gameState.walls = gameState.walls.filter(w => w.id !== live.id);
+            if (!live.isPhantom)
+              gameState.players[live.owner] = {...gameState.players[live.owner],
+                wallsInPlay: Math.max(0, gameState.players[live.owner].wallsInPlay - 1)};
+          } else {
+            gameState.walls = gameState.walls.map(w => w.id===live.id ? {...w, length:w.length-1} : w);
+          }
+          addLog(pi, 'card', 'AI Punch Through: wall damaged');
+        }
+        discardCard(pi, cardIdx); countCardPlayed(pi);
+
+      } else if (sub === 'seal') {
+        const t = bestCardAction.target;
+        if (gameState.walls.find(w => w.id === t.id)) {
+          gameState.walls = gameState.walls.map(w =>
+            w.id === t.id ? {...w, permanent:true, immune:true} : w
+          );
+          addLog(pi, 'card', 'AI Seal: wall permanently sealed');
+        }
+        discardCard(pi, cardIdx); countCardPlayed(pi);
+      }
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════════
+  // PHASE 4 — execute move (skip if Binding Wall effect active)
+  // ══════════════════════════════════════════════════════════════════
+  const isAIBound = (gameState.players[AI_PLAYER].statusEffects || []).some(e => e.type === 'skip_move' && e.turnsRemaining > 0);
+  if (bestMoveDest && !hasMoved && !isAIBound) {
+    executeMove(bestMoveDest);
+  } else if (isAIBound) {
+    hasMoved = true; // mark as "moved" so isTurnDone works correctly
+    addLog(AI_PLAYER, 'system', 'AI bound by Binding Wall — move skipped');
+  }
+
+  // ── If turn still not done, force-end (safety net) ─────────────────
+  if (gameState.phase === 'action' && gameState.activePlayer === AI_PLAYER) {
+    gameState.phase = 'end_turn';
+  }
+  aiThinking = false;
+  renderAll();
+
+  if (gameState.phase === 'end_turn' && gameState.activePlayer === AI_PLAYER) {
+    setTimeout(endTurn, 700);
+  }
+}
+
+// Stub out old functions so no references break
+function wallCandidatesForMinimax() { return []; }
+function enumerateActions()         { return []; }
+function applyActionToSnapshot()    { return {}; }
+function minimax()                  { return 0;  }
+function evalScore()                { return 0;  }
+
+
+// ── Champion Select ──────────────────────────────────────────────────
+
+function showLandingScreen() {
+  const existing = document.getElementById('landing-overlay');
+  if (existing) existing.remove();
+  document.body.insertAdjacentHTML('beforeend', `
+    <div id="landing-overlay" style="
+      position:fixed;inset:0;background:var(--bg);z-index:500;
+      display:flex;flex-direction:column;align-items:center;justify-content:center;
+      padding:40px 24px;
+    ">
+      <div style="font-family:'Teko',sans-serif;font-size:72px;font-weight:700;letter-spacing:.35em;color:var(--amber);margin-bottom:4px;text-align:center;">CORRIDORS</div>
+      <div style="font-size:11px;letter-spacing:.25em;color:var(--text-dim);text-transform:uppercase;margin-bottom:64px;text-align:center;">Deckbuilding · Champions · Strategy</div>
+      <div style="display:flex;flex-direction:column;gap:14px;width:260px;">
+        <button onclick="document.getElementById('landing-overlay').remove();showChampionSelect();" style="
+          padding:16px 0;background:transparent;border:1px solid var(--amber-dim);
+          color:var(--amber);font-family:'JetBrains Mono',monospace;font-size:12px;
+          letter-spacing:.2em;text-transform:uppercase;cursor:pointer;width:100%;
+          transition:all 0.15s;
+        " onmouseover="this.style.background='rgba(212,144,58,0.08)';this.style.borderColor='var(--amber)'"
+           onmouseout="this.style.background='transparent';this.style.borderColor='var(--amber-dim)'">
+          ⚔ VS COMPUTER
+        </button>
+        <button onclick="document.getElementById('landing-overlay').remove();showMultiplayerLobby();" style="
+          padding:16px 0;background:transparent;border:1px solid var(--p1-dim);
+          color:var(--p1);font-family:'JetBrains Mono',monospace;font-size:12px;
+          letter-spacing:.2em;text-transform:uppercase;cursor:pointer;width:100%;
+          transition:all 0.15s;
+        " onmouseover="this.style.background='rgba(90,159,212,0.08)';this.style.borderColor='var(--p1)'"
+           onmouseout="this.style.background='transparent';this.style.borderColor='var(--p1-dim)'">
+          ⚡ MULTIPLAYER
+        </button>
+      </div>
+    </div>
+  `);
+}
+
+function showChampionSelect() {
+  selectedChampionId = null;
+
+  const factionColors = {
+    Architects:  'var(--wall-arch)',
+    Pathfinders: 'var(--wall-path)',
+    Wardens:     'var(--wall-ward)',
+    Phantoms:    'var(--wall-phan)',
+    Adepts:      'var(--wall-adept)',
+  };
+
+  const cards = Object.values(CHAMPIONS).map(champ => {
+    const col = factionColors[champ.faction] || 'var(--text-dim)';
+    return `<div class="cs-card" id="cs-${champ.id}" onclick="selectChampion('${champ.id}')">
+      <div class="cs-champ-name" style="color:${col}">${champ.name}</div>
+      <div class="cs-champ-title">${champ.title}</div>
+      <div class="cs-faction" style="color:${col}">${champ.faction}</div>
+      <div class="cs-stats">
+        <div class="cs-stat"><div class="cs-stat-label">WALLS</div><div class="cs-stat-val">${champ.wallLimit}</div></div>
+        <div class="cs-stat"><div class="cs-stat-label">HAND</div><div class="cs-stat-val">${champ.handSize}</div></div>
+        <div class="cs-stat"><div class="cs-stat-label">OPEN DRAW</div><div class="cs-stat-val">${champ.cardDraw}</div></div>
+        <div class="cs-stat"><div class="cs-stat-label">SPEED</div><div class="cs-stat-val">${champ.moveSpeed}</div></div>
+      </div>
+      <div class="cs-passive">
+        <div class="cs-passive-name">${champ.passiveName}</div>
+        <div class="cs-passive-desc">${champ.passiveDesc}</div>
+      </div>
+      <div class="cs-ult-name">&#9889; ${champ.ultimateName}</div>
+      <div class="cs-ult-desc">${champ.ultimateDesc || ''}</div>
+    </div>`;
+  }).join('');
+
+  document.body.insertAdjacentHTML('beforeend', `
+    <div id="champion-select-overlay" style="
+      position:fixed;inset:0;background:var(--bg);z-index:500;
+      display:flex;flex-direction:column;align-items:center;
+      justify-content:flex-start;padding:40px 24px;overflow-y:auto;
+    ">
+      <div style="font-family:'Teko',sans-serif;font-size:42px;font-weight:700;letter-spacing:.3em;color:var(--amber);margin-bottom:4px;">CORRIDORS</div>
+      <div style="font-size:11px;letter-spacing:.2em;color:var(--text-dim);text-transform:uppercase;margin-bottom:32px;">Select your champion</div>
+      <div style="display:grid;grid-template-columns:repeat(3,280px);gap:16px;margin-bottom:32px;" id="cs-grid">${cards}</div>
+      <div style="font-size:10px;letter-spacing:.15em;color:var(--text-dim);margin-bottom:12px;text-transform:uppercase;">AI DIFFICULTY</div>
+      <div style="display:flex;gap:8px;margin-bottom:32px;">
+        <button class="diff-btn" id="diff-easy"   onclick="setDifficulty('easy')">EASY</button>
+        <button class="diff-btn active" id="diff-medium" onclick="setDifficulty('medium')">MEDIUM</button>
+        <button class="diff-btn" id="diff-hard"   onclick="setDifficulty('hard')">HARD</button>
+      </div>
+      <button id="cs-confirm" onclick="confirmChampionSelect()" disabled style="
+        padding:14px 48px;background:transparent;border:1px solid var(--amber);
+        color:var(--amber);font-family:'JetBrains Mono',monospace;font-size:13px;
+        letter-spacing:.2em;text-transform:uppercase;cursor:pointer;opacity:0.4;
+      ">SELECT CHAMPION TO CONTINUE &#8594;</button>
+    </div>
+  `);
+}
+
+function selectChampion(id) {
+  selectedChampionId = id;
+  document.querySelectorAll('.cs-card').forEach(el => el.classList.remove('selected'));
+  const card = document.getElementById('cs-' + id);
+  if (card) card.classList.add('selected');
+  const btn = document.getElementById('cs-confirm');
+  if (btn) {
+    btn.textContent = 'PLAY AS ' + CHAMPIONS[id].name.toUpperCase() + ' →';
+    btn.disabled = false;
+    btn.style.opacity = '1';
+  }
+}
+
+function setDifficulty(level) {
+  aiDifficulty = level;
+  ['easy', 'medium', 'hard'].forEach(l => {
+    const el = document.getElementById('diff-' + l);
+    if (el) el.className = 'diff-btn' + (l === level ? ' active' : '');
+  });
+}
+
+function confirmChampionSelect() {
+  if (!selectedChampionId) return;
+  const playerFaction  = CHAMPIONS[selectedChampionId].faction;
+  const counterFaction = FACTION_COUNTER[playerFaction];
+  let aiChampId;
+
+  if (aiDifficulty === 'hard' && counterFaction) {
+    // Hard: pick a random champion from the counter faction
+    const counterChamps = Object.keys(CHAMPIONS).filter(id =>
+      CHAMPIONS[id].faction === counterFaction && id !== selectedChampionId
+    );
+    aiChampId = counterChamps.length
+      ? counterChamps[Math.floor(Math.random() * counterChamps.length)]
+      : Object.keys(CHAMPIONS).filter(id => id !== selectedChampionId)[0];
+    // Show the counter pick to the player
+    setTimeout(() => showStatus('HARD: AI countered with a ' + counterFaction + ' champion!', 'error'), 800);
+  } else {
+    const available = Object.keys(CHAMPIONS).filter(id => id !== selectedChampionId);
+    aiChampId = available[Math.floor(Math.random() * available.length)];
+  }
+
+  const overlay = document.getElementById('champion-select-overlay');
+  if (overlay) overlay.remove();
+  initGame(selectedChampionId, aiChampId);
+}
+
+// ── UI interactions ─────────────────────────────────────────────────
+function enterMoveMode() {
+  if (!isHumanSeat(gameState.activePlayer)) return;
+  if (gameState.phase !== 'action') { showStatus('Not your action phase', 'error'); return; }
+  const pi = gameState.activePlayer;
+  const champId = gameState.players[pi].champion.id;
+  // Check for Binding Wall skip effect
+  const isBound = (gameState.players[pi].statusEffects || []).some(e => e.type === 'skip_move' && e.turnsRemaining > 0);
+  if (isBound) {
+    showStatus('Bound! A Binding Wall prevents your move this turn', 'error'); return;
+  }
+  // Soren (Fleetfoot): can take a 2nd move INSTEAD of playing a card (if no card played yet)
+  const sorenSecondMovePending = hasMoved && champId === 'soren' && cardsPlayedThisTurn === 0 && !gameState._sorenSecondMove;
+  if (sorenSecondMovePending) {
+    // Grant Soren a second move
+    gameState._sorenSecondMove = true;
+    hasMoved = false; // temporarily allow move UI
+  } else if (hasMoved) {
+    showStatus('Already moved this turn', 'error'); return;
+  }
+
+  if (uiMode === 'move') {
+    // Toggle off — if we just granted Soren second move, revert it
+    if (sorenSecondMovePending) {
+      gameState._sorenSecondMove = false;
+      hasMoved = true;
+    }
+    uiMode = 'idle';
+    selectedCard = null;
+    renderBoard();
+    showStatus('Move cancelled', '');
+  } else {
+    uiMode = 'move';
+    selectedCard = null;
+    renderBoard();
+    showStatus('Click a highlighted tile to move', 'active');
+  }
+  updateActionBar();
+}
+
+function setOrientation(o) {
+  wallOrientation = o;
+  document.getElementById('orient-h').className = `orient-btn${o==='H'?' active':''}`;
+  document.getElementById('orient-v').className = `orient-btn${o==='V'?' active':''}`;
+  // Re-render wall hotspots
+  if (uiMode === 'wall') renderBoard();
+}
+
+function showOrientationToggle() {
+  const el = document.getElementById('orientation-toggle');
+  if (el) el.style.display = 'flex';
+}
+function hideOrientationToggle() {
+  const el = document.getElementById('orientation-toggle');
+  if (el) el.style.display = 'none';
+}
+
+function handleCellClick(r, c) {
+  if (uiMode !== 'move') return;
+  executeMove({row:r, col:c});
+  updateActionBar();
+}
+
+function handleWallClick(anchor, orientation, length, isPhantom, isDurable) {
+  if (uiMode !== 'wall') return;
+  const pi = gameState.activePlayer;
+  const p = gameState.players[pi];
+
+  // Redirect: the wall being placed belongs to the opponent — check their limit
+  const wallOwnerPi = (selectedCard?._redirectOwner !== undefined) ? selectedCard._redirectOwner : pi;
+  const wallOwnerState = gameState.players[wallOwnerPi];
+  const isRedirectPlace = (selectedCard?._redirectOwner !== undefined);
+  // Skip limit check for redirected walls (wall was already counted, just moving it)
+  if (!isRedirectPlace && wallOwnerState.wallsInPlay >= wallOwnerState.wallLimitCurrent) {
+    const who = wallOwnerPi === pi ? 'Your' : "Opponent's";
+    showStatus(`${who} wall limit reached!`, 'error'); return;
+  }
+  if (!isWallLegal(anchor, orientation, length, gameState.walls,
+      gameState.players[0].position, gameState.players[1].position, isPhantom)) {
+    showStatus('Illegal — would block a path', 'error'); return;
+  }
+
+  // Discard the card that triggered wall mode
+  // idx === -1 means this is a chained placement (T2 phantom, G4 second wall, etc.)
+  // — the original card was already discarded; don't try to discard again
+  const fromCardId = selectedCard ? selectedCard.id : '';
+  if (selectedCard && selectedCard.idx >= 0) discardCard(pi, selectedCard.idx);
+  executePlaceWall(anchor, orientation, length, isPhantom, isDurable, fromCardId);
+
+  renderAll();
+  const _wpi = gameState.activePlayer;
+  const _wchamp = gameState.players[_wpi].champion.id;
+  if (_wchamp === 'magnus') {
+    showStatus('Wall placed — now move or play another card, or end your turn', 'active');
+  } else {
+    showStatus('Wall placed — end your turn', 'success');
+  }
+  updateActionBar();
+
+  // If it's AI's turn after this (shouldn't happen, but safety)
+  if (!mp_isMultiplayer && gameState.phase === 'end_turn' && gameState.activePlayer === AI_PLAYER) {
+    setTimeout(endTurn, 400);
+  }
+}
+
+// ── Persistent storage ──────────────────────────────────────────────
+async function storageGet(key) {
+  if (window.storage) { try { return await window.storage.get(key); } catch(e) {} }
+  const v = localStorage.getItem(key);
+  return v ? { value: v } : null;
+}
+async function storageSet(key, value) {
+  if (window.storage) { try { await window.storage.set(key, value); return; } catch(e) {} }
+  try { localStorage.setItem(key, value); } catch(e) {}
+}
+
+// ── Per-turn state ───────────────────────────────────────────────────
+let opponentLastPlayedWall = false;
+// (freeCardPlay / consecutiveMoveTurns removed with Pathfinders)
+let cardsPlayedThisTurn    = 0;
+
+function getFactionRule(pi) {
+  const faction = gameState.players[pi].champion.faction;
+  return FACTION_RULES[faction];
+}
+
+function isTurnDone() {
+  const pi = gameState.activePlayer;
+  const p  = gameState.players[pi];
+  const champId = p.champion.id;
+
+  // Binding Wall: if player is bound (skip_move), they can't move — turn done after 1 card (or immediately)
+  const isBound = (p.statusEffects || []).some(e => e.type === 'skip_move' && e.turnsRemaining > 0);
+  if (isBound) {
+    if (cardsPlayedThisTurn >= 1) return true;  // played their card, done
+    if (p.hand.length === 0) return true;        // no cards to play, just end
+    return false;
+  }
+
+  // Magnus (Master Mason): play 2 cards (any type, incl. wall) OR move + play 1 card
+  if (champId === 'magnus') {
+    if (cardsPlayedThisTurn >= 2) return true;                           // played 2 cards
+    if (hasMoved && cardsPlayedThisTurn >= 1) return true;               // moved + played 1
+    if (p.hand.length === 0 && hasMoved) return true;                    // hand empty, moved
+    if (p.hand.length === 0 && cardsPlayedThisTurn >= 1) return true;    // hand empty, played 1
+    return false;
+  }
+
+  // Soren (Fleetfoot): move twice (no card) OR move + play 1 card
+  if (champId === 'soren') {
+    if (gameState._sorenSecondMove && hasMoved) return true;             // moved twice
+    if (hasMoved && cardsPlayedThisTurn >= 1) return true;               // moved + played card
+    if (p.hand.length === 0 && hasMoved) return true;                    // hand empty, moved
+    return false;
+  }
+
+  // All other champions: move + play 1 card (or just move if hand empty)
+  if (p.hand.length === 0) return hasMoved;
+  return hasMoved && cardsPlayedThisTurn >= 1;
+}
+
+function resetTurnState() {
+  hasMoved            = false;
+  hasPlayedCard       = false;
+  cardsPlayedThisTurn = 0;
+  if (gameState) {
+    gameState._turnCategoryWall = false;
+    gameState._turnCategoryMovement = false;
+    gameState._turnCategoryDisruption = false;
+    gameState._adeptEqDrawn = false;
+    gameState._sorenSecondMove = false;
+  }
+}
+
+// ── Card selection dispatcher ────────────────────────────────────────
+function selectCard(cardId, idx) {
+  if (!isHumanSeat(gameState.activePlayer)) return;
+  if (gameState.phase !== 'action') { showStatus('Not your action phase', 'error'); return; }
+
+  const pi     = gameState.activePlayer;
+  const rule   = getFactionRule(pi);
+  const champId = gameState.players[pi].champion.id;
+  const card   = gameState.players[pi].hand[idx];
+  if (!card) return;
+
+  // Guard: can we play a card?
+  if (rule.cardOrMove && hasMoved) {
+    showStatus('Already moved — this faction plays cards OR moves, not both', 'error'); return;
+  }
+  // Magnus (Master Mason): can play 2 cards (or 1 card + 1 move)
+  const maxCards = (champId === 'magnus') ? 2 : rule.cardPlays;
+  if (cardsPlayedThisTurn >= maxCards) {
+    showStatus('Card budget for this turn used up', 'error'); return;
+  }
+  // Soren (Fleetfoot): if already moved twice, no card allowed this turn
+  if (champId === 'soren' && hasMoved && cardsPlayedThisTurn === 0 && gameState._sorenSecondMove) {
+    showStatus('Already used both moves — no card this turn', 'error'); return;
+  }
+
+  // If a card is already pending (move/wall mode), clicking any card cancels it first.
+  // Clicking the SAME card again deselects it.
+  if (selectedCard && selectedCard.idx === idx && (uiMode === 'wall' || uiMode === 'move')) {
+    selectedCard = null; uiMode = 'idle'; renderAll(); showStatus('Card deselected', ''); return;
+  }
+  // Clicking a DIFFERENT card while in move mode: cancel pending movement card (no cost)
+  if (selectedCard && selectedCard._pendingMove && uiMode === 'move') {
+    selectedCard = null; uiMode = 'idle';
+  }
+  // Clicking a DIFFERENT card while in wall/pick mode: cancel pending action (no cost)
+  if (selectedCard && (uiMode === 'wall' || uiMode === 'wallPick' || uiMode === 'wallRedirect' || uiMode === 'wallSeal' || uiMode === 'wallPunch' || uiMode === 'wallReconstruct') && selectedCard.idx >= 0) {
+    gameState._redeployCardIdx = null;
+    gameState._redirectCardIdx = null;
+    gameState._reconstructCardIdx = null;
+    selectedCard = null; uiMode = 'idle';
+  }
+
+  selectedCard = { id: cardId, idx };
+
+  if (card.type === 'Wall') {
+    trackCategory('Wall');
+    const isPhantom = !!(card.phantom);
+    const isDurable = !!(card.durable);
+    const length    = getCardWallLength(card.id);
+    selectedCard = { ...selectedCard, length, isPhantom, isDurable };
+    uiMode = 'wall';
+    renderAll();
+    showStatus(card.name + ' — click a wall edge to place', 'active');
+  } else if (card.type === 'Movement') {
+    trackCategory('Movement');
+    applyMovementCard(pi, card, idx);
+  } else if (card.type === 'Disruption') {
+    trackCategory('Disruption');
+    applyDisruptionCard(pi, card, idx);
+  } else {
+    discardCard(pi, idx);
+    addLog(pi, 'card', 'Played: ' + card.name);
+    selectedCard = null;
+    countCardPlayed(pi);
+    if (isTurnDone()) gameState.phase = 'end_turn';
+    renderAll();
+  }
+  updateActionBar();
+}
+
+function countCardPlayed(pi) {
+  cardsPlayedThisTurn++;
+  hasPlayedCard = true;
+  const champId = gameState.players[pi].champion.id;
+  // Track categories for Adept synergies
+  // (Called after selectCard resolves type)
+}
+
+function trackCategory(type) {
+  if (type === 'Wall')       gameState._turnCategoryWall = true;
+  if (type === 'Movement')   gameState._turnCategoryMovement = true;
+  if (type === 'Disruption') gameState._turnCategoryDisruption = true;
+  // Elara (Adepts) Equilibrium: drew 1 if wall + move in same turn (handled in onWallPlaced and executeMove)
+  // Elara passive: if 2 different categories played this turn, draw 1
+  const pi = gameState.activePlayer;
+  const champId = gameState.players[pi].champion.id;
+  if (champId === 'elara') {
+    const cats = [gameState._turnCategoryWall, gameState._turnCategoryMovement, gameState._turnCategoryDisruption].filter(Boolean).length;
+    if (cats >= 2 && !gameState._adeptEqDrawn) {
+      gameState._adeptEqDrawn = true;
+      drawCards(pi, 1);
+      addLog(pi, 'passive', 'Omni-Arsenal: drew 1 for mixed-category turn');
+    }
+  }
+  // Thorne (Wardens) — hand always revealed (handled in renderPanels)
+}
+
+function onWallPlaced(pi, fromCardId) {
+  // T2 phantom step: don't count as a second card play
+  const isT2Phantom = !!gameState._t2phantomPending;
+  if (!isT2Phantom) countCardPlayed(pi);
+  gameState._t2phantomPending = false;
+
+  // Track last card played for Faction Mirror
+  if (fromCardId && CARDS[fromCardId]) {
+    gameState.lastOpponentCard = CARDS[fromCardId];
+  }
+
+  const card = CARDS[fromCardId];
+  // Draw-on-place cards
+  if (card?.drawOnPlace) drawCards(pi, card.drawOnPlace);
+
+  // PH3 Echo Strike: after phantom wall on own side, also place a real mirrored wall on opponent's side
+  if (fromCardId === 'PH3' && !gameState._echoStrikeReal) {
+    gameState._echoStrikeReal = true;
+    const lastWall = gameState.walls[gameState.walls.length - 1];
+    if (lastWall) {
+      // Mirror the anchor to the opposite side of the board
+      const mirrorAnchor = lastWall.orientation === 'H'
+        ? {row: BOARD_SIZE - 2 - lastWall.anchor.row, col: lastWall.anchor.col}
+        : {row: lastWall.anchor.row, col: BOARD_SIZE - 2 - lastWall.anchor.col};
+      if (isWallLegal(mirrorAnchor, lastWall.orientation, lastWall.length, gameState.walls,
+          gameState.players[0].position, gameState.players[1].position, false)) {
+        selectedCard = { id:'PH3_real', idx:-1, length:lastWall.length, isPhantom:false, isDurable:false };
+        executePlaceWall(mirrorAnchor, lastWall.orientation, lastWall.length, false, false, '');
+        addLog(pi, 'card', 'Echo Strike: real mirrored wall placed on opponent side');
+      }
+    }
+    gameState._echoStrikeReal = false;
+    return;
+  }
+
+  // PH4 Veil Lattice: place 2 phantom walls
+  if (fromCardId === 'PH4') {
+    if (!gameState._veilCount) gameState._veilCount = 0;
+    gameState._veilCount++;
+    if (gameState._veilCount < 2) {
+      selectedCard = { id:'PH4', idx:-1, length:2, isPhantom:true, isDurable:false };
+      uiMode = 'wall';
+      renderAll(); showStatus('Veil Lattice: place the 2nd Phantom Wall (persists until walked through)', 'active'); return;
+    }
+    gameState._veilCount = 0;
+  }
+
+  // CB / S4 Corner Piece: after first 2-tile wall, enter perpendicular 2-tile placement
+  if ((fromCardId === 'CB' || fromCardId === 'S4') && !gameState._cornerSecond) {
+    gameState._cornerSecond = true;
+    wallOrientation = (wallOrientation === 'H') ? 'V' : 'H';
+    selectedCard = { id:'CB_second', idx:-1, length:2, isPhantom:false, isDurable:false };
+    uiMode = 'wall';
+    renderAll(); showStatus('Corner Block: now place the perpendicular 2-tile wall', 'active'); return;
+  }
+  gameState._cornerSecond = false;
+
+  // AD5 Synthesis Wall: if played both Movement and Disruption this turn, wall gains Reinforce
+  if (fromCardId === 'AD5') {
+    const lastWall = gameState.walls[gameState.walls.length - 1];
+    if (lastWall && gameState._turnCategoryMovement && gameState._turnCategoryDisruption) {
+      gameState.walls = gameState.walls.map(w =>
+        w.id === lastWall.id ? {...w, reinforced:true, immune:true} : w
+      );
+      addLog(pi, 'card', 'Synthesis Wall: reinforced due to mixed-category turn!');
+    }
+  }
+
+  // AD1 Flexible Form: if both a wall and a move happened this turn, draw 1 (Equilibrium)
+  if (fromCardId === 'AD1' && hasMoved) {
+    drawCards(pi, 1); addLog(pi, 'passive', 'Equilibrium: drew 1 from Flexible Form');
+  }
+
+  opponentLastPlayedWall = (pi !== 0);
+  if (isTurnDone()) gameState.phase = 'end_turn';
+  renderAll(); updateActionBar();
+}
+
+function isAdjacentToExistingWall(wall, others) {
+  for (const w of others) {
+    if (w.isPhantom) continue;
+    if (w.orientation !== wall.orientation) continue;
+    const dr = Math.abs(wall.anchor.row - w.anchor.row);
+    const dc = Math.abs(wall.anchor.col - w.anchor.col);
+    if (wall.orientation === 'H' && dr === 0 && dc <= Math.max(wall.length, w.length)+1) return true;
+    if (wall.orientation === 'V' && dc === 0 && dr <= Math.max(wall.length, w.length)+1) return true;
+  }
+  return false;
+}
+
+function drawCards(pi, n) {
+  const p = gameState.players[pi];
+  const maxHand = p.champion.handSize;
+  const available = Math.max(0, maxHand - p.hand.length);
+  n = Math.min(n, available); // never draw above hand limit
+  if (n <= 0) return;
+  let deck = [...p.deck], discard = [...p.discard];
+  const drawn = [];
+  for (let i = 0; i < n; i++) {
+    if (!deck.length) { if (!discard.length) break; deck = shuffle([...discard]); discard = []; }
+    drawn.push(deck.shift());
+  }
+  if (drawn.length) {
+    const hand = [...p.hand, ...drawn];
+    gameState.players[pi] = { ...p, deck, discard, hand };
+    addLog(pi, 'draw', 'Drew ' + drawn.length + ': ' + drawn.filter(x=>x&&x.name).map(c=>c.name).join(', '));
+  }
+}
+
+// ── Movement card handler ─────────────────────────────────────────────
+function applyMovementCard(pi, card, idx) {
+  // Don't discard or count yet — player must confirm by selecting a destination.
+  // They can click a different card to cancel this selection.
+  let speed = card.overrideSpeed || gameState.players[pi].champion.moveSpeed;
+  if (card.reactive && opponentLastPlayedWall) speed = 3;
+  // Store pending card info; discard+count happens in executeMove
+  selectedCard = { id: card.id, idx, overrideSpeed: speed, tunnelThrough: !!card.tunnel, _pendingMove: true };
+  uiMode = 'move';
+  renderAll();
+  showStatus(card.name + ' — select destination (' + speed + ' step' + (speed>1?'s':'') + '), or click another card to cancel', 'active');
+}
+
+// ── Disruption card handler ───────────────────────────────────────────
+function applyDisruptionCard(pi, card, idx) {
+  const opp = 1 - pi;
+
+  // ── A3: Reclaim — pick up oldest own wall, shuffle a Standard Wall into deck ──
+  // The reclaimed card enters the deck (available next turn), not the hand,
+  // so the player doesn't get a second card play this turn.
+  if (card.id === 'A3') {
+    const myWalls = gameState.walls.filter(w => w.owner===pi && !w.isPhantom && !w.permanent)
+                                   .sort((a,b) => a.placedOnTurn - b.placedOnTurn);
+    if (!myWalls.length) { showStatus('No walls to reclaim', 'error'); return; }
+    const target = myWalls[0];
+    gameState.walls = gameState.walls.filter(w => w.id !== target.id);
+    gameState.players[pi] = { ...gameState.players[pi],
+      wallsInPlay: Math.max(0, gameState.players[pi].wallsInPlay - 1) };
+    // Discard the Reclaim card first (before modifying hand/deck)
+    discardCard(pi, idx);
+    // Shuffle a Standard Wall card into the deck for next turn
+    const stdWall = {...CARDS['A1']};
+    const p2 = gameState.players[pi];
+    const insertAt = Math.floor(Math.random() * (p2.deck.length + 1));
+    const newDeck = [...p2.deck];
+    newDeck.splice(insertAt, 0, stdWall);
+    gameState.players[pi] = { ...p2, deck: newDeck };
+    selectedCard = null; countCardPlayed(pi);
+    addLog(pi, 'card', 'Reclaim: wall removed, Standard Wall shuffled into deck');
+    if (isTurnDone()) gameState.phase = 'end_turn';
+    renderAll(); showStatus('Wall reclaimed — Standard Wall shuffled into your deck!', 'success'); return;
+  }
+
+  // ── A4: Redeploy — click one of your walls on the board to pick it up ──
+  if (card.id === 'A4') {
+    const myWalls = gameState.walls.filter(w => w.owner===pi && !w.isPhantom && !w.permanent);
+    if (!myWalls.length) { showStatus('No walls to redeploy', 'error'); return; }
+    // Enter wall-pick mode: player clicks a wall on the board to lift it
+    gameState._redeployCardIdx = idx;
+    uiMode = 'wallPick';
+    selectedCard = { id:'A4', idx };
+    renderAll();
+    showStatus('Redeploy — click one of your walls on the board to lift it', 'active');
+    return;
+  }
+
+  // ── AR2: Reinforce Wall — click one of your walls to reinforce it ──
+  if (card.id === 'A5' || card.id === 'AR2') {
+    const myWalls = gameState.walls.filter(w => w.owner===pi && !w.isPhantom && !w.reinforced);
+    if (!myWalls.length) { showStatus('No walls to reinforce', 'error'); return; }
+    // Enter wallReinforce mode — player clicks which wall to reinforce
+    gameState._reinforceCardIdx = idx;
+    uiMode = 'wallReinforce';
+    selectedCard = { id: card.id, idx };
+    renderAll();
+    showStatus('Reinforce — click one of your walls to make it immune to destruction and movement', 'active');
+    return;
+  }
+
+  // ── T5 / general: Punch Through — click any non-permanent, non-reinforced wall to remove 1 tile ──
+  if (card.id === 'T5') {
+    const breakable = gameState.walls.filter(w => !w.isPhantom && !w.permanent && !w.reinforced && !w.immune);
+    if (!breakable.length) { showStatus('No walls to punch through', 'error'); return; }
+    gameState._punchCardIdx = idx;
+    uiMode = 'wallPunch';
+    selectedCard = { id:'T5', idx };
+    renderAll();
+    showStatus('Punch Through — click any non-reinforced wall to remove one tile (destroys 1-tile walls)', 'active');
+    return;
+  }
+
+  // ── WD3: Eviction — move 1 non-reinforced opponent wall to any legal location ──
+  if (card.id === 'WD3') {
+    const oppWalls = gameState.walls.filter(w => w.owner===opp && !w.isPhantom && !w.permanent && !w.reinforced && !w.immune);
+    if (!oppWalls.length) { showStatus("No moveable opponent walls (reinforced walls are immune)", 'error'); return; }
+    gameState._redirectCardIdx = idx;
+    uiMode = 'wallRedirect';
+    selectedCard = { id:'WD3', idx };
+    renderAll();
+    showStatus('Eviction — click a non-reinforced opponent wall to relocate it', 'active');
+    return;
+  }
+
+  // ── WD2: Tax Notice — opponent discards 1 card if they have 3+ walls ──
+  if (card.id === 'WD2') {
+    const op = gameState.players[opp];
+    if (gameState.walls.filter(w => w.owner===opp && !w.isPhantom).length < 3) {
+      showStatus('Tax Notice requires opponent to have 3+ walls', 'error'); return;
+    }
+    if (op.hand.length) {
+      // Player (human) picks which card; for simplicity discard first (could be improved to let player choose)
+      const ridx = Math.floor(Math.random() * op.hand.length);
+      const gone = op.hand[ridx];
+      gameState.players[opp] = { ...op,
+        hand: op.hand.filter((_,i)=>i!==ridx), discard:[...op.discard, gone] };
+      addLog(pi, 'card', 'Tax Notice: opponent discarded ' + gone.name);
+    } else {
+      addLog(pi, 'card', 'Tax Notice: opponent hand was empty');
+    }
+    drawCards(pi, 1);
+    discardCard(pi, idx); selectedCard = null; countCardPlayed(pi);
+    if (isTurnDone()) gameState.phase = 'end_turn';
+    renderAll(); showStatus('Tax Notice: opponent discarded!', 'success'); return;
+  }
+
+  // ── WD4: Confiscate — opponent discards 2 cards, no draw for player ──
+  if (card.id === 'WD4') {
+    const op = gameState.players[opp];
+    const discardCount = Math.min(2, op.hand.length);
+    if (discardCount > 0) {
+      // Discard 2 random cards from opponent's hand
+      let hand = [...op.hand];
+      const discarded = [];
+      for (let i = 0; i < discardCount; i++) {
+        const ridx = Math.floor(Math.random() * hand.length);
+        discarded.push(hand.splice(ridx, 1)[0]);
+      }
+      gameState.players[opp] = { ...op, hand, discard: [...op.discard, ...discarded] };
+      addLog(pi, 'card', `Confiscate: opponent discarded ${discarded.map(c=>c.name).join(', ')}!`);
+    } else {
+      addLog(pi, 'card', 'Confiscate: opponent hand was empty');
+    }
+    discardCard(pi, idx); selectedCard = null; countCardPlayed(pi);
+    if (isTurnDone()) gameState.phase = 'end_turn';
+    renderAll(); showStatus(`Confiscate: opponent discarded ${discardCount} card(s)!`, 'success'); return;
+  }
+
+  // ── WD5: Total Seizure — move ALL opponent walls (bypasses Reinforce) ──
+  if (card.id === 'WD5') {
+    // AI-side: just place them randomly; Human: simplified to random legal placement
+    const oppWalls = [...gameState.walls.filter(w => w.owner===opp && !w.isPhantom)];
+    let moved = 0;
+    for (const w of oppWalls) {
+      gameState.walls = gameState.walls.filter(x => x.id !== w.id);
+      // Try to find a legal new position for each wall
+      const candidates = generateWallCandidates(gameState.players[0].position, w.length);
+      let placed = false;
+      for (const {anchor, orientation} of shuffle(candidates)) {
+        if (isWallLegal(anchor, orientation, w.length, gameState.walls,
+            gameState.players[0].position, gameState.players[1].position, false)) {
+          gameState.walls.push({...w, anchor, orientation});
+          moved++;
+          placed = true;
+          break;
+        }
+      }
+      // If can't find new position, restore wall in place (don't delete it)
+      if (!placed) gameState.walls.push({...w});
+    }
+    addLog(pi, 'card', `Total Seizure: relocated ${moved} opponent walls!`);
+    discardCard(pi, idx); selectedCard = null; countCardPlayed(pi);
+    if (isTurnDone()) gameState.phase = 'end_turn';
+    renderAll(); showStatus(`Total Seizure: moved ${moved} opponent walls!`, 'success'); return;
+  }
+
+  // ── PH2: Compel — force opponent to move 1 space (not voluntary, no phantom removal) ──
+  if (card.id === 'PH2') {
+    const dirs = [{r:-1,c:0,label:'UP ↑'},{r:1,c:0,label:'DOWN ↓'},{r:0,c:1,label:'RIGHT →'},{r:0,c:-1,label:'LEFT ←'}];
+    const oppPos = gameState.players[opp].position;
+    const blocked = buildBlockedEdges(gameState.walls, opp);
+    const legalDirs = dirs.filter(d => {
+      const nb = {row:oppPos.row+d.r, col:oppPos.col+d.c};
+      return nb.row>=0&&nb.row<BOARD_SIZE&&nb.col>=0&&nb.col<BOARD_SIZE && !isEdgeBlocked(oppPos, nb, blocked);
+    });
+    if (!legalDirs.length) {
+      discardCard(pi, idx); selectedCard = null; countCardPlayed(pi);
+      if (isTurnDone()) gameState.phase = 'end_turn';
+      renderAll(); showStatus('Compel: opponent had no legal moves to force', 'success'); return;
+    }
+    // Show direction picker modal
+    showDirectionPicker(legalDirs, (chosen) => {
+      const newPos = {row:oppPos.row+chosen.r, col:oppPos.col+chosen.c};
+      gameState.players[opp] = {...gameState.players[opp], position: newPos};
+      addLog(pi, 'card', `Compel: forced opponent ${chosen.label} to (${newPos.row},${newPos.col})`);
+      discardCard(pi, idx); selectedCard = null; countCardPlayed(pi);
+      if (isTurnDone()) gameState.phase = 'end_turn';
+      renderAll(); showStatus('Compel: opponent forced to move!', 'success');
+    });
+    return;
+  }
+
+  // ── PH5: Compel Storm — force opponent up to 3 steps (no phantom removal) ──
+  if (card.id === 'PH5') {
+    const dirs = [{r:-1,c:0},{r:1,c:0},{r:0,c:1},{r:0,c:-1}];
+    let pos = {...gameState.players[opp].position};
+    for (let step = 0; step < 3; step++) {
+      const blocked = buildBlockedEdges(gameState.walls.filter(w => !w.isPhantom), opp);
+      const legalDirs = dirs.filter(d => {
+        const nb = {row:pos.row+d.r, col:pos.col+d.c};
+        return nb.row>=0&&nb.row<BOARD_SIZE&&nb.col>=0&&nb.col<BOARD_SIZE && !isEdgeBlocked(pos, nb, blocked);
+      });
+      if (!legalDirs.length) break;
+      const chosen = legalDirs[Math.floor(Math.random() * legalDirs.length)];
+      pos = {row:pos.row+chosen.r, col:pos.col+chosen.c};
+    }
+    gameState.players[opp] = {...gameState.players[opp], position: pos};
+    addLog(pi, 'card', `Compel Storm: forced opponent up to 3 spaces to (${pos.row},${pos.col})`);
+    discardCard(pi, idx); selectedCard = null; countCardPlayed(pi);
+    if (isTurnDone()) gameState.phase = 'end_turn';
+    renderAll(); showStatus('Compel Storm: opponent blasted 3 spaces!', 'success'); return;
+  }
+
+  // ── AD4: Faction Mirror — copy the last card the opponent played ──
+  if (card.id === 'AD4') {
+    const lastOppCard = gameState.lastOpponentCard;
+    if (!lastOppCard) { showStatus('No opponent card to copy', 'error'); return; }
+    // Inject a copy of opponent's last card into hand and "play" it
+    addLog(pi, 'card', `Faction Mirror: copying opponent's ${lastOppCard.name}`);
+    discardCard(pi, idx);
+    // Add to hand temporarily and select it
+    const mirrored = {...lastOppCard};
+    gameState.players[pi] = {...gameState.players[pi], hand: [...gameState.players[pi].hand, mirrored]};
+    const mirroredIdx = gameState.players[pi].hand.length - 1;
+    // Directly call selectCard to execute the mirrored card
+    selectCard(mirrored.id, mirroredIdx);
+    return;
+  }
+
+  // ── AR3: Blueprint Shift — pick up own wall and re-place it anywhere legal ──
+  if (card.id === 'AR3') {
+    const myWalls = gameState.walls.filter(w => w.owner===pi && !w.isPhantom && !w.permanent && !w.reinforced);
+    if (!myWalls.length) { showStatus('No moveable walls to shift', 'error'); return; }
+    gameState._redeployCardIdx = idx;
+    gameState._redeployCardId = 'AR3';
+    uiMode = 'wallPick';
+    selectedCard = { id:'AR3', idx };
+    renderAll();
+    showStatus('Blueprint Shift — click one of your walls to lift and re-place it', 'active'); return;
+  }
+
+  // ── RC: Reconstruction — pick own wall to remove, draw 1 ──
+  if (card.id === 'RC') {
+    const myWalls = gameState.walls.filter(w => w.owner===pi && !w.isPhantom);
+    if (!myWalls.length) { showStatus('No walls to remove', 'error'); return; }
+    // Enter wallPick mode — player clicks which wall to reconstruct
+    gameState._reconstructCardIdx = idx;
+    uiMode = 'wallReconstruct';
+    selectedCard = { id:'RC', idx };
+    renderAll();
+    showStatus('Reconstruction — click one of your walls to remove it and draw 1', 'active'); return;
+  }
+
+  // ── T3 / old Redirect ──
+  if (card.id === 'T3') {
+    const oppWalls = gameState.walls.filter(w => w.owner===opp && !w.isPhantom && !w.permanent && !w.reinforced);
+    if (!oppWalls.length) { showStatus("No opponent walls to redirect", 'error'); return; }
+    gameState._redirectCardIdx = idx;
+    uiMode = 'wallRedirect';
+    selectedCard = { id:'T3', idx };
+    renderAll();
+    showStatus('Redirect — click an opponent wall to pick it up and relocate it', 'active');
+    return;
+  }
+
+  // ── T4: Scatter — opponent discards 1 random card ──
+  if (card.id === 'T4') {
+    const op = gameState.players[opp];
+    if (op.hand.length) {
+      const ridx = Math.floor(Math.random() * op.hand.length);
+      const gone = op.hand[ridx];
+      gameState.players[opp] = { ...op,
+        hand: op.hand.filter((_,i)=>i!==ridx), discard:[...op.discard, gone] };
+      addLog(pi, 'card', 'Scatter: opponent discarded ' + gone.name);
+    } else {
+      addLog(pi, 'card', 'Scatter: opponent hand was empty');
+    }
+    discardCard(pi, idx); selectedCard = null; countCardPlayed(pi);
+    if (isTurnDone()) gameState.phase = 'end_turn';
+    renderAll(); showStatus('Scatter: opponent discarded!', 'success'); return;
+  }
+
+  // ── S5: Seal — click one of your walls to make it permanent ──
+  if (card.id === 'S5') {
+    const myWalls = gameState.walls.filter(w => w.owner===pi && !w.isPhantom && !w.permanent);
+    if (!myWalls.length) { showStatus('No walls to seal', 'error'); return; }
+    gameState._sealCardIdx = idx;
+    uiMode = 'wallSeal';
+    selectedCard = { id:'S5', idx };
+    renderAll();
+    showStatus('Seal — click one of your walls to make it permanent', 'active'); return;
+  }
+
+  // Generic fallback
+  discardCard(pi, idx); addLog(pi, 'card', 'Played: ' + card.name);
+  selectedCard = null; countCardPlayed(pi);
+  if (isTurnDone()) gameState.phase = 'end_turn';
+  renderAll(); showStatus(card.name + ' played', 'success');
+}
+
+// ── Ultimates ────────────────────────────────────────────────────────
+function activateUltimate(pi) {
+  if (!isHumanSeat(pi)) return;
+  if (gameState.phase !== 'action' || gameState.activePlayer !== pi) {
+    showStatus('Not your action phase', 'error'); return;
+  }
+  const p = gameState.players[pi];
+  if (!p.ultimateReady) { showStatus('Ultimate not charged', 'error'); return; }
+  if (p.ultimateUsed)   { showStatus('Already used this match', 'error'); return; }
+  gameState.players[pi] = { ...p, ultimateUsed:true, ultimateReady:false, ultimateCharge:0 };
+  applyUltimate(pi, gameState.players[pi].champion.id);
+}
+
+function applyUltimate(pi, champId) {
+  const opp = 1 - pi;
+  switch(champId) {
+    case 'magnus':
+      // Living Blueprint: discard hand, refill to full
+      gameState.players[pi] = { ...gameState.players[pi],
+        discard: [...gameState.players[pi].discard, ...gameState.players[pi].hand],
+        hand: [] };
+      drawCards(pi, gameState.players[pi].champion.handSize);
+      addLog(pi,'ultimate','Living Blueprint: hand discarded and refilled');
+      showStatus('Living Blueprint — hand refreshed!','success'); break;
+
+    case 'soren':
+      // Stormpath: ignore all walls this turn (set a flag, check in getLegalMoves)
+      gameState.players[pi] = { ...gameState.players[pi], stormpath: true };
+      hasMoved = false; // grant a fresh move
+      addLog(pi,'ultimate','Stormpath: ignore all walls this turn — move freely!');
+      showStatus('Stormpath — walls are meaningless this turn!','success');
+      renderAll(); return; // skip countCardPlayed; handled when move completes
+
+    case 'thorne': {
+      // Total Reordering: reposition all walls to random legal locations
+      const allWalls = [...gameState.walls.filter(w => !w.isPhantom)];
+      for (const w of allWalls) {
+        gameState.walls = gameState.walls.filter(x => x.id !== w.id);
+        const cands = generateWallCandidates(gameState.players[0].position, w.length);
+        let placed = false;
+        for (const {anchor, orientation} of shuffle(cands)) {
+          if (isWallLegal(anchor, orientation, w.length, gameState.walls,
+              gameState.players[0].position, gameState.players[1].position, false)) {
+            gameState.walls.push({...w, anchor, orientation});
+            placed = true;
+            break;
+          }
+        }
+        // If can't place, restore original — don't lose the wall
+        if (!placed) {
+          gameState.walls.push({...w});
+        }
+      }
+      addLog(pi,'ultimate','Total Reordering: all walls repositioned');
+      showStatus('Total Reordering — entire board reshuffled!','success'); break;
+    }
+
+    case 'nyx':
+      // Veil of Shadows: invisible for 3 turns (render them hidden for opponent)
+      gameState.players[pi] = {...gameState.players[pi],
+        statusEffects:[...(gameState.players[pi].statusEffects||[]),{type:'veil_of_shadows',turnsRemaining:3}]};
+      addLog(pi,'ultimate','Veil of Shadows: invisible for 3 turns');
+      showStatus('Veil of Shadows — you disappear!','success'); break;
+
+    case 'elara': {
+      // Faction Forge: generate 3 random faction cards, play one for free
+      const factions = ['Architects','Pathfinders','Wardens','Phantoms'];
+      const shuffle3 = shuffle(factions).slice(0,3);
+      const generated = shuffle3.map(f => {
+        const fc = Object.values(CARDS).filter(c => c.faction === f);
+        return fc[Math.floor(Math.random() * fc.length)];
+      }).filter(Boolean);
+      if (generated.length) {
+        // Add them to hand temporarily (player can choose to play one)
+        gameState.players[pi] = {...gameState.players[pi],
+          hand: [...gameState.players[pi].hand, ...generated]};
+        addLog(pi,'ultimate','Faction Forge: generated ' + generated.map(c=>c.name).join(', '));
+        showStatus('Faction Forge — choose one card to play from your hand!','success');
+      }
+      break;
+    }
+
+    // Legacy fallback for old champion IDs (safety)
+    case 'vael':
+      gameState.players[pi] = { ...gameState.players[pi], wallLimitCurrent: gameState.players[pi].wallLimitCurrent+3 };
+      addLog(pi,'ultimate','Grand Barricade: +3 wall slots this turn');
+      showStatus('Grand Barricade — 3 extra walls this turn!','success'); break;
+    case 'maren':
+      gameState.players[pi]={...gameState.players[pi],wallLimitCurrent:gameState.players[pi].wallLimitCurrent+4};
+      addLog(pi,'ultimate','Lockdown: +4 wall slots');
+      showStatus('Lockdown — place 4 extra walls!','success'); break;
+  }
+  // Ultimates do NOT consume the card-play budget — player can still move and play a card
+  if (isTurnDone()) gameState.phase = 'end_turn';
+  renderAll(); updateActionBar();
+}
+
+function maybeAIUltimate(pi) {
+  const p = gameState.players[pi];
+  if (!p.ultimateReady || p.ultimateUsed) return false;
+  gameState.players[pi] = { ...p, ultimateUsed:true, ultimateReady:false, ultimateCharge:0 };
+  applyUltimate(pi, p.champion.id);
+  return true;
+}
+function onEndTurnPassives(pi) {
+  const champId = gameState.players[pi].champion.id;
+  const p = gameState.players[pi];
+  // Reset wall limit to base if it was temporarily increased
+  if (p.wallLimitCurrent > p.champion.wallLimit)
+    gameState.players[pi] = { ...gameState.players[pi], wallLimitCurrent: p.champion.wallLimit };
+  if (pi !== 0) opponentLastPlayedWall = cardsPlayedThisTurn > 0;
+  // Clear stormpath at end of turn (safety)
+  if (gameState.players[pi].stormpath)
+    gameState.players[pi] = {...gameState.players[pi], stormpath: false};
+
+  // ── Binding Wall: check if this player ends adjacent to an opponent's binding wall ──
+  // A player is Bound only if they are NOT already on skip_move cooldown.
+  // After the skip_move resolves, a 1-turn bind_cooldown is granted so the player can escape.
+  const opp = 1 - pi;
+  const pos = gameState.players[pi].position;
+  const oppBindingWalls = gameState.walls.filter(w => w.binding && w.owner === opp && !w.isPhantom);
+  const isAdjacent = oppBindingWalls.some(w =>
+    wallEdges(w).some(e =>
+      (e.a.row === pos.row && e.a.col === pos.col) ||
+      (e.b.row === pos.row && e.b.col === pos.col)
+    )
+  );
+  if (isAdjacent) {
+    const currentEffects = gameState.players[pi].statusEffects || [];
+    const hasSkip     = currentEffects.some(e => e.type === 'skip_move'     && e.turnsRemaining > 0);
+    const hasCooldown = currentEffects.some(e => e.type === 'bind_cooldown' && e.turnsRemaining > 0);
+    if (!hasSkip && !hasCooldown) {
+      gameState.players[pi] = {
+        ...gameState.players[pi],
+        statusEffects: [...currentEffects, { type:'skip_move', turnsRemaining:1 }],
+      };
+      addLog(pi, 'system', `Bound! Adjacent to a Binding Wall — move skipped next turn.`);
+    }
+  }
+}
+
+function updateUltimateButton(pi) {
+  const btn = document.getElementById('p'+pi+'-ult-btn');
+  if (!btn) return;
+  const p = gameState.players[pi];
+  const ready    = p.ultimateReady && !p.ultimateUsed;
+  const isMyTurn = gameState.activePlayer===pi && gameState.phase==='action' && isHumanSeat(pi);
+  btn.disabled           = !(ready && isMyTurn);
+  btn.style.opacity      = (ready && isMyTurn) ? '1' : '0.3';
+  btn.style.pointerEvents= (ready && isMyTurn) ? 'auto' : 'none';
+  btn.style.borderColor  = ready ? 'var(--amber)' : '';
+  btn.style.color        = ready ? 'var(--amber)' : '';
+  btn.textContent = p.ultimateUsed ? '⚡ USED' : ready ? '⚡ ACTIVATE ULTIMATE' : '⚡ CHARGING...';
+}
+
+function updateActionBar() {
+  const phase = gameState.phase;
+  const isAction = phase === 'action';
+  const isHuman = isHumanSeat(gameState.activePlayer);
+
+  const btnMove = document.getElementById('btn-move');
+  const btnEnd  = document.getElementById('btn-end');
+
+  if (btnMove) {
+    const pi = gameState.activePlayer;
+    const champId = isHuman && gameState.players[pi] ? gameState.players[pi].champion.id : null;
+    // Soren can take a second move if no card played yet and hasn't used second move
+    const sorenCanMoveAgain = champId === 'soren' && hasMoved && cardsPlayedThisTurn === 0 && !gameState._sorenSecondMove;
+    const isBound = isHuman && (gameState.players[pi]?.statusEffects || []).some(e => e.type === 'skip_move' && e.turnsRemaining > 0);
+    btnMove.disabled = !isAction || (hasMoved && !sorenCanMoveAgain) || !isHuman || aiThinking || isBound;
+    const moveBtnColour = (mp_isMultiplayer && gameState.activePlayer === 1) ? 'primary-p1' : 'primary';
+    btnMove.className = `action-btn ${moveBtnColour}${uiMode==='move' ? ' active' : ''}`;
+    if (isBound) btnMove.textContent = 'BOUND';
+    else if (sorenCanMoveAgain) btnMove.textContent = 'MOVE (2nd)';
+    else btnMove.textContent = 'MOVE';
+  }
+  if (btnEnd) {
+    btnEnd.disabled = phase==='draw' || phase==='ended' || aiThinking;
+  }
+}
+
+// ── Rendering ───────────────────────────────────────────────────────
+function renderAll() {
+  renderPanels();
+  renderBoard();
+  renderLog();
+  updateTurnBanner();
+  updateActionBar();
+  updateUltimateButton(0);
+  updateUltimateButton(1);
+  if (debugVisible) updateDebug();
+}
+
+function renderPanels() {
+  for (const pi of [0,1]) {
+    const p = gameState.players[pi];
+    const def = p.champion;
+    const prefix = `p${pi}`;
+
+    setText(`${prefix}-name`, def.name);
+    setText(`${prefix}-title`, def.title);
+    setText(`${prefix}-faction`, def.faction);
+    setText(`${prefix}-walls`, `${p.wallsInPlay}/${p.wallLimitCurrent}`);
+    setText(`${prefix}-hand-count`, `${p.hand.length}/${def.handSize}`);
+    setText(`${prefix}-speed`, def.moveSpeed);
+    setText(`${prefix}-draw`, def.cardDraw);
+    setText(`${prefix}-deck-count`, `(deck: ${p.deck.length})`);
+    setText(`${prefix}-ult-name`, def.ultimateName);
+    setText(`${prefix}-passive-name`, def.passiveName);
+    setText(`${prefix}-passive-desc`, def.passiveDesc);
+    setText(`${prefix}-charge-text`, `${p.ultimateCharge} / ${def.ultimateCost}`);
+
+    const badge = document.getElementById(`${prefix}-faction`);
+    if (badge) badge.className = `faction-badge faction-${def.faction}`;
+
+    renderChargeBar(`${prefix}-charge-bar`, p.ultimateCharge, def.ultimateCost, p.ultimateReady);
+    renderWallPips(`${prefix}-wall-pips`, p.wallsInPlay, p.wallLimitCurrent);
+
+    // Status chips
+    const statusEl = document.getElementById(`${prefix}-status`);
+    if (statusEl) {
+      statusEl.innerHTML = p.statusEffects.filter(e=>e.turnsRemaining>0)
+        .map(e => {
+          const labels = { skip_move:'BOUND', bind_cooldown:'COOLDOWN', veil_of_shadows:'VEILED' };
+          const label = labels[e.type] || e.type.replace(/_/g,' ').toUpperCase();
+          return `<span class="status-chip">${label} (${e.turnsRemaining}t)</span>`;
+        }).join('');
+    }
+
+    // Hand — player 0 always sees own cards; AI hand shown as hidden (unless Thorne's Stare)
+    const handEl = document.getElementById(`${prefix}-hand`);
+    if (handEl) {
+      const isThorne = gameState.players[0].champion.id === 'thorne' && pi === AI_PLAYER;
+      if (!isHumanSeat(pi) && !isThorne) {
+        handEl.innerHTML = p.hand.map(()=>
+          `<div class="hidden-card"><div class="hidden-card-icon"></div><span class="hidden-card-label">HIDDEN</span></div>`
+        ).join('');
+      } else {
+        const isActive = pi === gameState.activePlayer && gameState.phase === 'action' && isHumanSeat(pi);
+        handEl.innerHTML = p.hand.map((card,idx) => renderCard(card, idx, pi, isActive)).join('');
+      }
+    }
+  }
+}
+
+function renderCard(card, idx, pi, interactive) {
+  const isSel = selectedCard && selectedCard.idx === idx;
+  const cls = `card${isSel?' selected':''}${!interactive?' card-disabled':''}`;
+  return `<div class="${cls}" onclick="${interactive?`selectCard('${card.id}',${idx})`:''}">
+    <div class="card-header">
+      <span class="card-name"><span class="rarity-dot rarity-${card.rarity}"></span>${card.name}</span>
+      <span class="card-type-badge type-${card.type}">${card.type}</span>
+    </div>
+    <div class="card-desc">${card.desc}</div>
+  </div>`;
+}
+
+function renderChargeBar(id, charge, cost, ready) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.innerHTML = Array.from({length:cost},(_,i) => {
+    const cls = i<charge ? (ready?'charge-pip ready':'charge-pip filled') : 'charge-pip';
+    return `<div class="${cls}"></div>`;
+  }).join('');
+}
+
+function renderWallPips(id, inPlay, limit) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.innerHTML = Array.from({length:limit},(_,i)=>
+    `<div class="wall-pip${i<inPlay?' filled':''}"></div>`).join('');
+}
+
+function renderBoard() {
+  const container = document.getElementById('board-container');
+  if (!container) return;
+
+  const totalSize = BOARD_SIZE*CELL + (BOARD_SIZE-1)*GAP;
+
+  const p0Name = gameState.players[0].champion.name.toUpperCase();
+  const p1Name = gameState.players[1].champion.name.toUpperCase();
+  container.innerHTML = `
+    <div style="position:absolute;top:-20px;left:0;right:0;text-align:center;font-size:9px;color:var(--p1-dim);letter-spacing:.15em;font-family:'JetBrains Mono',monospace;">${mp_isMultiplayer ? '← ' + p1Name + ' GOAL →' : '← AI (' + p1Name + ') GOAL →'}</div>
+    <div class="board-grid" id="board-grid"></div>
+    <div class="wall-layer" id="wall-layer" style="position:absolute;top:${GAP}px;left:${GAP}px;width:${totalSize}px;height:${totalSize}px;"></div>
+    <div id="wall-overlay" style="position:absolute;top:${GAP}px;left:${GAP}px;width:${totalSize}px;height:${totalSize}px;pointer-events:none;"></div>
+    <div style="position:absolute;bottom:-20px;left:0;right:0;text-align:center;font-size:9px;color:var(--amber-dim);letter-spacing:.15em;font-family:'JetBrains Mono',monospace;">← ${mp_isMultiplayer ? p0Name : 'YOUR (' + p0Name + ')'} GOAL →</div>
+  `;
+
+  const grid = document.getElementById('board-grid');
+  const overrideSpeed = selectedCard && selectedCard.overrideSpeed;
+  const legalMoves = uiMode==='move' ? getLegalMoves(gameState, gameState.activePlayer, overrideSpeed) : [];
+  const legalSet = new Set(legalMoves.map(m=>`${m.row},${m.col}`));
+
+  for (let r=0; r<BOARD_SIZE; r++) {
+    for (let c=0; c<BOARD_SIZE; c++) {
+      const isLegal = legalSet.has(`${r},${c}`);
+      const cell = document.createElement('div');
+      cell.className = `cell${isLegal?' legal-move':''}${r===0?' goal-row-p0':''}${r===BOARD_SIZE-1?' goal-row-p1':''}`;
+      cell.dataset.row = r; cell.dataset.col = c;
+      if (isLegal) cell.onclick = () => handleCellClick(r, c);
+      grid.appendChild(cell);
+    }
+  }
+
+  // Pieces
+  for (const pi of [0,1]) {
+    const pos = gameState.players[pi].position;
+    const cellEl = grid.children[pos.row*BOARD_SIZE + pos.col];
+    if (cellEl) {
+      const isActive = pi===gameState.activePlayer && !aiThinking;
+      const piece = document.createElement('div');
+      piece.className = `champion-piece p${pi}${isActive?' active-piece':''}`;
+      piece.textContent = gameState.players[pi].champion.name[0];
+      cellEl.appendChild(piece);
+    }
+  }
+
+  renderWalls();
+  if (uiMode==='wall' && selectedCard) renderWallHotspots();
+  if (uiMode==='wallPick') { /* walls rendered with pick handlers above */ }
+}
+
+function renderWalls() {
+  const layer = document.getElementById('wall-layer');
+  if (!layer) return;
+  layer.innerHTML = '';
+  // Toggle pick-mode class to enable/disable clicks
+  if (uiMode === 'wallPick' || uiMode === 'wallRedirect' || uiMode === 'wallSeal' || uiMode === 'wallPunch' || uiMode === 'wallReinforce' || uiMode === 'wallReconstruct') {
+    layer.classList.add('pick-mode');
+  } else {
+    layer.classList.remove('pick-mode');
+  }
+
+  for (const wall of gameState.walls) {
+
+    const el = document.createElement('div');
+    const _activePi = gameState.activePlayer;
+    const isPickable    = uiMode === 'wallPick'      && wall.owner === _activePi && !wall.isPhantom && !wall.permanent;
+    const isRedirect    = uiMode === 'wallRedirect'  && wall.owner === (1-_activePi) && !wall.isPhantom && !wall.permanent;
+    const isSealable    = uiMode === 'wallSeal'      && wall.owner === _activePi && !wall.isPhantom && !wall.permanent;
+    const isPunchable   = uiMode === 'wallPunch'     && !wall.isPhantom && !wall.permanent && !wall.reinforced && !wall.immune;
+    const isReinforceable = uiMode === 'wallReinforce' && wall.owner === gameState.activePlayer && !wall.isPhantom && !wall.reinforced;
+    const isReconstructable = uiMode === 'wallReconstruct' && wall.owner === gameState.activePlayer && !wall.isPhantom;
+    // Owner of a phantom wall sees it with a distinct teal tint
+    const localPlayer = (typeof mp_isMultiplayer !== 'undefined' && mp_isMultiplayer) ? mp_localSeat : 0;
+    const isOwnPhantom = wall.isPhantom && wall.owner === localPlayer;
+    let cls = `wall-segment${wall.isPhantom?' phantom':''} owner-${wall.owner}${isOwnPhantom?' phantom-own':''}`;
+    if (wall.immune || wall.permanent || wall.reinforced) cls += ' wall-immune';
+    if (wall.reinforced) cls += ' wall-reinforced';
+    if (wall.binding) cls += ' wall-binding';
+    if (isPickable)       cls += ' wall-pickable';
+    if (isRedirect)       cls += ' wall-pickable wall-redirect';
+    if (isSealable)       cls += ' wall-pickable wall-sealable';
+    if (isPunchable)      cls += ' wall-pickable wall-punchable';
+    if (isReinforceable)  cls += ' wall-pickable wall-reinforceable';
+    if (isReconstructable) cls += ' wall-pickable wall-reconstructable';
+    el.className = cls;
+    Object.assign(el.style, wallVisualPos(wall));
+
+    if (isPickable) {
+      el.style.cursor = 'pointer';
+      el.addEventListener('click', () => pickWallForRedeploy(wall));
+    }
+    if (isRedirect) {
+      el.style.cursor = 'pointer';
+      el.addEventListener('click', () => pickWallForRedirect(wall));
+    }
+    if (isSealable) {
+      el.style.cursor = 'pointer';
+      el.addEventListener('click', () => pickWallForSeal(wall));
+    }
+    if (isReinforceable) {
+      el.style.cursor = 'pointer';
+      el.addEventListener('click', () => pickWallForReinforce(wall));
+    }
+    if (isReconstructable) {
+      el.style.cursor = 'pointer';
+      el.addEventListener('click', () => pickWallForReconstruct(wall));
+    }
+    if (isPunchable) {
+      // Render each tile as a separate hoverable/clickable segment
+      for (let t = 0; t < wall.length; t++) {
+        const tileEl = document.createElement('div');
+        tileEl.className = cls + ` wall-tile-punch ${wall.orientation}-tile`;
+        Object.assign(tileEl.style, wallTileVisualPos(wall, t));
+        tileEl.style.cursor = 'crosshair';
+        tileEl.style.zIndex = '12';
+        tileEl.title = wall.length === 1 ? 'Destroy wall' : (
+          t === 0 ? 'Remove start tile' :
+          t === wall.length - 1 ? 'Remove end tile' :
+          'Punch gap through middle'
+        );
+        tileEl.addEventListener('click', (e) => {
+          e.stopPropagation();
+          pickTileForPunch(wall, t);
+        });
+        layer.appendChild(tileEl);
+      }
+      // Don't append the full-wall el in punch mode — only tiles
+      continue;
+    }
+
+    layer.appendChild(el);
+  }
+}
+
+function pickWallForRedeploy(wall) {
+  if (uiMode !== 'wallPick') return;
+  const pi = gameState.activePlayer;
+  const cardIdx = gameState._redeployCardIdx;
+  const cardId = gameState._redeployCardId || 'A4';
+
+  // Lift the wall
+  const len = wall.length;
+  const dur = wall.durable || false;
+  gameState.walls = gameState.walls.filter(w => w.id !== wall.id);
+  gameState.players[pi] = { ...gameState.players[pi],
+    wallsInPlay: Math.max(0, gameState.players[pi].wallsInPlay - 1) };
+
+  // Discard the card
+  discardCard(pi, cardIdx);
+  gameState._redeployCardIdx = null;
+  gameState._redeployCardId = null;
+
+  // Enter wall placement — countCardPlayed will fire via onWallPlaced
+  selectedCard = { id: cardId, idx:-1, length:len, isPhantom:false, isDurable:dur, _redeployed:true };
+  uiMode = 'wall';
+  addLog(pi, 'card', (cardId === 'AR3' ? 'Blueprint Shift' : 'Redeploy') + ': wall lifted — placing it again');
+  renderAll();
+  showStatus((cardId === 'AR3' ? 'Blueprint Shift' : 'Redeploy') + ': wall lifted — now place it in a new position', 'active');
+}
+
+function pickWallForRedirect(wall) {
+  if (uiMode !== 'wallRedirect') return;
+  const pi  = gameState.activePlayer;
+  const opp = 1 - pi;
+  const cardIdx = gameState._redirectCardIdx;
+
+  // Lift the opponent wall — it keeps counting toward OPPONENT's wall count
+  // (the wall is now in transit, owned by opponent but placed by player)
+  const len = wall.length;
+  gameState.walls = gameState.walls.filter(w => w.id !== wall.id);
+  // NOTE: wallsInPlay NOT decremented — wall still counts as opponent's
+  // It will be re-added to the board owned by opponent via executePlaceWall below
+
+  discardCard(pi, cardIdx);
+  gameState._redirectCardIdx = null;
+
+  addLog(pi, 'card', 'Redirect: lifted opponent wall (' + len + '-tile) — placing it');
+  // Enter wall placement — wall placed as OPPONENT's piece (not player's)
+  // We store the opponent ownership in selectedCard for executePlaceWall to use
+  selectedCard = { id:'T3', idx:-1, length:len, isPhantom:false, isDurable:false, _redirectOwner:opp };
+  uiMode = 'wall';
+  renderAll();
+  showStatus("Redirect: place the opponent's wall in a new location", 'active');
+}
+
+function pickWallForSeal(wall) {
+  if (uiMode !== 'wallSeal') return;
+  const pi = gameState.activePlayer;
+  const cardIdx = gameState._sealCardIdx;
+  gameState.walls = gameState.walls.map(w =>
+    w.id === wall.id ? { ...w, permanent: true, immune: true } : w
+  );
+  discardCard(pi, cardIdx);
+  gameState._sealCardIdx = null;
+  selectedCard = null;
+  countCardPlayed(pi);
+  uiMode = 'idle';
+  addLog(pi, 'card', 'Seal: wall permanently sealed');
+  if (isTurnDone()) gameState.phase = 'end_turn';
+  renderAll();
+  showStatus('Wall permanently sealed!', 'success');
+}
+
+function pickTileForPunch(wall, tileIndex) {
+  if (uiMode !== 'wallPunch') return;
+  const pi      = gameState.activePlayer;
+  const cardIdx = gameState._punchCardIdx;
+  const len     = wall.length;
+
+  if (len <= 1) {
+    // Single-tile wall: destroy it entirely
+    gameState.walls = gameState.walls.filter(w => w.id !== wall.id);
+    gameState.players[wall.owner] = {
+      ...gameState.players[wall.owner],
+      wallsInPlay: Math.max(0, gameState.players[wall.owner].wallsInPlay - 1)
+    };
+    addLog(pi, 'card', 'Punch Through: wall destroyed');
+    showStatus('Wall destroyed!', 'success');
+
+  } else if (tileIndex === 0) {
+    // Remove the first tile: advance anchor by 1, shorten by 1
+    const newAnchor = wall.orientation === 'H'
+      ? {row: wall.anchor.row, col: wall.anchor.col + 1}
+      : {row: wall.anchor.row + 1, col: wall.anchor.col};
+    gameState.walls = gameState.walls.map(w =>
+      w.id === wall.id ? {...w, anchor: newAnchor, length: len - 1} : w
+    );
+    addLog(pi, 'card', 'Punch Through: removed start tile');
+    showStatus('Gap created at wall start!', 'success');
+
+  } else if (tileIndex === len - 1) {
+    // Remove the last tile: just shorten
+    gameState.walls = gameState.walls.map(w =>
+      w.id === wall.id ? {...w, length: len - 1} : w
+    );
+    addLog(pi, 'card', 'Punch Through: removed end tile');
+    showStatus('Gap created at wall end!', 'success');
+
+  } else {
+    // Remove a middle tile: split into two fragments
+    // Left fragment: from tile 0 to tileIndex-1
+    const leftLen = tileIndex;
+    const rightLen = len - tileIndex - 1;
+    const rightAnchor = wall.orientation === 'H'
+      ? {row: wall.anchor.row, col: wall.anchor.col + tileIndex + 1}
+      : {row: wall.anchor.row + tileIndex + 1, col: wall.anchor.col};
+
+    // Replace original wall with left fragment
+    gameState.walls = gameState.walls.map(w =>
+      w.id === wall.id ? {...w, length: leftLen} : w
+    );
+    // Add right fragment — no extra wallsInPlay cost (it's a fragment, not a new wall)
+    const rightFrag = {
+      ...wall,
+      id: `w${gameState.nextWallId++}`,
+      anchor: rightAnchor,
+      length: rightLen,
+      placedOnTurn: wall.placedOnTurn,
+    };
+    gameState.walls = [...gameState.walls, rightFrag];
+    addLog(pi, 'card', 'Punch Through: gap punched through middle of wall');
+    showStatus('Gap punched through wall!', 'success');
+  }
+
+  discardCard(pi, cardIdx);
+  gameState._punchCardIdx = null;
+  selectedCard = null;
+  countCardPlayed(pi);
+  uiMode = 'idle';
+  if (isTurnDone()) gameState.phase = 'end_turn';
+  renderAll();
+}
+
+function pickWallForReinforce(wall) {
+  if (uiMode !== 'wallReinforce') return;
+  const pi = gameState.activePlayer;
+  const cardIdx = gameState._reinforceCardIdx;
+  gameState.walls = gameState.walls.map(w =>
+    w.id === wall.id ? { ...w, reinforced: true, immune: true, permanent: true } : w
+  );
+  discardCard(pi, cardIdx);
+  gameState._reinforceCardIdx = null;
+  selectedCard = null;
+  countCardPlayed(pi);
+  uiMode = 'idle';
+  addLog(pi, 'card', 'Reinforce: wall permanently reinforced — immune to destruction and movement');
+  if (isTurnDone()) gameState.phase = 'end_turn';
+  renderAll();
+  showStatus('Wall reinforced — immune to destruction and movement!', 'success');
+}
+
+function pickWallForReconstruct(wall) {
+  if (uiMode !== 'wallReconstruct') return;
+  const pi = gameState.activePlayer;
+  const cardIdx = gameState._reconstructCardIdx;
+  gameState.walls = gameState.walls.filter(w => w.id !== wall.id);
+  gameState.players[pi] = {...gameState.players[pi], wallsInPlay: Math.max(0, gameState.players[pi].wallsInPlay - 1)};
+  drawCards(pi, 1);
+  discardCard(pi, cardIdx);
+  gameState._reconstructCardIdx = null;
+  selectedCard = null;
+  countCardPlayed(pi);
+  uiMode = 'idle';
+  addLog(pi, 'card', 'Reconstruction: removed own wall, drew 1');
+  if (isTurnDone()) gameState.phase = 'end_turn';
+  renderAll();
+  showStatus('Reconstruction: wall removed, drew 1!', 'success');
+}
+
+function pickWallForPunch(wall) {
+  pickTileForPunch(wall, 0);
+}
+
+function wallTileVisualPos(wall, tileIndex) {
+  // Returns visual pos with expanded click area (24px thick) centered on the wall line
+  const {anchor, orientation} = wall;
+  const step = CELL + GAP;
+  const HIT = 24; // expanded hit area in px
+  if (orientation === 'H') {
+    return {
+      left:     `${(anchor.col + tileIndex) * step}px`,
+      top:      `${(anchor.row + 1) * step - GAP - (HIT - 6) / 2}px`,
+      width:    `${step - GAP}px`,
+      height:   `${HIT}px`,
+      position: 'absolute',
+    };
+  } else {
+    return {
+      left:     `${(anchor.col + 1) * step - GAP - (HIT - 6) / 2}px`,
+      top:      `${(anchor.row + tileIndex) * step}px`,
+      width:    `${HIT}px`,
+      height:   `${step - GAP}px`,
+      position: 'absolute',
+    };
+  }
+}
+
+function wallVisualPos(wall) {
+  const {anchor, orientation, length} = wall;
+  const step = CELL+GAP;
+  if (orientation==='H') {
+    return {left:`${anchor.col*step}px`, top:`${(anchor.row+1)*step-GAP}px`, width:`${length*step-GAP}px`, height:'6px', position:'absolute'};
+  } else {
+    return {left:`${(anchor.col+1)*step-GAP}px`, top:`${anchor.row*step}px`, width:'6px', height:`${length*step-GAP}px`, position:'absolute'};
+  }
+}
+
+// ── Edge-snapping wall placement ─────────────────────────────────────
+// Each cell listens to mousemove. We compute where the cursor is within
+// the cell (top/bottom third → H wall on that edge, left/right third →
+// V wall on that edge) and snap the preview accordingly.
+
+let previewEl = null;
+let currentWallSpec = null; // {anchor, orientation} being previewed
+
+function renderWallHotspots() {
+  const overlay = document.getElementById('wall-overlay');
+  if (!overlay) return;
+  overlay.innerHTML = '';
+
+  const length = selectedCard.length || 2;
+  const isPhantom = selectedCard.isPhantom || false;
+  const isDurable = selectedCard.isDurable || false;
+  const step = CELL + GAP;
+
+  // One transparent cell-sized div per cell to capture mouse events
+  for (let r = 0; r < BOARD_SIZE; r++) {
+    for (let c = 0; c < BOARD_SIZE; c++) {
+      const el = document.createElement('div');
+      el.style.cssText = `position:absolute;left:${c*step}px;top:${r*step}px;width:${CELL}px;height:${CELL}px;pointer-events:auto;cursor:crosshair;`;
+
+      el.addEventListener('mousemove', (e) => {
+        const rect = el.getBoundingClientRect();
+        const lx = e.clientX - rect.left;   // 0–CELL
+        const ly = e.clientY - rect.top;
+
+        let orientation, anchor;
+        const EDGE = CELL * 0.35; // inner 30% = vertical edge zone
+
+        if (lx < EDGE) {
+          // Left edge → V wall starting at (r, c-1) so the wall is between col c-1 and c
+          orientation = 'V';
+          anchor = {row: r, col: c - 1};
+        } else if (lx > CELL - EDGE) {
+          // Right edge → V wall between col c and c+1
+          orientation = 'V';
+          anchor = {row: r, col: c};
+        } else if (ly < EDGE) {
+          // Top edge → H wall between row r-1 and r
+          orientation = 'H';
+          anchor = {row: r - 1, col: c};
+        } else {
+          // Bottom edge → H wall between row r and r+1
+          orientation = 'H';
+          anchor = {row: r, col: c};
+        }
+
+        // Bounds check anchor
+        if (!wallInBounds(anchor, orientation, length)) {
+          // Try flipping anchor to keep within bounds
+          if (orientation === 'H') anchor = {row: Math.max(0, Math.min(BOARD_SIZE-2, anchor.row)), col: Math.max(0, Math.min(BOARD_SIZE-length, anchor.col))};
+          else anchor = {row: Math.max(0, Math.min(BOARD_SIZE-length, anchor.row)), col: Math.max(0, Math.min(BOARD_SIZE-2, anchor.col))};
+          if (!wallInBounds(anchor, orientation, length)) return;
+        }
+
+        const specKey = `${orientation},${anchor.row},${anchor.col}`;
+        const prevKey = currentWallSpec ? `${currentWallSpec.orientation},${currentWallSpec.anchor.row},${currentWallSpec.anchor.col}` : null;
+        if (specKey !== prevKey) {
+          currentWallSpec = {anchor, orientation, length, isPhantom, isDurable};
+          showWallPreview(anchor, orientation, length, isPhantom);
+        }
+      });
+
+      el.addEventListener('mouseleave', () => {
+        // Only hide if we leave the whole board area, not just a cell
+        // We let the next cell's mousemove re-draw; clear on board leave
+      });
+
+      el.addEventListener('click', () => {
+        if (!currentWallSpec) return;
+        const {anchor, orientation, length, isPhantom, isDurable} = currentWallSpec;
+        handleWallClick(anchor, orientation, length, isPhantom, isDurable);
+      });
+
+      overlay.appendChild(el);
+    }
+  }
+
+  // Hide preview when mouse leaves the whole board
+  overlay.addEventListener('mouseleave', () => {
+    hideWallPreview();
+    currentWallSpec = null;
+  });
+}
+
+function showWallPreview(anchor, orientation, length, isPhantom) {
+  hideWallPreview();
+  const layer = document.getElementById('wall-layer');
+  if (!layer) return;
+  const legal = isPhantom || isWallLegal(anchor, orientation, length, gameState.walls,
+    gameState.players[0].position, gameState.players[1].position, isPhantom);
+  previewEl = document.createElement('div');
+  previewEl.className = `wall-preview-segment${legal ? '' : ' invalid'}`;
+  Object.assign(previewEl.style, wallVisualPos({anchor, orientation, length}));
+  layer.appendChild(previewEl);
+}
+
+function hideWallPreview() {
+  if (previewEl) { previewEl.remove(); previewEl = null; }
+}
+
+function updateTurnBanner() {
+  const banner = document.getElementById('turn-banner');
+  const pi = gameState.activePlayer;
+  const phase = gameState.phase;
+  const champion = gameState.players[pi].champion.name;
+  const isAI = !isHumanSeat(pi);
+  const phaseLabel = {draw:'DRAW', action: isAI ? 'AI THINKING' : 'ACTION', end_turn:'END', ended:'GAME OVER'}[phase] || phase;
+  if (banner) {
+    banner.textContent = `${isAI?'AI':'YOU'} — ${champion.toUpperCase()} — ${phaseLabel}`;
+    banner.className = `turn-banner p${pi}`;
+  }
+  const headerTurn = document.getElementById('header-turn');
+  if (headerTurn) headerTurn.textContent = `TURN ${gameState.turnNumber}`;
+  const headerPhase = document.getElementById('header-phase');
+  if (headerPhase) {
+    headerPhase.innerHTML = `<span class="phase-dot"></span>${phaseLabel}`;
+    headerPhase.className = `phase-display phase-${phase}`;
+  }
+}
+
+function renderLog() {
+  const logEl = document.getElementById('game-log');
+  if (!logEl) return;
+  logEl.innerHTML = gameState.log.slice(-60).map(e => {
+    const isAI = e.player === AI_PLAYER;
+    const tag = e.type==='system' ? `<span class="sys-tag">SYS</span>` : `<span class="${isAI?'p1-tag':'p0-tag'}">${isAI?'AI ':'YOU'}</span>`;
+    return `<div class="log-entry"><span class="turn-num">[T${e.turn}]</span>${tag} ${e.message}</div>`;
+  }).join('');
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function showDirectionPicker(dirs, onChoose) {
+  const existing = document.getElementById('direction-picker');
+  if (existing) existing.remove();
+
+  const overlay = document.createElement('div');
+  overlay.id = 'direction-picker';
+  overlay.style.cssText = `
+    position:fixed; top:0; left:0; width:100%; height:100%;
+    background:rgba(0,0,0,0.75); z-index:200;
+    display:flex; align-items:center; justify-content:center;
+    font-family:'JetBrains Mono',monospace;
+  `;
+
+  const panel = document.createElement('div');
+  panel.style.cssText = `
+    background:#1a1a2a; border:1px solid #3a2a5a;
+    border-radius:10px; padding:24px 28px;
+    display:flex; flex-direction:column; align-items:center; gap:16px;
+    box-shadow:0 0 30px rgba(100,60,180,0.3);
+  `;
+
+  const header = document.createElement('div');
+  header.innerHTML = `<span style="color:#a78bfa;font-size:10px;letter-spacing:0.18em;text-transform:uppercase">Compel</span><br>
+    <span style="color:#d0c8e0;font-size:13px;margin-top:4px;display:block">Push opponent which direction?</span>`;
+  panel.appendChild(header);
+
+  // D-pad grid: [_, UP, _] [LEFT, _, RIGHT] [_, DOWN, _]
+  const grid = document.createElement('div');
+  grid.style.cssText = 'display:grid;grid-template-columns:56px 56px 56px;grid-template-rows:56px 56px 56px;gap:6px;';
+
+  const dpadMap = [
+    [null, 'UP ↑', null],
+    ['LEFT ←', null, 'RIGHT →'],
+    [null, 'DOWN ↓', null],
+  ];
+
+  dpadMap.forEach(row => row.forEach(label => {
+    const cell = document.createElement('div');
+    cell.style.cssText = 'width:56px;height:56px;display:flex;align-items:center;justify-content:center;';
+    if (label) {
+      const dir = dirs.find(d => d.label === label);
+      const btn = document.createElement('button');
+      const shortLabel = label.slice(-1); // just the arrow character
+      btn.textContent = shortLabel;
+      btn.disabled = !dir;
+      btn.style.cssText = `
+        width:100%;height:100%;font-size:22px;border-radius:8px;cursor:${dir?'pointer':'default'};
+        border:1px solid ${dir?'#5a3a8a':'#2a2a3a'};
+        background:${dir?'#2a1a4a':'#161620'}; color:${dir?'#c0a8f0':'#383850'};
+        transition:background 0.12s,box-shadow 0.12s;
+        font-family:inherit;
+      `;
+      if (dir) {
+        btn.onmouseenter = () => { btn.style.background='#3d2070'; btn.style.boxShadow='0 0 12px rgba(160,100,255,0.4)'; };
+        btn.onmouseleave = () => { btn.style.background='#2a1a4a'; btn.style.boxShadow=''; };
+        btn.onclick = () => { overlay.remove(); onChoose(dir); };
+      }
+      cell.appendChild(btn);
+    }
+    grid.appendChild(cell);
+  }));
+
+  panel.appendChild(grid);
+
+  const cancel = document.createElement('button');
+  cancel.textContent = 'CANCEL';
+  cancel.style.cssText = `
+    margin-top:4px;padding:6px 24px;font-size:10px;letter-spacing:0.14em;
+    background:transparent;border:1px solid #3a2a5a;color:#6a5a8a;
+    border-radius:4px;cursor:pointer;font-family:inherit;text-transform:uppercase;
+  `;
+  cancel.onclick = () => overlay.remove();
+  panel.appendChild(cancel);
+
+  overlay.appendChild(panel);
+  document.body.appendChild(overlay);
+}
+
+function showStatus(msg, type='') {
+  const el = document.getElementById('mode-indicator');
+  if (el) { el.textContent = msg; el.className = `mode-indicator${type?' '+type:''}`; }
+}
+
+// ── Victory ─────────────────────────────────────────────────────────
+// ── Game record builder ──────────────────────────────────────────────
+function buildGameRecord(winner) {
+  const p0 = gameState.players[0], p1 = gameState.players[1];
+  const log = gameState.log;
+
+  // Per-player action counts
+  function countActions(pi) {
+    const moves  = log.filter(e => e.player===pi && e.type==='move').length;
+    const walls  = log.filter(e => e.player===pi && e.type==='wall').length;
+    const cards  = log.filter(e => e.player===pi && e.type==='card').length;
+    const cardsPlayed = log.filter(e => e.player===pi && e.type==='card')
+      .map(e => { const m = e.message.match(/Played[^:]*:\s*(.+?)(?:\s*—|$)/); return m?m[1].trim():null; })
+      .filter(Boolean);
+    return { moves, walls, cards, cardsPlayed };
+  }
+
+  const p0stats = countActions(0);
+  const p1stats = countActions(1);
+
+  return {
+    id: Date.now(),
+    timestamp: new Date().toISOString(),
+    difficulty: aiDifficulty,
+    turns: gameState.turnNumber,
+    winner: winner === 0 ? 'player' : 'ai',
+    player: {
+      championId:   p0.champion.id,
+      championName: p0.champion.name,
+      faction:      p0.champion.faction,
+      moves:        p0stats.moves,
+      wallsPlaced:  p0stats.walls,
+      cardsPlayed:  p0stats.cards,
+      cardNames:    p0stats.cardsPlayed,
+      finalRow:     p0.position.row,
+    },
+    ai: {
+      championId:   p1.champion.id,
+      championName: p1.champion.name,
+      faction:      p1.champion.faction,
+      moves:        p1stats.moves,
+      wallsPlaced:  p1stats.walls,
+      cardsPlayed:  p1stats.cards,
+      cardNames:    p1stats.cardsPlayed,
+      finalRow:     p1.position.row,
+    },
+    totalWalls: gameState.walls.filter(w => !w.isPhantom).length,
+  };
+}
+
+async function saveGameRecord(record) {
+  try {
+    let records = [];
+    const existing = await storageGet('corridors:games');
+    if (existing) records = JSON.parse(existing.value);
+    records.push(record);
+    if (records.length > 500) records = records.slice(-500);
+    await storageSet('corridors:games', JSON.stringify(records));
+    console.log('[CORRIDORS] Game saved. Total:', records.length);
+  } catch(e) {
+    console.warn('[CORRIDORS] Save failed:', e);
+  }
+}
+
+function showVictory(winner) {
+  const record = buildGameRecord(winner);
+  saveGameRecord(record); // async, fire-and-forget
+
+  const overlay = document.getElementById('victory-overlay');
+  if (!overlay) return;
+  overlay.style.display = 'flex';
+
+  const title    = document.getElementById('victory-title');
+  const subtitle = document.getElementById('victory-subtitle');
+  const champion = gameState.players[winner].champion.name;
+
+  if (title) {
+    title.textContent  = (mp_isMultiplayer ? (winner === mp_localSeat ? 'YOU WIN' : (mp_opponentName||'OPPONENT').toUpperCase() + ' WINS') : (winner === AI_PLAYER ? 'AI WINS' : 'YOU WIN'));
+    title.style.color  = winner === 0 ? 'var(--p0)' : 'var(--p1)';
+  }
+  if (subtitle) subtitle.textContent = `${champion} reached the goal line — Turn ${gameState.turnNumber}`;
+
+  const vt = document.getElementById('v-turns');
+  if (vt) vt.textContent = gameState.turnNumber;
+  const vw = document.getElementById('v-walls');
+  if (vw) vw.textContent = gameState.walls.filter(w => !w.isPhantom).length;
+
+  // ── Post-game summary panel ──────────────────────────────────────
+  const existing = document.getElementById('postgame-summary');
+  if (existing) existing.remove();
+
+  const p0 = gameState.players[0], p1 = gameState.players[1];
+  const loser = 1 - winner;
+
+  const summaryHTML = `
+  <div id="postgame-summary" style="
+    margin-top:24px; width:520px; max-width:90vw;
+    border:1px solid var(--border); background:var(--surface);
+  ">
+    <div style="display:grid;grid-template-columns:1fr 1fr;border-bottom:1px solid var(--border);">
+      <div style="padding:12px 16px;border-right:1px solid var(--border);">
+        <div style="font-size:9px;letter-spacing:.15em;color:var(--text-dim);margin-bottom:6px;text-transform:uppercase;">
+          ${winner===0?'▲ WINNER':'▼ LOSER'} · YOU · ${p0.champion.faction}
+        </div>
+        <div style="font-family:'Teko',sans-serif;font-size:22px;color:var(--p0);letter-spacing:.05em;">${p0.champion.name}</div>
+        <div style="margin-top:10px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;">
+          ${statBox('MOVES', record.player.moves)}
+          ${statBox('WALLS', record.player.wallsPlaced)}
+          ${statBox('CARDS', record.player.cardsPlayed)}
+        </div>
+      </div>
+      <div style="padding:12px 16px;">
+        <div style="font-size:9px;letter-spacing:.15em;color:var(--text-dim);margin-bottom:6px;text-transform:uppercase;">
+          ${winner===1?'▲ WINNER':'▼ LOSER'} · AI (${aiDifficulty.toUpperCase()}) · ${p1.champion.faction}
+        </div>
+        <div style="font-family:'Teko',sans-serif;font-size:22px;color:var(--p1);letter-spacing:.05em;">${p1.champion.name}</div>
+        <div style="margin-top:10px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;">
+          ${statBox('MOVES', record.ai.moves)}
+          ${statBox('WALLS', record.ai.wallsPlaced)}
+          ${statBox('CARDS', record.ai.cardsPlayed)}
+        </div>
+      </div>
+    </div>
+    <div style="padding:10px 16px;display:flex;gap:24px;align-items:center;">
+      <div style="font-size:9px;color:var(--text-dim);letter-spacing:.1em;">
+        <span style="color:var(--text-bright);">${gameState.turnNumber}</span> TURNS
+        &nbsp;·&nbsp;
+        <span style="color:var(--text-bright);">${record.totalWalls}</span> WALLS ON BOARD
+        &nbsp;·&nbsp;
+        <span style="color:var(--text-bright);">${aiDifficulty.toUpperCase()}</span> DIFFICULTY
+      </div>
+    </div>
+  </div>`;
+
+  const victoryBox = overlay.querySelector('.victory-box') || overlay;
+  victoryBox.insertAdjacentHTML('beforeend', summaryHTML);
+}
+
+function statBox(label, value) {
+  return '<div style="background:var(--surface2);border:1px solid var(--border);padding:5px 7px;text-align:center;">'
+    + '<div style="font-size:8px;color:var(--text-dim);letter-spacing:.1em;">' + label + '</div>'
+    + '<div style="font-family:Teko,sans-serif;font-size:20px;color:var(--text-bright);">' + value + '</div>'
+    + '</div>';
+}
+
+function resetGame() {
+  const overlay = document.getElementById('victory-overlay');
+  if (overlay) overlay.style.display = 'none';
+  showLandingScreen();
+}
+
+// ── Utilities ────────────────────────────────────────────────────────
+function setText(id, val) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = val;
+}
+
+// ── Debug overlay ────────────────────────────────────────────────────
+document.addEventListener('keydown', e => {
+  if (e.key.toLowerCase()==='d' && (e.ctrlKey||e.metaKey)) {
+    e.preventDefault();
+    debugVisible = !debugVisible;
+    const overlay = document.getElementById('debug-overlay');
+    if (overlay) overlay.className = debugVisible?'visible':'';
+    if (debugVisible) updateDebug();
+  }
+});
+
+function updateDebug() {
+  const el = document.getElementById('debug-content');
+  if (!el||!debugVisible) return;
+  el.textContent = JSON.stringify({
+    turn: gameState.turnNumber,
+    phase: gameState.phase,
+    activePlayer: gameState.activePlayer,
+    hasMoved,
+    hasPlayedCard,
+    uiMode,
+    selectedCard,
+    walls: gameState.walls.map(w=>({id:w.id,owner:w.owner,anchor:w.anchor,orient:w.orientation,phantom:w.isPhantom})),
+    p0: {pos:gameState.players[0].position, hand:gameState.players[0].hand.map(c=>c.name), walls:gameState.players[0].wallsInPlay},
+    p1: {pos:gameState.players[1].position, hand:gameState.players[1].hand.map(c=>c.name), walls:gameState.players[1].wallsInPlay},
+  }, null, 2);
+}
+
+// ── Init ─────────────────────────────────────────────────────────────
+document.addEventListener("DOMContentLoaded", () => {
+  // Check URL for invite code before showing champion select
+  const urlParams = new URLSearchParams(window.location.search);
+  const inviteCode = urlParams.get('join');
+  if (inviteCode) {
+    // Clean URL without reloading
+    window.history.replaceState({}, '', window.location.pathname);
+    showMultiplayerLobby('join', inviteCode);
+  } else {
+    showLandingScreen();
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// CORRIDORS — ASYNC MULTIPLAYER MODULE
+// ─────────────────────────────────────────────────────────────────
+// Architecture:
+//   • Supabase (postgres + realtime) as backend — free tier
+//   • Anonymous auth via Supabase (persistent userId per browser)
+//   • Each "game" is a row in the `mp_games` table
+//   • gameState JSON stored in `state` column, updated each turn
+//   • Realtime subscription triggers UI refresh on opponent move
+//   • Each player only sees their OWN hand; opponent hand is hidden
+//   • mp_localPlayerIndex: 0 or 1 — which seat this browser owns
+// ═══════════════════════════════════════════════════════════════════
+
+// ── Supabase Config ──────────────────────────────────────────────────
+// INSTRUCTIONS: Replace with your own Supabase project credentials.
+// 1. Go to https://supabase.com and create a free project
+// 2. Go to Project Settings → API and copy your URL and anon key
+// 3. Run the SQL in SUPABASE_SCHEMA below in the SQL Editor
+// 4. Enable Realtime for the mp_games table in Database → Replication
+const SUPABASE_URL  = 'https://fdkiadwkgsrzhlhswoxq.supabase.co';
+const SUPABASE_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZka2lhZHdrZ3NyemhsaHN3b3hxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzIyNTA2MTQsImV4cCI6MjA4NzgyNjYxNH0.5f8TcvQjdIvwfeexjDTF7MRzqoyo_5NGtGblpjTxTsQ';
+
+// ── SQL Schema (run once in Supabase SQL Editor) ─────────────────────
+/*
+SUPABASE_SCHEMA = `
+  -- Enable UUID extension
+  create extension if not exists "pgcrypto";
+
+  -- Main games table
+  create table if not exists mp_games (
+    id           text primary key default encode(gen_random_bytes(5), 'hex'),
+    created_at   timestamptz default now(),
+    updated_at   timestamptz default now(),
+    status       text not null default 'waiting',   -- waiting | active | finished
+    host_id      text not null,
+    guest_id     text,
+    host_name    text not null default 'Player',
+    guest_name   text,
+    host_champ   text not null,
+    guest_champ  text,
+    state        jsonb,           -- serialised gameState
+    active_seat  int default 0,  -- 0 = host's turn, 1 = guest's turn
+    winner_seat  int,            -- null | 0 | 1
+    host_hand    jsonb,          -- private: only host reads this
+    guest_hand   jsonb           -- private: only guest reads this
+  );
+
+  -- Row-level security: everyone can read; only owner can write their hand columns
+  alter table mp_games enable row level security;
+  create policy "public read" on mp_games for select using (true);
+  create policy "host insert" on mp_games for insert with check (true);
+  create policy "players update" on mp_games for update using (true);
+
+  -- Updated_at trigger
+  create or replace function set_updated_at()
+  returns trigger language plpgsql as \$\$
+  begin new.updated_at = now(); return new; end; \$\$;
+
+  drop trigger if exists mp_games_updated_at on mp_games;
+  create trigger mp_games_updated_at before update on mp_games
+    for each row execute function set_updated_at();
+`;
+*/
+
+// ── Module state ─────────────────────────────────────────────────────
+let _sb = null;         // Supabase client
+let _sbReady = false;
+let _userId = null;     // anonymous user id stored in localStorage
+let _userName = null;   // display name
+let mp_gameId = null;   // active multiplayer game id
+let mp_localSeat = null; // 0 or 1 — which seat this browser is
+let mp_subscription = null; // realtime channel
+let mp_pendingJoin = null;  // invite code from URL
+let mp_lobbyInterval = null; // polling interval for lobby
+let mp_isMultiplayer = false; // true when in a multiplayer game
+let mp_opponentName = null;
+
+// ── Supabase initialisation ──────────────────────────────────────────
+function mpInit() {
+  if (_sb) return _sb;
+  if (!window.supabase) {
+    console.warn('[MP] Supabase SDK not loaded');
+    return null;
+  }
+  if (SUPABASE_URL === 'YOUR_SUPABASE_URL') {
+    console.warn('[MP] Supabase credentials not configured');
+    return null;
+  }
+  try {
+    _sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON);
+    _sbReady = true;
+    // Generate/restore anonymous userId
+    _userId = localStorage.getItem('corridors:userId');
+    if (!_userId) {
+      _userId = 'u_' + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+      localStorage.setItem('corridors:userId', _userId);
+    }
+    _userName = localStorage.getItem('corridors:userName') || '';
+  } catch(e) {
+    console.error('[MP] Init failed:', e);
+    _sb = null;
+  }
+  return _sb;
+}
+
+function mpConfigured() {
+  return SUPABASE_URL !== 'YOUR_SUPABASE_URL' && SUPABASE_ANON !== 'YOUR_SUPABASE_ANON_KEY';
+}
+
+// ── Multiplayer Lobby UI ─────────────────────────────────────────────
+function showMultiplayerLobby(tab = 'home', prefillCode = null) {
+  // Remove any existing
+  const existing = document.getElementById('mp-overlay');
+  if (existing) existing.remove();
+
+  const overlay = document.createElement('div');
+  overlay.id = 'mp-overlay';
+  overlay.className = 'mp-overlay';
+
+  overlay.innerHTML = `
+    <div class="mp-logo">CORRIDORS</div>
+    <div style="font-size:11px;letter-spacing:.2em;color:var(--text-dim);text-transform:uppercase;margin-bottom:28px;">Async PvP Mode</div>
+
+    <div class="mp-mode-tabs">
+      <button class="mp-tab ${tab==='home'?'active':''}" onclick="mpShowTab('home')">MY GAMES</button>
+      <button class="mp-tab ${tab==='create'?'active':''}" onclick="mpShowTab('create')">CREATE GAME</button>
+      <button class="mp-tab ${tab==='join'?'active':''}" onclick="mpShowTab('join')">JOIN GAME</button>
+    </div>
+
+    <div class="mp-panel" id="mp-tab-content">
+      <!-- Filled by mpShowTab -->
+    </div>
+
+    <div style="margin-top:20px;">
+      <button class="mp-btn secondary" style="width:auto;padding:8px 24px;" onclick="closeMpLobby()">← BACK TO MENU</button>
+    </div>
+  `;
+
+  document.body.appendChild(overlay);
+
+  // Prefill join code from URL invite
+  if (prefillCode) {
+    setTimeout(() => {
+      mpShowTab('join');
+      const inp = document.getElementById('mp-join-code');
+      if (inp) inp.value = prefillCode;
+    }, 50);
+  } else {
+    mpShowTab(tab);
+  }
+}
+
+function closeMpLobby(silent = false) {
+  const overlay = document.getElementById('mp-overlay');
+  if (overlay) overlay.remove();
+  clearInterval(mp_lobbyInterval);
+  if (!silent) showLandingScreen();
+}
+
+function mpShowTab(tab) {
+  // Update tab buttons
+  document.querySelectorAll('.mp-tab').forEach(btn => {
+    btn.className = 'mp-tab' + (btn.textContent.trim().toLowerCase().startsWith(tab) || 
+      (tab==='home' && btn.textContent.includes('MY')) ||
+      (tab==='create' && btn.textContent.includes('CREATE')) ||
+      (tab==='join' && btn.textContent.includes('JOIN')) ? ' active' : '');
+  });
+
+  const content = document.getElementById('mp-tab-content');
+  if (!content) return;
+
+  // Stop any lobby polling
+  clearInterval(mp_lobbyInterval);
+
+  if (!mpConfigured()) {
+    content.innerHTML = mpUnconfiguredPanel();
+    return;
+  }
+
+  switch(tab) {
+    case 'home':   mpRenderHomeTab(content); break;
+    case 'create': mpRenderCreateTab(content); break;
+    case 'join':   mpRenderJoinTab(content); break;
+  }
+}
+
+function mpUnconfiguredPanel() {
+  return `
+    <div class="mp-section-label">Setup Required</div>
+    <div class="mp-config-note">
+      <strong>Async PvP requires Supabase credentials.</strong><br><br>
+      1. Create a free project at <strong>supabase.com</strong><br>
+      2. Go to <strong>Project Settings → API</strong> and copy your URL and anon key<br>
+      3. Open this file and replace the two constants near the top of the multiplayer module:<br><br>
+      <code>const SUPABASE_URL  = 'YOUR_SUPABASE_URL';</code><br>
+      <code>const SUPABASE_ANON = 'YOUR_SUPABASE_ANON_KEY';</code><br><br>
+      4. In the Supabase <strong>SQL Editor</strong>, run the schema found in the <code>SUPABASE_SCHEMA</code> comment block in the source.<br>
+      5. In <strong>Database → Replication</strong>, enable Realtime for the <code>mp_games</code> table.<br><br>
+      That's it — no server needed. The free tier supports unlimited async games.
+    </div>
+  `;
+}
+
+function mpNameInput(forTab) {
+  const saved = localStorage.getItem('corridors:userName') || '';
+  return `
+    <div class="mp-section-label" style="margin-bottom:6px;">Your Display Name</div>
+    <input class="mp-input" id="mp-name-input" placeholder="Enter your name…" value="${saved}" maxlength="24">
+  `;
+}
+
+// ── Home Tab (My Games) ──────────────────────────────────────────────
+async function mpRenderHomeTab(content) {
+  content.innerHTML = `
+    ${mpNameInput()}
+    <hr class="mp-divider">
+    <div class="mp-section-label">Active Games</div>
+    <div class="mp-game-list" id="mp-game-list">
+      <div style="text-align:center;padding:24px;color:var(--text-dim);font-size:11px;letter-spacing:.12em;">
+        <div class="mp-spinner" style="margin:0 auto 10px;"></div>
+        LOADING…
+      </div>
+    </div>
+  `;
+  await mpLoadMyGames();
+  // Poll every 8s for new turns
+  mp_lobbyInterval = setInterval(mpLoadMyGames, 8000);
+}
+
+async function mpLoadMyGames() {
+  const sb = mpInit();
+  if (!sb) return;
+  try {
+    const { data, error } = await sb
+      .from('mp_games')
+      .select('id,status,host_id,guest_id,host_name,guest_name,host_champ,guest_champ,active_seat,winner_seat,updated_at')
+      .or(`host_id.eq.${_userId},guest_id.eq.${_userId}`)
+      .neq('status', 'abandoned')
+      .order('updated_at', { ascending: false })
+      .limit(20);
+
+    const list = document.getElementById('mp-game-list');
+    if (!list) return;
+    if (error) { list.innerHTML = `<div class="mp-status error">Error: ${error.message}</div>`; return; }
+    if (!data || data.length === 0) {
+      list.innerHTML = `<div style="text-align:center;padding:24px;color:var(--text-dim);font-size:11px;letter-spacing:.12em;">No games yet — create or join one!</div>`;
+      return;
+    }
+    list.innerHTML = data.map(g => mpGameItem(g)).join('');
+  } catch(e) {
+    console.error('[MP] loadMyGames error:', e);
+  }
+}
+
+function mpGameItem(g) {
+  const iAmHost = g.host_id === _userId;
+  const mySeat = iAmHost ? 0 : 1;
+  const myName = iAmHost ? g.host_name : (g.guest_name || '?');
+  const oppName = iAmHost ? (g.guest_name || '?') : g.host_name;
+  const myChamp = iAmHost ? g.host_champ : (g.guest_champ || '?');
+
+  let badge = '', badgeClass = '';
+  if (g.status === 'waiting') {
+    badge = '⏳ WAITING FOR OPPONENT'; badgeClass = 'waiting';
+  } else if (g.status === 'finished') {
+    const won = g.winner_seat === mySeat;
+    badge = won ? '🏆 YOU WON' : '💀 YOU LOST'; badgeClass = 'finished';
+  } else {
+    const myTurn = g.active_seat === mySeat;
+    badge = myTurn ? '⚡ YOUR TURN' : '⏱ THEIR TURN';
+    badgeClass = myTurn ? 'your-turn' : 'their-turn';
+  }
+
+  const d = new Date(g.updated_at);
+  const timeAgo = mpTimeAgo(d);
+
+  return `
+    <div class="mp-game-item">
+      <div class="mp-game-item-info" onclick="mpResumeGame('${g.id}')" style="cursor:pointer;flex:1;min-width:0;">
+        <div class="mp-game-item-name">${myName} vs ${oppName}</div>
+        <div class="mp-game-item-meta">${myChamp.toUpperCase()} · ${timeAgo}</div>
+      </div>
+      <div class="mp-game-item-badge ${badgeClass}">${badge}</div>
+      <button
+        onclick="event.stopPropagation();mpAbandonGame('${g.id}', this)"
+        title="Remove game"
+        style="
+          margin-left:10px;padding:4px 8px;background:transparent;
+          border:1px solid var(--border);color:var(--text-dim);
+          font-size:12px;cursor:pointer;flex-shrink:0;line-height:1;
+          transition:all 0.15s;
+        "
+        onmouseover="this.style.borderColor='var(--danger)';this.style.color='var(--danger)'"
+        onmouseout="this.style.borderColor='var(--border)';this.style.color='var(--text-dim)'"
+      >✕</button>
+    </div>
+  `;
+}
+
+async function mpAbandonGame(gameId, btn) {
+  if (!confirm('Remove this game from your list?')) return;
+  const sb = mpInit();
+  if (!sb) return;
+  btn.disabled = true;
+  btn.textContent = '…';
+  try {
+    const { error } = await sb.from('mp_games').update({ status: 'abandoned' }).eq('id', gameId);
+    if (error) throw error;
+    // Remove the item from the DOM immediately
+    const item = btn.closest('.mp-game-item');
+    if (item) item.remove();
+    // If list is now empty, show the empty state
+    const list = document.getElementById('mp-game-list');
+    if (list && list.children.length === 0) {
+      list.innerHTML = '<div style="text-align:center;padding:24px;color:var(--text-dim);font-size:11px;letter-spacing:.12em;">No games yet — create or join one!</div>';
+    }
+  } catch(e) {
+    console.error('[MP] abandonGame error:', e);
+    btn.disabled = false;
+    btn.textContent = '✕';
+    alert('Could not remove game: ' + (e.message || e));
+  }
+}
+
+function mpTimeAgo(d) {
+  const sec = Math.floor((Date.now() - d) / 1000);
+  if (sec < 60) return 'just now';
+  if (sec < 3600) return `${Math.floor(sec/60)}m ago`;
+  if (sec < 86400) return `${Math.floor(sec/3600)}h ago`;
+  return `${Math.floor(sec/86400)}d ago`;
+}
+
+// ── Create Tab ───────────────────────────────────────────────────────
+function mpRenderCreateTab(content) {
+  const champCards = Object.values(CHAMPIONS).map(c => `
+    <div class="cs-card" id="mpc-${c.id}" onclick="mpSelectChamp('${c.id}')" style="padding:12px 14px;">
+      <div class="cs-champ-name" style="font-size:20px;">${c.name}</div>
+      <div class="cs-champ-title" style="font-size:10px;">${c.title}</div>
+      <div class="cs-faction" style="font-size:9px;margin-top:3px;">${c.faction}</div>
+    </div>
+  `).join('');
+
+  content.innerHTML = `
+    ${mpNameInput('create')}
+    <hr class="mp-divider">
+    <div class="mp-section-label">Choose Your Champion</div>
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:20px;" id="mpc-grid">
+      ${champCards}
+    </div>
+    <button class="mp-btn" id="mp-create-btn" onclick="mpCreateGame()" disabled>
+      SELECT A CHAMPION TO CREATE GAME →
+    </button>
+    <div id="mp-create-status"></div>
+  `;
+}
+
+let mp_selectedChamp = null;
+function mpSelectChamp(id) {
+  mp_selectedChamp = id;
+  document.querySelectorAll('[id^="mpc-"]').forEach(el => el.classList.remove('selected'));
+  const card = document.getElementById('mpc-' + id);
+  if (card) card.classList.add('selected');
+  const btn = document.getElementById('mp-create-btn');
+  if (btn) {
+    btn.textContent = `CREATE GAME AS ${CHAMPIONS[id].name.toUpperCase()} →`;
+    btn.disabled = false;
+  }
+}
+
+async function mpCreateGame() {
+  const sb = mpInit();
+  if (!sb) return;
+  const nameEl = document.getElementById('mp-name-input');
+  const name = (nameEl?.value?.trim() || 'Player').slice(0, 24);
+  localStorage.setItem('corridors:userName', name);
+  _userName = name;
+
+  if (!mp_selectedChamp) return;
+
+  const btn = document.getElementById('mp-create-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'CREATING…'; }
+
+  try {
+    const { data, error } = await sb.from('mp_games').insert({
+      host_id:    _userId,
+      host_name:  name,
+      host_champ: mp_selectedChamp,
+      status:     'waiting',
+    }).select().single();
+
+    if (error) throw error;
+
+    const gameId = data.id;
+    const inviteUrl = `${window.location.href.split('?')[0]}?join=${gameId}`;
+
+    const statusEl = document.getElementById('mp-create-status');
+    if (statusEl) statusEl.innerHTML = `
+      <div class="mp-status info">
+        <div><span class="mp-waiting-pulse"></span>Waiting for opponent to join…</div>
+      </div>
+      <div class="mp-section-label" style="margin-top:16px;">Share This Invite Link</div>
+      <div class="mp-invite-box" onclick="mpCopyInvite('${inviteUrl}',this)" title="Click to copy">
+        ${inviteUrl}
+      </div>
+      <button class="mp-btn" onclick="mpCopyInvite('${inviteUrl}',this)">📋 COPY INVITE LINK</button>
+      <div style="margin-top:8px;font-size:10px;color:var(--text-dim);text-align:center;letter-spacing:.1em;">
+        Or share code: <strong style="color:var(--amber)">${gameId}</strong>
+      </div>
+    `;
+
+    // Poll for guest joining
+    const pollId = setInterval(async () => {
+      const { data: g } = await sb.from('mp_games').select('status,guest_id,guest_name,guest_champ').eq('id', gameId).single();
+      if (g && g.status === 'active') {
+        clearInterval(pollId);
+        mp_opponentName = g.guest_name;
+        mpStartHostGame(gameId, mp_selectedChamp, g.guest_champ, g.guest_name);
+      }
+    }, 3000);
+
+    // Store poll so we can cancel on nav
+    mp_lobbyInterval = pollId;
+
+  } catch(e) {
+    console.error('[MP] createGame error:', e);
+    const statusEl = document.getElementById('mp-create-status');
+    if (statusEl) statusEl.innerHTML = `<div class="mp-status error">Error: ${e.message}</div>`;
+    if (btn) { btn.disabled = false; btn.textContent = 'TRY AGAIN'; }
+  }
+}
+
+function mpCopyInvite(url, el) {
+  navigator.clipboard.writeText(url).then(() => {
+    if (el) { const orig = el.textContent; el.textContent = '✓ COPIED!'; setTimeout(() => el.textContent = orig, 2000); }
+  }).catch(() => {
+    prompt('Copy this link:', url);
+  });
+}
+
+// ── Join Tab ─────────────────────────────────────────────────────────
+function mpRenderJoinTab(content) {
+  const champCards = Object.values(CHAMPIONS).map(c => `
+    <div class="cs-card" id="mpj-${c.id}" onclick="mpSelectJoinChamp('${c.id}')" style="padding:12px 14px;">
+      <div class="cs-champ-name" style="font-size:20px;">${c.name}</div>
+      <div class="cs-champ-title" style="font-size:10px;">${c.title}</div>
+      <div class="cs-faction" style="font-size:9px;margin-top:3px;">${c.faction}</div>
+    </div>
+  `).join('');
+
+  content.innerHTML = `
+    ${mpNameInput('join')}
+    <hr class="mp-divider">
+    <div class="mp-section-label">Game Code or Invite Link</div>
+    <input class="mp-input" id="mp-join-code" placeholder="Enter game code (e.g. a1b2c)…" maxlength="100">
+    <hr class="mp-divider">
+    <div class="mp-section-label">Choose Your Champion</div>
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:20px;" id="mpj-grid">
+      ${champCards}
+    </div>
+    <button class="mp-btn" id="mp-join-btn" onclick="mpJoinGame()" disabled>
+      SELECT A CHAMPION TO JOIN →
+    </button>
+    <div id="mp-join-status"></div>
+  `;
+}
+
+let mp_joinSelectedChamp = null;
+function mpSelectJoinChamp(id) {
+  mp_joinSelectedChamp = id;
+  document.querySelectorAll('[id^="mpj-"]').forEach(el => el.classList.remove('selected'));
+  const card = document.getElementById('mpj-' + id);
+  if (card) card.classList.add('selected');
+  const btn = document.getElementById('mp-join-btn');
+  if (btn) {
+    btn.textContent = `JOIN AS ${CHAMPIONS[id].name.toUpperCase()} →`;
+    btn.disabled = false;
+  }
+}
+
+async function mpJoinGame() {
+  const sb = mpInit();
+  if (!sb) return;
+  const nameEl = document.getElementById('mp-name-input');
+  const name = (nameEl?.value?.trim() || 'Player').slice(0, 24);
+  localStorage.setItem('corridors:userName', name);
+  _userName = name;
+
+  let code = (document.getElementById('mp-join-code')?.value?.trim() || '');
+  // Handle full URLs — extract just the game id
+  const urlMatch = code.match(/[?&]join=([a-zA-Z0-9]+)/);
+  if (urlMatch) code = urlMatch[1];
+  code = code.replace(/\s/g, '').toLowerCase().slice(0, 20);
+
+  if (!code) { mpSetStatus('mp-join-status', 'Enter a game code or invite link', 'error'); return; }
+  if (!mp_joinSelectedChamp) { mpSetStatus('mp-join-status', 'Select a champion first', 'error'); return; }
+
+  const btn = document.getElementById('mp-join-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'JOINING…'; }
+
+  try {
+    // Fetch the game
+    const { data: g, error: fetchErr } = await sb.from('mp_games').select('*').eq('id', code).single();
+    if (fetchErr || !g) throw new Error('Game not found');
+    if (g.status !== 'waiting') throw new Error('Game already started or finished');
+    if (g.host_id === _userId) throw new Error("Can't join your own game");
+
+    // Randomize who goes first
+    const firstSeat = Math.random() < 0.5 ? 0 : 1;
+
+    // Build initial game state (server side — but we do it client-side for simplicity)
+    const hostChamp = g.host_champ;
+    const guestChamp = mp_joinSelectedChamp;
+    const initState = mpBuildInitialState(hostChamp, guestChamp, firstSeat);
+
+    // Store hands separately (private to each player)
+    const hostHand = initState.players[0].hand;
+    const guestHand = initState.players[1].hand;
+    // Scrub hands from shared state (security)
+    const sharedState = mpScrubHands(initState);
+
+    const { error: updateErr } = await sb.from('mp_games').update({
+      guest_id:    _userId,
+      guest_name:  name,
+      guest_champ: guestChamp,
+      status:      'active',
+      active_seat: firstSeat,
+      state:       sharedState,
+      host_hand:   JSON.stringify(hostHand),
+      guest_hand:  JSON.stringify(guestHand),
+    }).eq('id', code);
+
+    if (updateErr) throw updateErr;
+
+    mp_opponentName = g.host_name;
+    mpStartGuestGame(code, guestChamp, hostChamp, g.host_name, firstSeat, guestHand, initState);
+
+  } catch(e) {
+    console.error('[MP] joinGame error:', e);
+    mpSetStatus('mp-join-status', e.message || 'Join failed', 'error');
+    if (btn) { btn.disabled = false; btn.textContent = 'TRY AGAIN'; }
+  }
+}
+
+function mpSetStatus(id, msg, type) {
+  const el = document.getElementById(id);
+  if (el) el.innerHTML = `<div class="mp-status ${type}">${msg}</div>`;
+}
+
+// ── Game initialisation helpers ──────────────────────────────────────
+function mpBuildInitialState(hostChampId, guestChampId, firstSeat) {
+  // Mirrors initGame() but doesn't touch global gameState or UI yet
+  const hChamp = CHAMPIONS[hostChampId];
+  const gChamp = CHAMPIONS[guestChampId];
+  const state = {
+    players: [
+      createPlayer(0, hostChampId,  hChamp.faction),
+      createPlayer(1, guestChampId, gChamp.faction),
+    ],
+    walls: [], decoyTokens: [], trapTokens: [],
+    activePlayer: firstSeat, turnNumber: 1, phase: 'action',
+    winner: null, log: [], nextWallId: 1, nextTokenId: 1,
+    firstDraw: [true, true],
+    // Perform opening draws
+  };
+  // Draw opening hands for both players
+  for (const pi of [0, 1]) {
+    const p = state.players[pi];
+    const count = p.champion.cardDraw;
+    const drawn = p.deck.splice(0, count);
+    state.players[pi].hand = drawn;
+    state.players[pi].firstDraw = false;
+  }
+  state.firstDraw = [false, false];
+  return state;
+}
+
+function mpScrubHands(state) {
+  // Return a copy where hand arrays are empty (stored separately per player)
+  return {
+    ...state,
+    players: state.players.map(p => ({ ...p, hand: [], deck: [] }))
+  };
+}
+
+// ── Start game (host) ────────────────────────────────────────────────
+async function mpStartHostGame(gameId, myChamp, oppChamp, oppName) {
+  const sb = mpInit();
+  if (!sb) return;
+
+  // Load the current game state + our private hand
+  const { data: g } = await sb.from('mp_games').select('*').eq('id', gameId).single();
+  if (!g) return;
+
+  closeMpLobby(true);
+  const myHand = JSON.parse(g.host_hand || '[]');
+  const sharedState = g.state;
+  mpLaunchGame(gameId, 0, myChamp, oppChamp, oppName, myHand, sharedState);
+}
+
+// ── Start game (guest) ───────────────────────────────────────────────
+function mpStartGuestGame(gameId, myChamp, oppChamp, oppName, firstSeat, myHand, fullState) {
+  closeMpLobby(true);
+  const sharedState = mpScrubHands(fullState);
+  mpLaunchGame(gameId, 1, myChamp, oppChamp, oppName, myHand, sharedState);
+}
+
+// ── Resume an existing game ──────────────────────────────────────────
+async function mpResumeGame(gameId) {
+  const sb = mpInit();
+  if (!sb) return;
+  try {
+    const { data: g } = await sb.from('mp_games').select('*').eq('id', gameId).single();
+    if (!g) { alert('Game not found'); return; }
+
+    const iAmHost = g.host_id === _userId;
+    const mySeat = iAmHost ? 0 : 1;
+    const myChamp = iAmHost ? g.host_champ : g.guest_champ;
+    const oppChamp = iAmHost ? g.guest_champ : g.host_champ;
+    const oppName = iAmHost ? (g.guest_name || '?') : g.host_name;
+    const myHandRaw = iAmHost ? g.host_hand : g.guest_hand;
+    const myHand = JSON.parse(myHandRaw || '[]');
+
+    if (!g.state) { alert('Game state not available'); return; }
+
+    closeMpLobby(true);
+    mpLaunchGame(gameId, mySeat, myChamp, oppChamp, oppName, myHand, g.state);
+  } catch(e) {
+    console.error('[MP] resume error:', e);
+    alert('Failed to load game: ' + e.message);
+  }
+}
+
+// ── Core: Launch multiplayer game ────────────────────────────────────
+function mpLaunchGame(gameId, localSeat, myChampId, oppChampId, oppName, myHand, sharedState) {
+  mp_gameId = gameId;
+  mp_localSeat = localSeat;
+  mp_isMultiplayer = true;
+  mp_opponentName = oppName;
+
+  const oppSeat = 1 - localSeat;
+
+  // Reconstruct full gameState from shared state + private hand
+  // We need full CHAMPIONS/deck data; rebuild players from champion IDs
+  const hId = localSeat === 0 ? myChampId : oppChampId;
+  const gId = localSeat === 1 ? myChampId : oppChampId;
+
+  // Restore state — merge shared state with our private hand
+  gameState = {
+    ...sharedState,
+    players: sharedState.players.map((p, i) => {
+      const isMe = i === localSeat;
+      return {
+        ...p,
+        champion: { ...CHAMPIONS[i === 0 ? hId : gId] },
+        hand: isMe ? myHand : [],
+        // Restore deck from champion def (length only used for display)
+        deck: isMe ? (sharedState._hostDeckLen !== undefined 
+          ? Array(i===0 ? sharedState._hostDeckLen : sharedState._guestDeckLen).fill({name:'?'})
+          : Array(10).fill({name:'?'}))
+          : [],
+      };
+    }),
+  };
+
+  // Reset UI flags
+  uiMode = 'idle';
+  selectedCard = null;
+  hasMoved = false;
+  hasPlayedCard = false;
+  cardsPlayedThisTurn = 0;
+
+  // In MP, opening hands are pre-dealt — draw phase doesn't exist.
+  // Force 'action' so buttons are never gated behind the draw-phase guard.
+  if (gameState.phase !== 'ended') {
+    gameState.phase = 'action';
+  }
+
+  // Override AI_PLAYER — in MP there's no AI; opponent is the other seat
+  // We patch rendering: player 0 is always host, player 1 is always guest
+  // localSeat 0 = you're player 0; localSeat 1 = you're player 1
+
+  // In MP, hands are pre-dealt — skip the draw phase entirely
+  if (gameState.phase === 'draw') {
+    gameState.phase = 'action';
+  }
+
+  mpUpdatePanelLabels();
+  renderAll();
+  mpUpdateTurnState();
+
+  // Subscribe to realtime updates
+  mpSubscribe(gameId, localSeat, myHand.length, myChampId, oppChampId);
+
+  addLog(localSeat, 'system', `Async PvP: You are ${CHAMPIONS[myChampId].name} (Seat ${localSeat}) vs ${oppName} (${CHAMPIONS[oppChampId].name})`);
+  renderLog();
+
+  showStatus(gameState.activePlayer === localSeat
+    ? '⚡ YOUR TURN — make your move!'
+    : `⏱ Waiting for ${oppName}…`, '');
+}
+
+function mpUpdatePanelLabels() {
+  const p0Label = document.querySelector('#panel-p0 .panel-label');
+  const p1Label = document.querySelector('#panel-p1 .panel-label');
+  if (p0Label) p0Label.textContent = mp_localSeat === 0 ? 'YOU' : mp_opponentName?.toUpperCase() || 'OPPONENT';
+  if (p1Label) p1Label.textContent = mp_localSeat === 1 ? 'YOU' : mp_opponentName?.toUpperCase() || 'OPPONENT';
+}
+
+function mpUpdateTurnState() {
+  if (!mp_isMultiplayer) return;
+  const isMyTurn = gameState.activePlayer === mp_localSeat;
+  const oppName = mp_opponentName || 'Opponent';
+  const myChamp = gameState.players[mp_localSeat]?.champion?.name || '';
+  const oppChamp = gameState.players[1 - mp_localSeat]?.champion?.name || '';
+
+  if (gameState.phase === 'ended' || gameState.winner !== null) {
+    const iWon = gameState.winner === mp_localSeat;
+    showStatus(iWon ? '🏆 YOU WIN!' : '💀 OPPONENT WINS', iWon ? 'success' : 'error');
+    return;
+  }
+
+  if (isMyTurn) {
+    showStatus(`⚡ YOUR TURN — ${myChamp}`, 'active');
+  } else {
+    showStatus(`⏱ Waiting for ${oppName} (${oppChamp})…`, '');
+  }
+}
+
+// ── Realtime Subscription ────────────────────────────────────────────
+function mpSubscribe(gameId, localSeat, myHandLen, myChampId, oppChampId) {
+  if (!_sb) return;
+
+  // Clean up any old subscription
+  if (mp_subscription) {
+    _sb.removeChannel(mp_subscription);
+    mp_subscription = null;
+  }
+
+  mp_subscription = _sb
+    .channel(`game:${gameId}`)
+    .on('postgres_changes', {
+      event: 'UPDATE',
+      schema: 'public',
+      table: 'mp_games',
+      filter: `id=eq.${gameId}`,
+    }, (payload) => {
+      mpHandleRemoteUpdate(payload.new, localSeat, myChampId, oppChampId);
+    })
+    .subscribe();
+}
+
+async function mpHandleRemoteUpdate(row, localSeat, myChampId, oppChampId) {
+  // Only process if it's now our turn (opponent just moved)
+  if (row.active_seat === localSeat && row.status === 'active') {
+    // Fetch our private hand
+    const { data: g } = await _sb.from('mp_games').select('host_hand,guest_hand').eq('id', mp_gameId).single();
+    const myHandRaw = localSeat === 0 ? g?.host_hand : g?.guest_hand;
+    const myHand = JSON.parse(myHandRaw || '[]');
+
+    // Merge updated state with our hand
+    const shared = row.state;
+    const hId = localSeat === 0 ? myChampId : oppChampId;
+    const gId = localSeat === 1 ? myChampId : oppChampId;
+
+    gameState = {
+      ...shared,
+      players: shared.players.map((p, i) => ({
+        ...p,
+        champion: { ...CHAMPIONS[i === 0 ? hId : gId] },
+        hand: i === localSeat ? myHand : [],
+        deck: [],
+      })),
+    };
+
+    hasMoved = false;
+    hasPlayedCard = false;
+    cardsPlayedThisTurn = 0;
+    uiMode = 'idle';
+    selectedCard = null;
+
+    // In MP, draw phase doesn't exist — always force action phase
+    if (gameState.phase !== 'ended') {
+      gameState.phase = 'action';
+    }
+
+    mpUpdatePanelLabels();
+    renderAll();
+    mpUpdateTurnState();
+    addLog(localSeat, 'system', `Opponent moved — your turn!`);
+    renderLog();
+
+    // Flash the banner
+    const banner = document.getElementById('turn-banner');
+    if (banner) {
+      banner.style.background = 'rgba(212,144,58,0.2)';
+      setTimeout(() => banner.style.background = '', 1000);
+    }
+  } else if (row.status === 'finished') {
+    mpHandleGameFinished(row, localSeat);
+  }
+}
+
+function mpHandleGameFinished(row, localSeat) {
+  if (gameState) {
+    gameState.winner = row.winner_seat;
+    gameState.phase = 'ended';
+  }
+  showVictory(row.winner_seat);
+}
+
+function mpEndTurnLocal() {
+  if (gameState.phase === 'ended') return;
+
+  const pi = gameState.activePlayer;
+  const p = gameState.players[pi];
+
+  const newCharge = Math.min(p.ultimateCharge + 1, p.champion.ultimateCost);
+  const ready = newCharge >= p.champion.ultimateCost && !p.ultimateUsed;
+
+  const hadSkip = p.statusEffects.some(e => e.type === 'skip_move' && e.turnsRemaining === 1);
+  let effects = p.statusEffects
+    .map(e => ({ ...e, turnsRemaining: e.turnsRemaining - 1 }))
+    .filter(e => e.turnsRemaining > 0);
+  if (hadSkip && !effects.some(e => e.type === 'bind_cooldown')) {
+    effects = [...effects, { type: 'bind_cooldown', turnsRemaining: 1 }];
+  }
+
+  gameState.players[pi] = { ...p, ultimateCharge: newCharge, ultimateReady: ready, statusEffects: effects };
+  gameState.walls = gameState.walls.filter(w => !w.temporary || w.turnsRemaining > 1)
+    .map(w => w.temporary ? { ...w, turnsRemaining: w.turnsRemaining - 1 } : w);
+
+  onEndTurnPassives(pi);
+  const next = pi === 0 ? 1 : 0;
+  gameState.activePlayer = next;
+  if (pi === 1) gameState.turnNumber++;
+  gameState.phase = 'action'; // In MP, draw is handled locally
+
+  uiMode = 'idle';
+  selectedCard = null;
+  resetTurnState();
+
+  addLog(next, 'system', `Turn ${gameState.turnNumber} — Seat ${next}`);
+
+  // Draw cards for the next player (this will be our opponent's hand — we store ours privately)
+  // In MP, we only actually need to draw for the local player when it's their turn
+  // Opponent's hand management is their own concern
+  // Actually we don't draw here in MP — drawing is done when the turn starts on opponent's browser
+
+  mpPushState();
+}
+
+// ── Push state to Supabase ───────────────────────────────────────────
+async function mpPushState() {
+  const sb = mpInit();
+  if (!sb || !mp_gameId) return;
+
+  showStatus('⟳ Syncing…', '');
+
+  try {
+    const nextSeat = gameState.activePlayer;
+    const isFinished = gameState.winner !== null;
+
+    // Before pushing, draw cards for the NEXT player (the one whose turn it will be)
+    // We need to manage hand state for the next player
+    await mpDrawForSeat(nextSeat);
+
+    const sharedState = mpScrubHands(gameState);
+    // Add deck length hints
+    sharedState._hostDeckLen = gameState.players[0].deck.length;
+    sharedState._guestDeckLen = gameState.players[1].deck.length;
+
+    const update = {
+      state:       sharedState,
+      active_seat: nextSeat,
+      status:      isFinished ? 'finished' : 'active',
+      winner_seat: gameState.winner,
+    };
+
+    // Also update OUR hand in the DB (it may have changed from card plays)
+    const myHandKey = mp_localSeat === 0 ? 'host_hand' : 'guest_hand';
+    update[myHandKey] = JSON.stringify(gameState.players[mp_localSeat].hand);
+
+    const { error } = await sb.from('mp_games').update(update).eq('id', mp_gameId);
+    if (error) throw error;
+
+    renderAll();
+    mpUpdateTurnState();
+    showStatus(`⏱ Waiting for ${mp_opponentName || 'opponent'}…`, '');
+  } catch(e) {
+    console.error('[MP] pushState error:', e);
+    showStatus('Sync error — try ending turn again', 'error');
+  }
+}
+
+// ── Draw cards for a given seat ──────────────────────────────────────
+async function mpDrawForSeat(seat) {
+  // We only actually draw if it's for our local seat (we own our hand)
+  // For the opponent, we update their hand column in the DB from the current deck
+  const sb = mpInit();
+  if (!sb) return;
+
+  const p = gameState.players[seat];
+  if (!p) return;
+
+  const isFirst = gameState.firstDraw?.[seat] ?? false;
+  const drawCount = isFirst ? p.champion.cardDraw : 1;
+
+  if (p.hand.length < p.champion.handSize) {
+    const canDraw = Math.min(drawCount, p.champion.handSize - p.hand.length, p.deck.length);
+    if (canDraw > 0) {
+      // Rebuild deck if needed from champion
+      if (p.deck.length === 0) {
+        gameState.players[seat].deck = buildStarterDeck(p.champion.faction);
+        // shuffle — already shuffled by buildStarterDeck
+      }
+      const drawn = gameState.players[seat].deck.splice(0, canDraw);
+      gameState.players[seat].hand = [...gameState.players[seat].hand, ...drawn];
+      if (isFirst && gameState.firstDraw) gameState.firstDraw[seat] = false;
+
+      // Persist to opponent's hand column
+      if (seat !== mp_localSeat) {
+        const oppHandKey = seat === 0 ? 'host_hand' : 'guest_hand';
+        await sb.from('mp_games').update({
+          [oppHandKey]: JSON.stringify(gameState.players[seat].hand)
+        }).eq('id', mp_gameId);
+      }
+    }
+  }
+}
+
+
+function mpShowVictory(winner) {
+  const overlay = document.getElementById('victory-overlay');
+  if (!overlay) return;
+  overlay.style.display = 'flex';
+  const title = document.getElementById('victory-title');
+  const subtitle = document.getElementById('victory-subtitle');
+  const iWon = winner === mp_localSeat;
+  const champName = gameState?.players[winner]?.champion?.name || '';
+  if (title) { title.textContent = iWon ? 'YOU WIN!' : (mp_opponentName || 'OPPONENT') + ' WINS'; title.style.color = iWon ? 'var(--p0)' : 'var(--p1)'; }
+  if (subtitle) subtitle.textContent = champName + ' reached the goal line — Turn ' + (gameState?.turnNumber || '?');
+  const vt = document.getElementById('v-turns'); if (vt) vt.textContent = gameState?.turnNumber || '?';
+  const vw = document.getElementById('v-walls'); if (vw) vw.textContent = (gameState?.walls?.filter(w => !w.isPhantom).length || 0);
+}
+
+// Guard functions called from onclick
+function mpGuardedEndTurnHuman() {
+  if (!mp_isMultiplayer) { endTurnHuman(); return; }
+  if (gameState.activePlayer !== mp_localSeat) { showStatus("It's not your turn!", 'error'); return; }
+  if (selectedCard && selectedCard._pendingMove && selectedCard.idx >= 0) {
+    discardCard(gameState.activePlayer, selectedCard.idx);
+    countCardPlayed(gameState.activePlayer);
+    selectedCard = null; uiMode = 'idle';
+  }
+  mpEndTurnLocal();
+}
+
+function mpGuardedEnterMoveMode() {
+  if (mp_isMultiplayer && gameState.activePlayer !== mp_localSeat) { showStatus("It's not your turn!", 'error'); return; }
+  enterMoveMode();
+}
+
+// Patch core functions once DOM is ready
+document.addEventListener('DOMContentLoaded', function mpPatch() {
+  // renderAll — inject MP post-processing
+  const _origRA = renderAll;
+  window.renderAll = function() {
+    _origRA();
+    if (!mp_isMultiplayer) return;
+    // Hide opponent hand
+    const oppSeat = 1 - mp_localSeat;
+    const oppHandEl = document.getElementById('p' + oppSeat + '-hand');
+    if (oppHandEl) {
+      const count = gameState._oppHandCount || 0;
+      oppHandEl.innerHTML = count > 0
+        ? Array(count).fill('<div class="hidden-card"><div class="hidden-card-icon"></div><span class="hidden-card-label">HIDDEN</span></div>').join('')
+        : '<div style="font-size:10px;color:var(--text-dim);letter-spacing:.1em;padding:8px;border:1px solid var(--border);text-align:center;text-transform:uppercase;">Opponent Hand Hidden</div>';
+    }
+    // Turn banner override
+    const banner = document.getElementById('turn-banner');
+    const isMyTurn = gameState.activePlayer === mp_localSeat;
+    const me = (gameState.players[mp_localSeat] && gameState.players[mp_localSeat].champion && gameState.players[mp_localSeat].champion.name) || '';
+    const them = (gameState.players[1-mp_localSeat] && gameState.players[1-mp_localSeat].champion && gameState.players[1-mp_localSeat].champion.name) || '';
+    const phase = gameState.phase;
+    const phaseLabel = ({draw:'DRAW', action: isMyTurn ? 'YOUR TURN' : 'THEIR TURN', end_turn:'END', ended:'GAME OVER'})[phase] || phase;
+    if (banner) {
+      banner.textContent = isMyTurn
+        ? 'YOU (' + me.toUpperCase() + ') — ' + phaseLabel
+        : (mp_opponentName||'OPPONENT').toUpperCase() + ' (' + them.toUpperCase() + ') — ' + phaseLabel;
+      banner.className = 'turn-banner p' + (isMyTurn ? mp_localSeat : 1-mp_localSeat);
+    }
+    // Disable buttons when not our turn
+    const isMyPhase = isMyTurn && phase === 'action';
+    const endBtn = document.getElementById('btn-end');
+    const moveBtn = document.getElementById('btn-move');
+    if (endBtn) { endBtn.disabled = !isMyPhase; endBtn.style.opacity = isMyPhase ? '1' : '0.3'; }
+    if (moveBtn) {
+      // updateActionBar already set the class/colour; just enforce enable/disable here
+      moveBtn.disabled = !isMyPhase;
+      moveBtn.style.opacity = isMyPhase ? '1' : '0.3';
+    }
+    if (!isMyTurn) {
+      // Disable my own hand cards while waiting for opponent
+      const myHandEl = document.getElementById('p' + mp_localSeat + '-hand');
+      if (myHandEl) myHandEl.querySelectorAll('.card').forEach(function(el) {
+        el.classList.add('card-disabled'); el.style.pointerEvents = 'none';
+      });
+    }
+    mpUpdatePanelLabels();
+  };
+
+  // Patch buttons
+  const endBtn = document.getElementById('btn-end');
+  if (endBtn) endBtn.onclick = function() { mp_isMultiplayer ? mpGuardedEndTurnHuman() : endTurnHuman(); };
+  const moveBtn = document.getElementById('btn-move');
+  if (moveBtn) moveBtn.onclick = function() { mp_isMultiplayer ? mpGuardedEnterMoveMode() : enterMoveMode(); };
+
+  // Patch handleCellClick
+  const _origHCC = handleCellClick;
+  window.handleCellClick = function(r, c) {
+    if (mp_isMultiplayer && gameState.activePlayer !== mp_localSeat) { showStatus("It's not your turn!", 'error'); return; }
+    _origHCC(r, c);
+    if (mp_isMultiplayer && gameState.winner !== null) mpPushState();
+  };
+
+  // Patch handleWallClick
+  const _origHWC = handleWallClick;
+  window.handleWallClick = function(anchor, orientation, length, isPhantom, isDurable) {
+    if (mp_isMultiplayer && gameState.activePlayer !== mp_localSeat) { showStatus("It's not your turn!", 'error'); return; }
+    _origHWC(anchor, orientation, length, isPhantom, isDurable);
+    if (mp_isMultiplayer && gameState.winner !== null) mpPushState();
+  };
+
+  // Patch performDraw
+  const _origPD = performDraw;
+  window.performDraw = function() {
+    if (!mp_isMultiplayer) { _origPD(); return; }
+    if (gameState.phase === 'draw') {
+      gameState.phase = 'action';
+      renderAll();
+      updateActionBar();
+      mpUpdateTurnState();
+    }
+  };
+
+  // Patch showVictory
+  const _origSV = showVictory;
+  window.showVictory = function(winner) {
+    if (!mp_isMultiplayer) { _origSV(winner); return; }
+    mpShowVictory(winner);
+    if (gameState.winner !== null && mp_gameId && _sb) {
+      _sb.from('mp_games').update({ status: 'finished', winner_seat: gameState.winner, state: mpScrubHands(gameState) }).eq('id', mp_gameId).then(function(){});
+    }
+  };
+
+  // Patch resetGame
+  const _origRG = resetGame;
+  window.resetGame = function() {
+    if (mp_isMultiplayer) {
+      mp_isMultiplayer = false; mp_gameId = null; mp_localSeat = null;
+      if (mp_subscription && _sb) { _sb.removeChannel(mp_subscription); mp_subscription = null; }
+      const p0Label = document.querySelector('#panel-p0 .panel-label');
+      const p1Label = document.querySelector('#panel-p1 .panel-label');
+      if (p0Label) p0Label.textContent = 'PLAYER 0';
+      if (p1Label) p1Label.textContent = 'PLAYER 1';
+    }
+    _origRG(); // _origRG calls showLandingScreen
+  };
+}, {once: true});
+
+console.log('[CORRIDORS] Async Multiplayer module loaded. Configure SUPABASE_URL and SUPABASE_ANON to activate.');
+
+</script>
+</body>
+</html>
