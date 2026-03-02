@@ -697,6 +697,18 @@
     border-color: var(--danger);
     background: rgba(192,64,64,0.1);
   }
+  .action-btn.danger.ready {
+    border-color: var(--success);
+    color: var(--success);
+    animation: pulse-end 1.2s ease-in-out infinite;
+  }
+  .action-btn.danger.ready:hover:not(:disabled) {
+    background: rgba(80,160,96,0.15);
+  }
+  @keyframes pulse-end {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(80,160,96,0); }
+    50%       { box-shadow: 0 0 6px 2px rgba(80,160,96,0.35); }
+  }
   .action-btn.active {
     border-color: var(--amber);
     background: rgba(212,144,58,0.15);
@@ -3884,11 +3896,11 @@ function updateActionBar() {
     else btnMove.textContent = 'MOVE';
   }
   if (btnEnd) {
-    // Allow ending turn if: not in draw/ended, not AI thinking,
-    // AND either turn is normally done OR a pick-mode card is pending (counts as played).
-    const pickModePending = hasPendingPickCard();
-    btnEnd.disabled = phase==='draw' || phase==='ended' || aiThinking ||
-      (phase === 'action' && !pickModePending && !isTurnDoneOrPending());
+    // Allow ending turn at any point during the action phase (early end is permitted).
+    btnEnd.disabled = phase==='draw' || phase==='ended' || aiThinking;
+    // Highlight when the turn is naturally complete (move + card done)
+    const turnComplete = phase === 'end_turn' || (phase === 'action' && isTurnDoneOrPending());
+    btnEnd.className = 'action-btn danger' + (turnComplete && !btnEnd.disabled ? ' ready' : '');
   }
 }
 
@@ -3929,10 +3941,15 @@ function renderAll() {
     // Disable buttons when not our turn
     const isMyPhase = isMyTurn && (phase === 'action' || phase === 'end_turn');
     const pickModePending = hasPendingPickCard();
-    const canEnd = isMyTurn && (phase === 'action' || phase === 'end_turn') && (phase === 'end_turn' || pickModePending || isTurnDoneOrPending());
+    const canEnd = isMyTurn && (phase === 'action' || phase === 'end_turn');
     const endBtn = document.getElementById('btn-end');
     const moveBtn = document.getElementById('btn-move');
-    if (endBtn) { endBtn.disabled = !canEnd; endBtn.style.opacity = canEnd ? '1' : '0.3'; }
+    if (endBtn) {
+      endBtn.disabled = !canEnd;
+      endBtn.style.opacity = canEnd ? '1' : '0.3';
+      const turnComplete = phase === 'end_turn' || (phase === 'action' && canEnd && isTurnDoneOrPending());
+      endBtn.className = 'action-btn danger' + (turnComplete && canEnd ? ' ready' : '');
+    }
     if (moveBtn) {
       moveBtn.disabled = !isMyPhase;
       moveBtn.style.opacity = isMyPhase ? '1' : '0.3';
