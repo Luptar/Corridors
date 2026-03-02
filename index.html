@@ -685,10 +685,9 @@
     border-color: var(--p1);
     background: rgba(90,159,212,0.1);
   }
-  .action-btn.active.primary-p1 {
+  .action-btn.primary-p1.active {
     border-color: var(--p1);
     background: rgba(90,159,212,0.15);
-    color: #7bbce8;
   }
   .action-btn.danger {
     border-color: #5a2020;
@@ -1161,9 +1160,9 @@
   }
   .mp-game-list { display: flex; flex-direction: column; gap: 8px; min-height: 60px; }
   .mp-game-item {
-    display: flex; align-items: center; justify-content: space-between;
+    display: flex; align-items: center; gap: 10px;
     padding: 12px 16px; background: var(--surface2); border: 1px solid var(--border);
-    cursor: pointer; transition: border-color 0.15s;
+    transition: border-color 0.15s;
   }
   .mp-game-item:hover { border-color: var(--border-hi); }
   .mp-game-item-info { display: flex; flex-direction: column; gap: 3px; }
@@ -1627,8 +1626,15 @@ const DIFFICULTY_DEPTH = { easy: 0, medium: 1, hard: 2 };
 
 // isTurnDone — defined in card system section below
 let debugVisible = false;
-const AI_PLAYER = 1;       // Player 1 is always the AI
+const AI_PLAYER = 1;       // Player 1 is always the AI (VS-AI mode)
 let aiThinking = false;
+
+// Returns true if seat pi is controlled by a human (not the AI engine).
+// In VS-AI mode only seat 0 is human; in multiplayer BOTH seats are human.
+function isHumanSeat(pi) {
+  if (typeof mp_isMultiplayer !== 'undefined' && mp_isMultiplayer) return true;
+  return pi !== AI_PLAYER;
+}
 
 // ── createPlayer ────────────────────────────────────────────────────
 function createPlayer(index, championId, faction) {
@@ -2037,8 +2043,8 @@ function discardCard(pi, idx) {
 
 function endTurnHuman() {
   // Player cannot end turn while AI is thinking or it's the AI's turn
-  if (aiThinking || gameState.activePlayer === AI_PLAYER) {
-    showStatus("It's the AI's turn", 'error'); return;
+  if (aiThinking || !isHumanSeat(gameState.activePlayer)) {
+    showStatus("It's not your turn", 'error'); return;
   }
   // If a movement card is pending (selected but not yet used), discard it now
   if (selectedCard && selectedCard._pendingMove && selectedCard.idx >= 0) {
@@ -2789,38 +2795,35 @@ function evalScore()                { return 0;  }
 // ── Champion Select ──────────────────────────────────────────────────
 
 function showLandingScreen() {
-  // Remove any existing overlay
   const existing = document.getElementById('landing-overlay');
   if (existing) existing.remove();
-
   document.body.insertAdjacentHTML('beforeend', `
     <div id="landing-overlay" style="
       position:fixed;inset:0;background:var(--bg);z-index:500;
-      display:flex;flex-direction:column;align-items:center;
-      justify-content:center;padding:40px 24px;
+      display:flex;flex-direction:column;align-items:center;justify-content:center;
+      padding:40px 24px;
     ">
-      <div style="font-family:'Teko',sans-serif;font-size:64px;font-weight:700;letter-spacing:.35em;color:var(--amber);margin-bottom:8px;text-align:center;">CORRIDORS</div>
-      <div style="font-size:11px;letter-spacing:.25em;color:var(--text-dim);text-transform:uppercase;margin-bottom:64px;text-align:center;">A game of walls and champions</div>
-      <div style="display:flex;flex-direction:column;gap:16px;width:280px;">
-        <button onclick="document.getElementById('landing-overlay').remove(); showChampionSelect();" style="
-          padding:18px 48px;background:transparent;border:1px solid var(--amber);
-          color:var(--amber);font-family:'JetBrains Mono',monospace;font-size:13px;
-          letter-spacing:.2em;text-transform:uppercase;cursor:pointer;
-          transition:background 0.15s;width:100%;
-        " onmouseover="this.style.background='rgba(212,144,58,0.1)'" onmouseout="this.style.background='transparent'">
+      <div style="font-family:'Teko',sans-serif;font-size:72px;font-weight:700;letter-spacing:.35em;color:var(--amber);margin-bottom:4px;text-align:center;">CORRIDORS</div>
+      <div style="font-size:11px;letter-spacing:.25em;color:var(--text-dim);text-transform:uppercase;margin-bottom:64px;text-align:center;">Deckbuilding · Champions · Strategy</div>
+      <div style="display:flex;flex-direction:column;gap:14px;width:260px;">
+        <button onclick="document.getElementById('landing-overlay').remove();showChampionSelect();" style="
+          padding:16px 0;background:transparent;border:1px solid var(--amber-dim);
+          color:var(--amber);font-family:'JetBrains Mono',monospace;font-size:12px;
+          letter-spacing:.2em;text-transform:uppercase;cursor:pointer;width:100%;
+          transition:all 0.15s;
+        " onmouseover="this.style.background='rgba(212,144,58,0.08)';this.style.borderColor='var(--amber)'"
+           onmouseout="this.style.background='transparent';this.style.borderColor='var(--amber-dim)'">
           ⚔ VS COMPUTER
         </button>
-        <button onclick="document.getElementById('landing-overlay').remove(); showMultiplayerLobby();" style="
-          padding:18px 48px;background:transparent;border:1px solid var(--p1);
-          color:var(--p1);font-family:'JetBrains Mono',monospace;font-size:13px;
-          letter-spacing:.2em;text-transform:uppercase;cursor:pointer;
-          transition:background 0.15s;width:100%;
-        " onmouseover="this.style.background='rgba(90,159,212,0.1)'" onmouseout="this.style.background='transparent'">
+        <button onclick="document.getElementById('landing-overlay').remove();showMultiplayerLobby();" style="
+          padding:16px 0;background:transparent;border:1px solid var(--p1-dim);
+          color:var(--p1);font-family:'JetBrains Mono',monospace;font-size:12px;
+          letter-spacing:.2em;text-transform:uppercase;cursor:pointer;width:100%;
+          transition:all 0.15s;
+        " onmouseover="this.style.background='rgba(90,159,212,0.08)';this.style.borderColor='var(--p1)'"
+           onmouseout="this.style.background='transparent';this.style.borderColor='var(--p1-dim)'">
           ⚡ MULTIPLAYER
         </button>
-      </div>
-      <div style="margin-top:48px;font-size:10px;letter-spacing:.15em;color:var(--text-dim);text-align:center;text-transform:uppercase;">
-        Deckbuilding · Champions · Async Online Play
       </div>
     </div>
   `);
@@ -2931,7 +2934,7 @@ function confirmChampionSelect() {
 
 // ── UI interactions ─────────────────────────────────────────────────
 function enterMoveMode() {
-  if (gameState.activePlayer === AI_PLAYER) return;
+  if (!isHumanSeat(gameState.activePlayer)) return;
   if (gameState.phase !== 'action') { showStatus('Not your action phase', 'error'); return; }
   const pi = gameState.activePlayer;
   const champId = gameState.players[pi].champion.id;
@@ -3029,7 +3032,7 @@ function handleWallClick(anchor, orientation, length, isPhantom, isDurable) {
   updateActionBar();
 
   // If it's AI's turn after this (shouldn't happen, but safety)
-  if (gameState.phase === 'end_turn' && gameState.activePlayer === AI_PLAYER) {
+  if (!mp_isMultiplayer && gameState.phase === 'end_turn' && gameState.activePlayer === AI_PLAYER) {
     setTimeout(endTurn, 400);
   }
 }
@@ -3105,7 +3108,7 @@ function resetTurnState() {
 
 // ── Card selection dispatcher ────────────────────────────────────────
 function selectCard(cardId, idx) {
-  if (gameState.activePlayer === AI_PLAYER) return;
+  if (!isHumanSeat(gameState.activePlayer)) return;
   if (gameState.phase !== 'action') { showStatus('Not your action phase', 'error'); return; }
 
   const pi     = gameState.activePlayer;
@@ -3610,7 +3613,7 @@ function applyDisruptionCard(pi, card, idx) {
 
 // ── Ultimates ────────────────────────────────────────────────────────
 function activateUltimate(pi) {
-  if (pi === AI_PLAYER) return;
+  if (!isHumanSeat(pi)) return;
   if (gameState.phase !== 'action' || gameState.activePlayer !== pi) {
     showStatus('Not your action phase', 'error'); return;
   }
@@ -3754,7 +3757,7 @@ function updateUltimateButton(pi) {
   if (!btn) return;
   const p = gameState.players[pi];
   const ready    = p.ultimateReady && !p.ultimateUsed;
-  const isMyTurn = gameState.activePlayer===pi && gameState.phase==='action' && pi!==AI_PLAYER;
+  const isMyTurn = gameState.activePlayer===pi && gameState.phase==='action' && isHumanSeat(pi);
   btn.disabled           = !(ready && isMyTurn);
   btn.style.opacity      = (ready && isMyTurn) ? '1' : '0.3';
   btn.style.pointerEvents= (ready && isMyTurn) ? 'auto' : 'none';
@@ -3766,7 +3769,7 @@ function updateUltimateButton(pi) {
 function updateActionBar() {
   const phase = gameState.phase;
   const isAction = phase === 'action';
-  const isHuman = gameState.activePlayer !== AI_PLAYER;
+  const isHuman = isHumanSeat(gameState.activePlayer);
 
   const btnMove = document.getElementById('btn-move');
   const btnEnd  = document.getElementById('btn-end');
@@ -3778,7 +3781,8 @@ function updateActionBar() {
     const sorenCanMoveAgain = champId === 'soren' && hasMoved && cardsPlayedThisTurn === 0 && !gameState._sorenSecondMove;
     const isBound = isHuman && (gameState.players[pi]?.statusEffects || []).some(e => e.type === 'skip_move' && e.turnsRemaining > 0);
     btnMove.disabled = !isAction || (hasMoved && !sorenCanMoveAgain) || !isHuman || aiThinking || isBound;
-    btnMove.className = `action-btn primary${uiMode==='move' ? ' active' : ''}`;
+    const moveBtnColour = (mp_isMultiplayer && gameState.activePlayer === 1) ? 'primary-p1' : 'primary';
+    btnMove.className = `action-btn ${moveBtnColour}${uiMode==='move' ? ' active' : ''}`;
     if (isBound) btnMove.textContent = 'BOUND';
     else if (sorenCanMoveAgain) btnMove.textContent = 'MOVE (2nd)';
     else btnMove.textContent = 'MOVE';
@@ -3840,12 +3844,12 @@ function renderPanels() {
     const handEl = document.getElementById(`${prefix}-hand`);
     if (handEl) {
       const isThorne = gameState.players[0].champion.id === 'thorne' && pi === AI_PLAYER;
-      if (pi === AI_PLAYER && !isThorne) {
+      if (!isHumanSeat(pi) && !isThorne) {
         handEl.innerHTML = p.hand.map(()=>
           `<div class="hidden-card"><div class="hidden-card-icon"></div><span class="hidden-card-label">HIDDEN</span></div>`
         ).join('');
       } else {
-        const isActive = pi === gameState.activePlayer && gameState.phase === 'action' && pi !== AI_PLAYER;
+        const isActive = pi === gameState.activePlayer && gameState.phase === 'action' && isHumanSeat(pi);
         handEl.innerHTML = p.hand.map((card,idx) => renderCard(card, idx, pi, isActive)).join('');
       }
     }
@@ -3889,11 +3893,11 @@ function renderBoard() {
   const p0Name = gameState.players[0].champion.name.toUpperCase();
   const p1Name = gameState.players[1].champion.name.toUpperCase();
   container.innerHTML = `
-    <div style="position:absolute;top:-20px;left:0;right:0;text-align:center;font-size:9px;color:var(--p1-dim);letter-spacing:.15em;font-family:'JetBrains Mono',monospace;">← AI (${p1Name}) GOAL →</div>
+    <div style="position:absolute;top:-20px;left:0;right:0;text-align:center;font-size:9px;color:var(--p1-dim);letter-spacing:.15em;font-family:'JetBrains Mono',monospace;">${mp_isMultiplayer ? '← ' + p1Name + ' GOAL →' : '← AI (' + p1Name + ') GOAL →'}</div>
     <div class="board-grid" id="board-grid"></div>
     <div class="wall-layer" id="wall-layer" style="position:absolute;top:${GAP}px;left:${GAP}px;width:${totalSize}px;height:${totalSize}px;"></div>
     <div id="wall-overlay" style="position:absolute;top:${GAP}px;left:${GAP}px;width:${totalSize}px;height:${totalSize}px;pointer-events:none;"></div>
-    <div style="position:absolute;bottom:-20px;left:0;right:0;text-align:center;font-size:9px;color:var(--amber-dim);letter-spacing:.15em;font-family:'JetBrains Mono',monospace;">← YOUR (${p0Name}) GOAL →</div>
+    <div style="position:absolute;bottom:-20px;left:0;right:0;text-align:center;font-size:9px;color:var(--amber-dim);letter-spacing:.15em;font-family:'JetBrains Mono',monospace;">← ${mp_isMultiplayer ? p0Name : 'YOUR (' + p0Name + ')'} GOAL →</div>
   `;
 
   const grid = document.getElementById('board-grid');
@@ -3944,14 +3948,16 @@ function renderWalls() {
   for (const wall of gameState.walls) {
 
     const el = document.createElement('div');
-    const isPickable    = uiMode === 'wallPick'      && wall.owner === 0 && !wall.isPhantom && !wall.permanent;
-    const isRedirect    = uiMode === 'wallRedirect'  && wall.owner === 1 && !wall.isPhantom && !wall.permanent;
-    const isSealable    = uiMode === 'wallSeal'      && wall.owner === 0 && !wall.isPhantom && !wall.permanent;
+    const _activePi = gameState.activePlayer;
+    const isPickable    = uiMode === 'wallPick'      && wall.owner === _activePi && !wall.isPhantom && !wall.permanent;
+    const isRedirect    = uiMode === 'wallRedirect'  && wall.owner === (1-_activePi) && !wall.isPhantom && !wall.permanent;
+    const isSealable    = uiMode === 'wallSeal'      && wall.owner === _activePi && !wall.isPhantom && !wall.permanent;
     const isPunchable   = uiMode === 'wallPunch'     && !wall.isPhantom && !wall.permanent && !wall.reinforced && !wall.immune;
     const isReinforceable = uiMode === 'wallReinforce' && wall.owner === gameState.activePlayer && !wall.isPhantom && !wall.reinforced;
     const isReconstructable = uiMode === 'wallReconstruct' && wall.owner === gameState.activePlayer && !wall.isPhantom;
-    // Owner of a phantom wall sees it with a distinct teal tint (only player 0 = human)
-    const isOwnPhantom = wall.isPhantom && wall.owner === 0;
+    // Owner of a phantom wall sees it with a distinct teal tint
+    const localPlayer = (typeof mp_isMultiplayer !== 'undefined' && mp_isMultiplayer) ? mp_localSeat : 0;
+    const isOwnPhantom = wall.isPhantom && wall.owner === localPlayer;
     let cls = `wall-segment${wall.isPhantom?' phantom':''} owner-${wall.owner}${isOwnPhantom?' phantom-own':''}`;
     if (wall.immune || wall.permanent || wall.reinforced) cls += ' wall-immune';
     if (wall.reinforced) cls += ' wall-reinforced';
@@ -4334,7 +4340,7 @@ function updateTurnBanner() {
   const pi = gameState.activePlayer;
   const phase = gameState.phase;
   const champion = gameState.players[pi].champion.name;
-  const isAI = pi === AI_PLAYER;
+  const isAI = !isHumanSeat(pi);
   const phaseLabel = {draw:'DRAW', action: isAI ? 'AI THINKING' : 'ACTION', end_turn:'END', ended:'GAME OVER'}[phase] || phase;
   if (banner) {
     banner.textContent = `${isAI?'AI':'YOU'} — ${champion.toUpperCase()} — ${phaseLabel}`;
@@ -4520,7 +4526,7 @@ function showVictory(winner) {
   const champion = gameState.players[winner].champion.name;
 
   if (title) {
-    title.textContent  = winner === AI_PLAYER ? 'AI WINS' : 'YOU WIN';
+    title.textContent  = (mp_isMultiplayer ? (winner === mp_localSeat ? 'YOU WIN' : (mp_opponentName||'OPPONENT').toUpperCase() + ' WINS') : (winner === AI_PLAYER ? 'AI WINS' : 'YOU WIN'));
     title.style.color  = winner === 0 ? 'var(--p0)' : 'var(--p1)';
   }
   if (subtitle) subtitle.textContent = `${champion} reached the goal line — Turn ${gameState.turnNumber}`;
@@ -4776,7 +4782,7 @@ function showMultiplayerLobby(tab = 'home', prefillCode = null) {
     </div>
 
     <div style="margin-top:20px;">
-      <button class="mp-btn secondary" style="width:auto;padding:8px 24px;" onclick="closeMpLobby();showLandingScreen()">← BACK</button>
+      <button class="mp-btn secondary" style="width:auto;padding:8px 24px;" onclick="closeMpLobby()">← BACK TO MENU</button>
     </div>
   `;
 
@@ -4794,10 +4800,11 @@ function showMultiplayerLobby(tab = 'home', prefillCode = null) {
   }
 }
 
-function closeMpLobby() {
+function closeMpLobby(silent = false) {
   const overlay = document.getElementById('mp-overlay');
   if (overlay) overlay.remove();
   clearInterval(mp_lobbyInterval);
+  if (!silent) showLandingScreen();
 }
 
 function mpShowTab(tab) {
@@ -4878,6 +4885,7 @@ async function mpLoadMyGames() {
       .from('mp_games')
       .select('id,status,host_id,guest_id,host_name,guest_name,host_champ,guest_champ,active_seat,winner_seat,updated_at')
       .or(`host_id.eq.${_userId},guest_id.eq.${_userId}`)
+      .neq('status', 'abandoned')
       .order('updated_at', { ascending: false })
       .limit(20);
 
@@ -4917,23 +4925,51 @@ function mpGameItem(g) {
   const timeAgo = mpTimeAgo(d);
 
   return `
-    <div class="mp-game-item" style="display:flex;align-items:center;gap:0;" >
-      <div style="flex:1;cursor:pointer;" onclick="mpResumeGame('${g.id}')">
-        <div class="mp-game-item-info">
-          <div class="mp-game-item-name">${myName} vs ${oppName}</div>
-          <div class="mp-game-item-meta">${myChamp.toUpperCase()} · Game #${g.id} · ${timeAgo}</div>
-        </div>
+    <div class="mp-game-item">
+      <div class="mp-game-item-info" onclick="mpResumeGame('${g.id}')" style="cursor:pointer;flex:1;min-width:0;">
+        <div class="mp-game-item-name">${myName} vs ${oppName}</div>
+        <div class="mp-game-item-meta">${myChamp.toUpperCase()} · ${timeAgo}</div>
       </div>
-      <div class="mp-game-item-badge ${badgeClass}" style="cursor:pointer;" onclick="mpResumeGame('${g.id}')">${badge}</div>
-      <button onclick="event.stopPropagation();mpConfirmLeave('${g.id}')" title="Leave / delete game" style="
-        background:transparent;border:1px solid #3a2020;color:#6a3030;
-        font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.1em;
-        padding:4px 8px;cursor:pointer;margin-left:8px;flex-shrink:0;
-        transition:all 0.15s;
-      " onmouseover="this.style.borderColor='var(--danger)';this.style.color='var(--danger)'" 
-         onmouseout="this.style.borderColor='#3a2020';this.style.color='#6a3030'">✕</button>
+      <div class="mp-game-item-badge ${badgeClass}">${badge}</div>
+      <button
+        onclick="event.stopPropagation();mpAbandonGame('${g.id}', this)"
+        title="Remove game"
+        style="
+          margin-left:10px;padding:4px 8px;background:transparent;
+          border:1px solid var(--border);color:var(--text-dim);
+          font-size:12px;cursor:pointer;flex-shrink:0;line-height:1;
+          transition:all 0.15s;
+        "
+        onmouseover="this.style.borderColor='var(--danger)';this.style.color='var(--danger)'"
+        onmouseout="this.style.borderColor='var(--border)';this.style.color='var(--text-dim)'"
+      >✕</button>
     </div>
   `;
+}
+
+async function mpAbandonGame(gameId, btn) {
+  if (!confirm('Remove this game from your list?')) return;
+  const sb = mpInit();
+  if (!sb) return;
+  btn.disabled = true;
+  btn.textContent = '…';
+  try {
+    const { error } = await sb.from('mp_games').update({ status: 'abandoned' }).eq('id', gameId);
+    if (error) throw error;
+    // Remove the item from the DOM immediately
+    const item = btn.closest('.mp-game-item');
+    if (item) item.remove();
+    // If list is now empty, show the empty state
+    const list = document.getElementById('mp-game-list');
+    if (list && list.children.length === 0) {
+      list.innerHTML = '<div style="text-align:center;padding:24px;color:var(--text-dim);font-size:11px;letter-spacing:.12em;">No games yet — create or join one!</div>';
+    }
+  } catch(e) {
+    console.error('[MP] abandonGame error:', e);
+    btn.disabled = false;
+    btn.textContent = '✕';
+    alert('Could not remove game: ' + (e.message || e));
+  }
 }
 
 function mpTimeAgo(d) {
@@ -4942,57 +4978,6 @@ function mpTimeAgo(d) {
   if (sec < 3600) return `${Math.floor(sec/60)}m ago`;
   if (sec < 86400) return `${Math.floor(sec/3600)}h ago`;
   return `${Math.floor(sec/86400)}d ago`;
-}
-
-function mpConfirmLeave(gameId) {
-  const existing = document.getElementById('mp-leave-confirm');
-  if (existing) existing.remove();
-
-  const modal = document.createElement('div');
-  modal.id = 'mp-leave-confirm';
-  modal.style.cssText = `
-    position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:600;
-    display:flex;align-items:center;justify-content:center;
-  `;
-  modal.innerHTML = `
-    <div style="background:var(--surface);border:1px solid var(--border-hi);padding:32px;max-width:320px;width:90%;text-align:center;">
-      <div style="font-family:'Teko',sans-serif;font-size:22px;letter-spacing:.2em;color:var(--danger);margin-bottom:12px;">LEAVE GAME?</div>
-      <div style="font-size:11px;color:var(--text-dim);letter-spacing:.1em;line-height:1.6;margin-bottom:24px;">
-        This will permanently delete Game #${gameId} for both players. This cannot be undone.
-      </div>
-      <div style="display:flex;gap:12px;justify-content:center;">
-        <button onclick="document.getElementById('mp-leave-confirm').remove()" style="
-          padding:10px 24px;background:transparent;border:1px solid var(--border-hi);
-          color:var(--text);font-family:'JetBrains Mono',monospace;font-size:11px;
-          letter-spacing:.15em;cursor:pointer;
-        ">CANCEL</button>
-        <button onclick="document.getElementById('mp-leave-confirm').remove();mpLeaveGame('${gameId}')" style="
-          padding:10px 24px;background:transparent;border:1px solid var(--danger);
-          color:var(--danger);font-family:'JetBrains Mono',monospace;font-size:11px;
-          letter-spacing:.15em;cursor:pointer;
-        ">DELETE GAME</button>
-      </div>
-    </div>
-  `;
-  document.body.appendChild(modal);
-}
-
-async function mpLeaveGame(gameId) {
-  const sb = mpInit();
-  if (!sb) return;
-  const list = document.getElementById('mp-game-list');
-  if (list) {
-    list.innerHTML = `<div style="text-align:center;padding:24px;color:var(--text-dim);font-size:11px;letter-spacing:.12em;">
-      <div class="mp-spinner" style="margin:0 auto 10px;"></div>DELETING…</div>`;
-  }
-  try {
-    const { error } = await sb.from('mp_games').delete().eq('id', gameId);
-    if (error) throw error;
-    await mpLoadMyGames();
-  } catch(e) {
-    console.error('[MP] leaveGame error:', e);
-    if (list) list.innerHTML = `<div class="mp-status error">Error deleting game: ${e.message}</div>`;
-  }
 }
 
 // ── Create Tab ───────────────────────────────────────────────────────
@@ -5222,7 +5207,7 @@ function mpBuildInitialState(hostChampId, guestChampId, firstSeat) {
       createPlayer(1, guestChampId, gChamp.faction),
     ],
     walls: [], decoyTokens: [], trapTokens: [],
-    activePlayer: firstSeat, turnNumber: 1, phase: 'action',
+    activePlayer: firstSeat, turnNumber: 1, phase: 'draw',
     winner: null, log: [], nextWallId: 1, nextTokenId: 1,
     firstDraw: [true, true],
     // Perform opening draws
@@ -5256,7 +5241,7 @@ async function mpStartHostGame(gameId, myChamp, oppChamp, oppName) {
   const { data: g } = await sb.from('mp_games').select('*').eq('id', gameId).single();
   if (!g) return;
 
-  closeMpLobby();
+  closeMpLobby(true);
   const myHand = JSON.parse(g.host_hand || '[]');
   const sharedState = g.state;
   mpLaunchGame(gameId, 0, myChamp, oppChamp, oppName, myHand, sharedState);
@@ -5264,7 +5249,7 @@ async function mpStartHostGame(gameId, myChamp, oppChamp, oppName) {
 
 // ── Start game (guest) ───────────────────────────────────────────────
 function mpStartGuestGame(gameId, myChamp, oppChamp, oppName, firstSeat, myHand, fullState) {
-  closeMpLobby();
+  closeMpLobby(true);
   const sharedState = mpScrubHands(fullState);
   mpLaunchGame(gameId, 1, myChamp, oppChamp, oppName, myHand, sharedState);
 }
@@ -5287,7 +5272,7 @@ async function mpResumeGame(gameId) {
 
     if (!g.state) { alert('Game state not available'); return; }
 
-    closeMpLobby();
+    closeMpLobby(true);
     mpLaunchGame(gameId, mySeat, myChamp, oppChamp, oppName, myHand, g.state);
   } catch(e) {
     console.error('[MP] resume error:', e);
@@ -5334,19 +5319,11 @@ function mpLaunchGame(gameId, localSeat, myChampId, oppChampId, oppName, myHand,
   hasPlayedCard = false;
   cardsPlayedThisTurn = 0;
 
-  // In MP there is no AI — set AI_PLAYER to -1 so neither seat is ever
-  // treated as the computer. All the "=== AI_PLAYER" guards in enterMoveMode,
-  // selectCard, activateUltimate, updateActionBar, renderPanels etc. will now
-  // correctly allow both players to act.
-  window.AI_PLAYER = -1;
+  // Override AI_PLAYER — in MP there's no AI; opponent is the other seat
+  // We patch rendering: player 0 is always host, player 1 is always guest
+  // localSeat 0 = you're player 0; localSeat 1 = you're player 1
 
   mpUpdatePanelLabels();
-
-  // In online multiplayer, cards are drawn automatically — skip the draw phase entirely
-  if (gameState.phase === 'draw') {
-    gameState.phase = 'action';
-  }
-
   renderAll();
   mpUpdateTurnState();
 
@@ -5439,11 +5416,6 @@ async function mpHandleRemoteUpdate(row, localSeat, myChampId, oppChampId) {
     cardsPlayedThisTurn = 0;
     uiMode = 'idle';
     selectedCard = null;
-
-    // In online multiplayer, skip the draw phase — cards are drawn automatically
-    if (gameState.phase === 'draw') {
-      gameState.phase = 'action';
-    }
 
     mpUpdatePanelLabels();
     renderAll();
@@ -5658,13 +5630,12 @@ document.addEventListener('DOMContentLoaded', function mpPatch() {
     const moveBtn = document.getElementById('btn-move');
     if (endBtn) { endBtn.disabled = !isMyPhase; endBtn.style.opacity = isMyPhase ? '1' : '0.3'; }
     if (moveBtn) {
-      const btnClass = mp_localSeat === 1 ? 'primary-p1' : 'primary';
-      const isMoving = uiMode === 'move';
-      moveBtn.className = 'action-btn ' + btnClass + (isMoving ? ' active' : '');
+      // updateActionBar already set the class/colour; just enforce enable/disable here
       moveBtn.disabled = !isMyPhase;
       moveBtn.style.opacity = isMyPhase ? '1' : '0.3';
     }
     if (!isMyTurn) {
+      // Disable my own hand cards while waiting for opponent
       const myHandEl = document.getElementById('p' + mp_localSeat + '-hand');
       if (myHandEl) myHandEl.querySelectorAll('.card').forEach(function(el) {
         el.classList.add('card-disabled'); el.style.pointerEvents = 'none';
@@ -5723,14 +5694,12 @@ document.addEventListener('DOMContentLoaded', function mpPatch() {
     if (mp_isMultiplayer) {
       mp_isMultiplayer = false; mp_gameId = null; mp_localSeat = null;
       if (mp_subscription && _sb) { _sb.removeChannel(mp_subscription); mp_subscription = null; }
-      // Restore AI_PLAYER for VS-AI mode
-      window.AI_PLAYER = 1;
       const p0Label = document.querySelector('#panel-p0 .panel-label');
       const p1Label = document.querySelector('#panel-p1 .panel-label');
       if (p0Label) p0Label.textContent = 'PLAYER 0';
       if (p1Label) p1Label.textContent = 'PLAYER 1';
     }
-    _origRG();
+    _origRG(); // _origRG calls showLandingScreen
   };
 }, {once: true});
 
