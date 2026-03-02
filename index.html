@@ -5207,7 +5207,7 @@ function mpBuildInitialState(hostChampId, guestChampId, firstSeat) {
       createPlayer(1, guestChampId, gChamp.faction),
     ],
     walls: [], decoyTokens: [], trapTokens: [],
-    activePlayer: firstSeat, turnNumber: 1, phase: 'draw',
+    activePlayer: firstSeat, turnNumber: 1, phase: 'action',
     winner: null, log: [], nextWallId: 1, nextTokenId: 1,
     firstDraw: [true, true],
     // Perform opening draws
@@ -5319,6 +5319,12 @@ function mpLaunchGame(gameId, localSeat, myChampId, oppChampId, oppName, myHand,
   hasPlayedCard = false;
   cardsPlayedThisTurn = 0;
 
+  // In MP, opening hands are pre-dealt — draw phase doesn't exist.
+  // Force 'action' so buttons are never gated behind the draw-phase guard.
+  if (gameState.phase !== 'ended') {
+    gameState.phase = 'action';
+  }
+
   // Override AI_PLAYER — in MP there's no AI; opponent is the other seat
   // We patch rendering: player 0 is always host, player 1 is always guest
   // localSeat 0 = you're player 0; localSeat 1 = you're player 1
@@ -5422,8 +5428,8 @@ async function mpHandleRemoteUpdate(row, localSeat, myChampId, oppChampId) {
     uiMode = 'idle';
     selectedCard = null;
 
-    // In MP, draw phase is skipped — hands are managed privately
-    if (gameState.phase === 'draw') {
+    // In MP, draw phase doesn't exist — always force action phase
+    if (gameState.phase !== 'ended') {
       gameState.phase = 'action';
     }
 
@@ -5454,7 +5460,6 @@ function mpHandleGameFinished(row, localSeat) {
 
 function mpEndTurnLocal() {
   if (gameState.phase === 'ended') return;
-  if (gameState.phase === 'draw') { showStatus('Draw your hand first', 'error'); return; }
 
   const pi = gameState.activePlayer;
   const p = gameState.players[pi];
