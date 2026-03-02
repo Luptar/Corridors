@@ -1624,6 +1624,9 @@ let selectedChampionId = null;
 let aiDifficulty = 'medium'; // 'easy' | 'medium' | 'hard'
 const DIFFICULTY_DEPTH = { easy: 0, medium: 1, hard: 2 };
 
+// ── Game mode: 'idle' | 'sp' (singleplayer) | 'mp' (multiplayer) ──
+let gameMode = 'idle';
+
 // isTurnDone — defined in card system section below
 let debugVisible = false;
 const AI_PLAYER = 1;       // Player 1 is always the AI (VS-AI mode)
@@ -1632,7 +1635,7 @@ let aiThinking = false;
 // Returns true if seat pi is controlled by a human (not the AI engine).
 // In VS-AI mode only seat 0 is human; in multiplayer BOTH seats are human.
 function isHumanSeat(pi) {
-  if (typeof mp_isMultiplayer !== 'undefined' && mp_isMultiplayer) return true;
+  if (gameMode === 'mp') return true;
   return pi !== AI_PLAYER;
 }
 
@@ -1658,6 +1661,14 @@ function createPlayer(index, championId, faction) {
 
 // ── initGame ────────────────────────────────────────────────────────
 function initGame(playerChampId, aiChampId) {
+  // ── FULLY tear down any lingering MP state ──
+  gameMode = 'sp';
+  mp_isMultiplayer = false;
+  mp_gameId = null;
+  mp_localSeat = null;
+  mp_opponentName = null;
+  if (mp_subscription && _sb) { _sb.removeChannel(mp_subscription); mp_subscription = null; }
+
   playerChampId = playerChampId || 'magnus';
   aiChampId     = aiChampId     || 'soren';
   const pChamp  = CHAMPIONS[playerChampId];
@@ -1689,6 +1700,14 @@ function initGame(playerChampId, aiChampId) {
   hasPlayedCard = false;
   aiThinking = false;
   aiProbedWallIds.clear();
+  cardsPlayedThisTurn = 0;
+
+  // Reset panel labels back to SP mode
+  const p0Label = document.querySelector('#panel-p0 .panel-label');
+  const p1Label = document.querySelector('#panel-p1 .panel-label');
+  if (p0Label) p0Label.textContent = 'PLAYER 0';
+  if (p1Label) p1Label.textContent = 'PLAYER 1';
+
   renderAll();
   // Draw player 0's opening hand automatically
   const _pName = gameState.players[0].champion.name;
@@ -1866,6 +1885,22 @@ function isWallLegal(anchor, orientation, length, walls, p0pos, p1pos, isPhantom
 
 // ── State mutations ─────────────────────────────────────────────────
 function performDraw() {
+  // ── MP mode: drawing is handled by mpDrawForLocalPlayer, skip SP draw ──
+  if (gameMode === 'mp') {
+    if (gameState.phase === 'draw') {
+      // In MP, the active player's hand was already drawn when their turn started
+      // (via mpHandleRemoteUpdate or mpLaunchGame). Just advance to action.
+      gameState.phase = 'action';
+      hasMoved = false;
+      hasPlayedCard = false;
+      renderAll();
+      updateActionBar();
+      mpUpdateTurnState();
+    }
+    return;
+  }
+
+  // ── SP mode: standard draw logic ──
   const pi = gameState.activePlayer;
   const p = gameState.players[pi];
 
@@ -2042,6 +2077,12 @@ function discardCard(pi, idx) {
 }
 
 function endTurnHuman() {
+  // ── MP mode: dispatch to multiplayer end-turn ──
+  if (gameMode === 'mp') {
+    mpGuardedEndTurnHuman();
+    return;
+  }
+  // ── SP mode ──
   // Player cannot end turn while AI is thinking or it's the AI's turn
   if (aiThinking || !isHumanSeat(gameState.activePlayer)) {
     showStatus("It's not your turn", 'error'); return;
@@ -2934,6 +2975,7 @@ function confirmChampionSelect() {
 
 // ── UI interactions ─────────────────────────────────────────────────
 function enterMoveMode() {
+  if (gameMode === 'mp' && gameState.activePlayer !== mp_localSeat) { showStatus("It's not your turn!", 'error'); return; }
   if (!isHumanSeat(gameState.activePlayer)) return;
   if (gameState.phase !== 'action') { showStatus('Not your action phase', 'error'); return; }
   const pi = gameState.activePlayer;
@@ -2990,12 +3032,16 @@ function hideOrientationToggle() {
 }
 
 function handleCellClick(r, c) {
+  if (gameMode === 'mp' && gameState.activePlayer !== mp_localSeat) { showStatus("It's not your turn!", 'error'); return; }
   if (uiMode !== 'move') return;
   executeMove({row:r, col:c});
   updateActionBar();
+  // In MP, if a win was scored, push state immediately
+  if (gameMode === 'mp' && gameState.winner !== null) mpPushState();
 }
 
 function handleWallClick(anchor, orientation, length, isPhantom, isDurable) {
+  if (gameMode === 'mp' && gameState.activePlayer !== mp_localSeat) { showStatus("It's not your turn!", 'error'); return; }
   if (uiMode !== 'wall') return;
   const pi = gameState.activePlayer;
   const p = gameState.players[pi];
@@ -3032,9 +3078,11 @@ function handleWallClick(anchor, orientation, length, isPhantom, isDurable) {
   updateActionBar();
 
   // If it's AI's turn after this (shouldn't happen, but safety)
-  if (!mp_isMultiplayer && gameState.phase === 'end_turn' && gameState.activePlayer === AI_PLAYER) {
+  if (gameMode === 'sp' && gameState.phase === 'end_turn' && gameState.activePlayer === AI_PLAYER) {
     setTimeout(endTurn, 400);
   }
+  // In MP, if a win was scored, push state immediately
+  if (gameMode === 'mp' && gameState.winner !== null) mpPushState();
 }
 
 // ── Persistent storage ──────────────────────────────────────────────
@@ -3781,7 +3829,7 @@ function updateActionBar() {
     const sorenCanMoveAgain = champId === 'soren' && hasMoved && cardsPlayedThisTurn === 0 && !gameState._sorenSecondMove;
     const isBound = isHuman && (gameState.players[pi]?.statusEffects || []).some(e => e.type === 'skip_move' && e.turnsRemaining > 0);
     btnMove.disabled = !isAction || (hasMoved && !sorenCanMoveAgain) || !isHuman || aiThinking || isBound;
-    const moveBtnColour = (mp_isMultiplayer && gameState.activePlayer === 1) ? 'primary-p1' : 'primary';
+    const moveBtnColour = (gameMode === 'mp' && gameState.activePlayer === 1) ? 'primary-p1' : 'primary';
     btnMove.className = `action-btn ${moveBtnColour}${uiMode==='move' ? ' active' : ''}`;
     if (isBound) btnMove.textContent = 'BOUND';
     else if (sorenCanMoveAgain) btnMove.textContent = 'MOVE (2nd)';
@@ -3802,6 +3850,47 @@ function renderAll() {
   updateUltimateButton(0);
   updateUltimateButton(1);
   if (debugVisible) updateDebug();
+
+  // ── MP post-processing: hide opponent hand, override banner, disable controls ──
+  if (gameMode === 'mp') {
+    const oppSeat = 1 - mp_localSeat;
+    const oppHandEl = document.getElementById('p' + oppSeat + '-hand');
+    if (oppHandEl) {
+      const count = (gameState._handCounts && gameState._handCounts[oppSeat]) || 0;
+      oppHandEl.innerHTML = count > 0
+        ? Array(count).fill('<div class="hidden-card"><div class="hidden-card-icon"></div><span class="hidden-card-label">HIDDEN</span></div>').join('')
+        : '<div style="font-size:10px;color:var(--text-dim);letter-spacing:.1em;padding:8px;border:1px solid var(--border);text-align:center;text-transform:uppercase;">Opponent Hand Hidden</div>';
+    }
+    // Turn banner override
+    const banner = document.getElementById('turn-banner');
+    const isMyTurn = gameState.activePlayer === mp_localSeat;
+    const me = (gameState.players[mp_localSeat] && gameState.players[mp_localSeat].champion && gameState.players[mp_localSeat].champion.name) || '';
+    const them = (gameState.players[1-mp_localSeat] && gameState.players[1-mp_localSeat].champion && gameState.players[1-mp_localSeat].champion.name) || '';
+    const phase = gameState.phase;
+    const phaseLabel = ({draw:'DRAW', action: isMyTurn ? 'YOUR TURN' : 'THEIR TURN', end_turn:'END', ended:'GAME OVER'})[phase] || phase;
+    if (banner) {
+      banner.textContent = isMyTurn
+        ? 'YOU (' + me.toUpperCase() + ') — ' + phaseLabel
+        : (mp_opponentName||'OPPONENT').toUpperCase() + ' (' + them.toUpperCase() + ') — ' + phaseLabel;
+      banner.className = 'turn-banner p' + (isMyTurn ? mp_localSeat : 1-mp_localSeat);
+    }
+    // Disable buttons when not our turn
+    const isMyPhase = isMyTurn && phase === 'action';
+    const endBtn = document.getElementById('btn-end');
+    const moveBtn = document.getElementById('btn-move');
+    if (endBtn) { endBtn.disabled = !isMyPhase; endBtn.style.opacity = isMyPhase ? '1' : '0.3'; }
+    if (moveBtn) {
+      moveBtn.disabled = !isMyPhase;
+      moveBtn.style.opacity = isMyPhase ? '1' : '0.3';
+    }
+    if (!isMyTurn) {
+      const myHandEl = document.getElementById('p' + mp_localSeat + '-hand');
+      if (myHandEl) myHandEl.querySelectorAll('.card').forEach(function(el) {
+        el.classList.add('card-disabled'); el.style.pointerEvents = 'none';
+      });
+    }
+    mpUpdatePanelLabels();
+  }
 }
 
 function renderPanels() {
@@ -3893,11 +3982,11 @@ function renderBoard() {
   const p0Name = gameState.players[0].champion.name.toUpperCase();
   const p1Name = gameState.players[1].champion.name.toUpperCase();
   container.innerHTML = `
-    <div style="position:absolute;top:-20px;left:0;right:0;text-align:center;font-size:9px;color:var(--p1-dim);letter-spacing:.15em;font-family:'JetBrains Mono',monospace;">${mp_isMultiplayer ? '← ' + p1Name + ' GOAL →' : '← AI (' + p1Name + ') GOAL →'}</div>
+    <div style="position:absolute;top:-20px;left:0;right:0;text-align:center;font-size:9px;color:var(--p1-dim);letter-spacing:.15em;font-family:'JetBrains Mono',monospace;">${gameMode === 'mp' ? '← ' + p1Name + ' GOAL →' : '← AI (' + p1Name + ') GOAL →'}</div>
     <div class="board-grid" id="board-grid"></div>
     <div class="wall-layer" id="wall-layer" style="position:absolute;top:${GAP}px;left:${GAP}px;width:${totalSize}px;height:${totalSize}px;"></div>
     <div id="wall-overlay" style="position:absolute;top:${GAP}px;left:${GAP}px;width:${totalSize}px;height:${totalSize}px;pointer-events:none;"></div>
-    <div style="position:absolute;bottom:-20px;left:0;right:0;text-align:center;font-size:9px;color:var(--amber-dim);letter-spacing:.15em;font-family:'JetBrains Mono',monospace;">← ${mp_isMultiplayer ? p0Name : 'YOUR (' + p0Name + ')'} GOAL →</div>
+    <div style="position:absolute;bottom:-20px;left:0;right:0;text-align:center;font-size:9px;color:var(--amber-dim);letter-spacing:.15em;font-family:'JetBrains Mono',monospace;">← ${gameMode === 'mp' ? p0Name : 'YOUR (' + p0Name + ')'} GOAL →</div>
   `;
 
   const grid = document.getElementById('board-grid');
@@ -3956,7 +4045,7 @@ function renderWalls() {
     const isReinforceable = uiMode === 'wallReinforce' && wall.owner === gameState.activePlayer && !wall.isPhantom && !wall.reinforced;
     const isReconstructable = uiMode === 'wallReconstruct' && wall.owner === gameState.activePlayer && !wall.isPhantom;
     // Owner of a phantom wall sees it with a distinct teal tint
-    const localPlayer = (typeof mp_isMultiplayer !== 'undefined' && mp_isMultiplayer) ? mp_localSeat : 0;
+    const localPlayer = (gameMode === 'mp') ? mp_localSeat : 0;
     const isOwnPhantom = wall.isPhantom && wall.owner === localPlayer;
     let cls = `wall-segment${wall.isPhantom?' phantom':''} owner-${wall.owner}${isOwnPhantom?' phantom-own':''}`;
     if (wall.immune || wall.permanent || wall.reinforced) cls += ' wall-immune';
@@ -4514,6 +4603,16 @@ async function saveGameRecord(record) {
 }
 
 function showVictory(winner) {
+  // ── MP mode: use multiplayer victory display ──
+  if (gameMode === 'mp') {
+    mpShowVictory(winner);
+    if (gameState.winner !== null && mp_gameId && _sb) {
+      _sb.from('mp_games').update({ status: 'finished', winner_seat: gameState.winner, state: mpScrubHands(gameState) }).eq('id', mp_gameId).then(function(){});
+    }
+    return;
+  }
+
+  // ── SP mode ──
   const record = buildGameRecord(winner);
   saveGameRecord(record); // async, fire-and-forget
 
@@ -4526,7 +4625,7 @@ function showVictory(winner) {
   const champion = gameState.players[winner].champion.name;
 
   if (title) {
-    title.textContent  = (mp_isMultiplayer ? (winner === mp_localSeat ? 'YOU WIN' : (mp_opponentName||'OPPONENT').toUpperCase() + ' WINS') : (winner === AI_PLAYER ? 'AI WINS' : 'YOU WIN'));
+    title.textContent  = (gameMode === 'mp' ? (winner === mp_localSeat ? 'YOU WIN' : (mp_opponentName||'OPPONENT').toUpperCase() + ' WINS') : (winner === AI_PLAYER ? 'AI WINS' : 'YOU WIN'));
     title.style.color  = winner === 0 ? 'var(--p0)' : 'var(--p1)';
   }
   if (subtitle) subtitle.textContent = `${champion} reached the goal line — Turn ${gameState.turnNumber}`;
@@ -4597,6 +4696,32 @@ function statBox(label, value) {
 function resetGame() {
   const overlay = document.getElementById('victory-overlay');
   if (overlay) overlay.style.display = 'none';
+
+  // ── Fully tear down MP state if we were in a multiplayer game ──
+  if (gameMode === 'mp' || mp_isMultiplayer) {
+    mp_isMultiplayer = false;
+    mp_gameId = null;
+    mp_localSeat = null;
+    mp_opponentName = null;
+    if (mp_subscription && _sb) { _sb.removeChannel(mp_subscription); mp_subscription = null; }
+  }
+
+  // Reset panel labels
+  const p0Label = document.querySelector('#panel-p0 .panel-label');
+  const p1Label = document.querySelector('#panel-p1 .panel-label');
+  if (p0Label) p0Label.textContent = 'PLAYER 0';
+  if (p1Label) p1Label.textContent = 'PLAYER 1';
+
+  // Reset all game state
+  gameMode = 'idle';
+  gameState = null;
+  uiMode = 'idle';
+  selectedCard = null;
+  hasMoved = false;
+  hasPlayedCard = false;
+  aiThinking = false;
+  cardsPlayedThisTurn = 0;
+
   showLandingScreen();
 }
 
@@ -5165,6 +5290,9 @@ async function mpJoinGame() {
     // Store hands separately (private to each player)
     const hostHand = initState.players[0].hand;
     const guestHand = initState.players[1].hand;
+    // Store decks (remaining cards after opening draw)
+    const hostDeck = initState.players[0].deck;
+    const guestDeck = initState.players[1].deck;
     // Scrub hands from shared state (security)
     const sharedState = mpScrubHands(initState);
 
@@ -5177,12 +5305,14 @@ async function mpJoinGame() {
       state:       sharedState,
       host_hand:   JSON.stringify(hostHand),
       guest_hand:  JSON.stringify(guestHand),
+      host_deck:   JSON.stringify(hostDeck),
+      guest_deck:  JSON.stringify(guestDeck),
     }).eq('id', code);
 
     if (updateErr) throw updateErr;
 
     mp_opponentName = g.host_name;
-    mpStartGuestGame(code, guestChamp, hostChamp, g.host_name, firstSeat, guestHand, initState);
+    mpStartGuestGame(code, guestChamp, hostChamp, g.host_name, firstSeat, guestHand, guestDeck, initState);
 
   } catch(e) {
     console.error('[MP] joinGame error:', e);
@@ -5207,9 +5337,10 @@ function mpBuildInitialState(hostChampId, guestChampId, firstSeat) {
       createPlayer(1, guestChampId, gChamp.faction),
     ],
     walls: [], decoyTokens: [], trapTokens: [],
-    activePlayer: firstSeat, turnNumber: 1, phase: 'action',
+    activePlayer: firstSeat, turnNumber: 1, phase: 'draw',
     winner: null, log: [], nextWallId: 1, nextTokenId: 1,
     firstDraw: [true, true],
+    _turnsPlayed: [0, 0],  // Track turns completed per seat (for MP draw logic)
     // Perform opening draws
   };
   // Draw opening hands for both players
@@ -5225,9 +5356,11 @@ function mpBuildInitialState(hostChampId, guestChampId, firstSeat) {
 }
 
 function mpScrubHands(state) {
-  // Return a copy where hand arrays are empty (stored separately per player)
+  // Return a copy where hand/deck arrays are empty (stored separately per player)
+  // but hand counts are preserved for opponent's UI (placeholder card display)
   return {
     ...state,
+    _handCounts: [state.players[0].hand.length, state.players[1].hand.length],
     players: state.players.map(p => ({ ...p, hand: [], deck: [] }))
   };
 }
@@ -5237,21 +5370,22 @@ async function mpStartHostGame(gameId, myChamp, oppChamp, oppName) {
   const sb = mpInit();
   if (!sb) return;
 
-  // Load the current game state + our private hand
+  // Load the current game state + our private hand + deck
   const { data: g } = await sb.from('mp_games').select('*').eq('id', gameId).single();
   if (!g) return;
 
   closeMpLobby(true);
   const myHand = JSON.parse(g.host_hand || '[]');
+  const myDeck = JSON.parse(g.host_deck || '[]');
   const sharedState = g.state;
-  mpLaunchGame(gameId, 0, myChamp, oppChamp, oppName, myHand, sharedState);
+  mpLaunchGame(gameId, 0, myChamp, oppChamp, oppName, myHand, sharedState, myDeck);
 }
 
 // ── Start game (guest) ───────────────────────────────────────────────
-function mpStartGuestGame(gameId, myChamp, oppChamp, oppName, firstSeat, myHand, fullState) {
+function mpStartGuestGame(gameId, myChamp, oppChamp, oppName, firstSeat, myHand, myDeck, fullState) {
   closeMpLobby(true);
   const sharedState = mpScrubHands(fullState);
-  mpLaunchGame(gameId, 1, myChamp, oppChamp, oppName, myHand, sharedState);
+  mpLaunchGame(gameId, 1, myChamp, oppChamp, oppName, myHand, sharedState, myDeck);
 }
 
 // ── Resume an existing game ──────────────────────────────────────────
@@ -5269,11 +5403,13 @@ async function mpResumeGame(gameId) {
     const oppName = iAmHost ? (g.guest_name || '?') : g.host_name;
     const myHandRaw = iAmHost ? g.host_hand : g.guest_hand;
     const myHand = JSON.parse(myHandRaw || '[]');
+    const myDeckRaw = iAmHost ? g.host_deck : g.guest_deck;
+    const myDeck = JSON.parse(myDeckRaw || '[]');
 
     if (!g.state) { alert('Game state not available'); return; }
 
     closeMpLobby(true);
-    mpLaunchGame(gameId, mySeat, myChamp, oppChamp, oppName, myHand, g.state);
+    mpLaunchGame(gameId, mySeat, myChamp, oppChamp, oppName, myHand, g.state, myDeck);
   } catch(e) {
     console.error('[MP] resume error:', e);
     alert('Failed to load game: ' + e.message);
@@ -5281,20 +5417,20 @@ async function mpResumeGame(gameId) {
 }
 
 // ── Core: Launch multiplayer game ────────────────────────────────────
-function mpLaunchGame(gameId, localSeat, myChampId, oppChampId, oppName, myHand, sharedState) {
+function mpLaunchGame(gameId, localSeat, myChampId, oppChampId, oppName, myHand, sharedState, myDeck) {
   mp_gameId = gameId;
   mp_localSeat = localSeat;
   mp_isMultiplayer = true;
   mp_opponentName = oppName;
+  gameMode = 'mp';
 
   const oppSeat = 1 - localSeat;
 
-  // Reconstruct full gameState from shared state + private hand
-  // We need full CHAMPIONS/deck data; rebuild players from champion IDs
+  // Reconstruct full gameState from shared state + private hand + deck
   const hId = localSeat === 0 ? myChampId : oppChampId;
   const gId = localSeat === 1 ? myChampId : oppChampId;
 
-  // Restore state — merge shared state with our private hand
+  // Restore state — merge shared state with our private hand and deck
   gameState = {
     ...sharedState,
     players: sharedState.players.map((p, i) => {
@@ -5303,11 +5439,8 @@ function mpLaunchGame(gameId, localSeat, myChampId, oppChampId, oppName, myHand,
         ...p,
         champion: { ...CHAMPIONS[i === 0 ? hId : gId] },
         hand: isMe ? myHand : [],
-        // Restore deck from champion def (length only used for display)
-        deck: isMe ? (sharedState._hostDeckLen !== undefined 
-          ? Array(i===0 ? sharedState._hostDeckLen : sharedState._guestDeckLen).fill({name:'?'})
-          : Array(10).fill({name:'?'}))
-          : [],
+        // Real deck for our seat, empty for opponent (they manage theirs)
+        deck: isMe ? (myDeck || []) : [],
       };
     }),
   };
@@ -5318,21 +5451,7 @@ function mpLaunchGame(gameId, localSeat, myChampId, oppChampId, oppName, myHand,
   hasMoved = false;
   hasPlayedCard = false;
   cardsPlayedThisTurn = 0;
-
-  // In MP, opening hands are pre-dealt — draw phase doesn't exist.
-  // Force 'action' so buttons are never gated behind the draw-phase guard.
-  if (gameState.phase !== 'ended') {
-    gameState.phase = 'action';
-  }
-
-  // Override AI_PLAYER — in MP there's no AI; opponent is the other seat
-  // We patch rendering: player 0 is always host, player 1 is always guest
-  // localSeat 0 = you're player 0; localSeat 1 = you're player 1
-
-  // In MP, hands are pre-dealt — skip the draw phase entirely
-  if (gameState.phase === 'draw') {
-    gameState.phase = 'action';
-  }
+  aiThinking = false;
 
   mpUpdatePanelLabels();
   renderAll();
@@ -5357,7 +5476,7 @@ function mpUpdatePanelLabels() {
 }
 
 function mpUpdateTurnState() {
-  if (!mp_isMultiplayer) return;
+  if (gameMode !== 'mp') return;
   const isMyTurn = gameState.activePlayer === mp_localSeat;
   const oppName = mp_opponentName || 'Opponent';
   const myChamp = gameState.players[mp_localSeat]?.champion?.name || '';
@@ -5402,12 +5521,47 @@ function mpSubscribe(gameId, localSeat, myHandLen, myChampId, oppChampId) {
 async function mpHandleRemoteUpdate(row, localSeat, myChampId, oppChampId) {
   // Only process if it's now our turn (opponent just moved)
   if (row.active_seat === localSeat && row.status === 'active') {
-    // Fetch our private hand
-    const { data: g } = await _sb.from('mp_games').select('host_hand,guest_hand').eq('id', mp_gameId).single();
+    // Fetch our private hand AND deck
+    const cols = localSeat === 0
+      ? 'host_hand,host_deck'
+      : 'guest_hand,guest_deck';
+    const { data: g } = await _sb.from('mp_games').select(cols).eq('id', mp_gameId).single();
     const myHandRaw = localSeat === 0 ? g?.host_hand : g?.guest_hand;
-    const myHand = JSON.parse(myHandRaw || '[]');
+    const myDeckRaw = localSeat === 0 ? g?.host_deck : g?.guest_deck;
+    let myHand = JSON.parse(myHandRaw || '[]');
+    let myDeck = JSON.parse(myDeckRaw || '[]');
 
-    // Merge updated state with our hand
+    // ── Draw 1 card at turn start (if below hand size) ──
+    // Skip on first turn — opening hand was already dealt in mpBuildInitialState
+    const champDef = CHAMPIONS[myChampId];
+    const turnsPlayed = (shared._turnsPlayed && shared._turnsPlayed[localSeat]) || 0;
+    if (turnsPlayed > 0 && myHand.length < champDef.handSize) {
+      // If deck is empty, shuffle discard pile back in
+      if (myDeck.length === 0) {
+        const myDiscard = shared.players?.[localSeat]?.discard || [];
+        if (myDiscard.length > 0) {
+          myDeck = shuffle([...myDiscard]);
+          // Clear discard in the shared state we're about to merge
+          // (it will be pushed next time we push state)
+          if (shared.players && shared.players[localSeat]) {
+            shared.players[localSeat].discard = [];
+          }
+        }
+      }
+      if (myDeck.length > 0) {
+        const drawn = myDeck.splice(0, 1);
+        myHand = [...myHand, ...drawn];
+        // Persist updated hand + deck
+        const handKey = localSeat === 0 ? 'host_hand' : 'guest_hand';
+        const deckKey = localSeat === 0 ? 'host_deck' : 'guest_deck';
+        await _sb.from('mp_games').update({
+          [handKey]: JSON.stringify(myHand),
+          [deckKey]: JSON.stringify(myDeck),
+        }).eq('id', mp_gameId);
+      }
+    }
+
+    // Merge updated state with our hand and deck
     const shared = row.state;
     const hId = localSeat === 0 ? myChampId : oppChampId;
     const gId = localSeat === 1 ? myChampId : oppChampId;
@@ -5418,7 +5572,7 @@ async function mpHandleRemoteUpdate(row, localSeat, myChampId, oppChampId) {
         ...p,
         champion: { ...CHAMPIONS[i === 0 ? hId : gId] },
         hand: i === localSeat ? myHand : [],
-        deck: [],
+        deck: i === localSeat ? myDeck : [],
       })),
     };
 
@@ -5427,11 +5581,6 @@ async function mpHandleRemoteUpdate(row, localSeat, myChampId, oppChampId) {
     cardsPlayedThisTurn = 0;
     uiMode = 'idle';
     selectedCard = null;
-
-    // In MP, draw phase doesn't exist — always force action phase
-    if (gameState.phase !== 'ended') {
-      gameState.phase = 'action';
-    }
 
     mpUpdatePanelLabels();
     renderAll();
@@ -5460,6 +5609,7 @@ function mpHandleGameFinished(row, localSeat) {
 
 function mpEndTurnLocal() {
   if (gameState.phase === 'ended') return;
+  if (gameState.phase === 'draw') { showStatus('Draw your hand first', 'error'); return; }
 
   const pi = gameState.activePlayer;
   const p = gameState.players[pi];
@@ -5480,6 +5630,9 @@ function mpEndTurnLocal() {
     .map(w => w.temporary ? { ...w, turnsRemaining: w.turnsRemaining - 1 } : w);
 
   onEndTurnPassives(pi);
+  // Track completed turns per seat (used by mpHandleRemoteUpdate to skip draw on first turn)
+  if (!gameState._turnsPlayed) gameState._turnsPlayed = [0, 0];
+  gameState._turnsPlayed[pi]++;
   const next = pi === 0 ? 1 : 0;
   gameState.activePlayer = next;
   if (pi === 1) gameState.turnNumber++;
@@ -5510,14 +5663,7 @@ async function mpPushState() {
     const nextSeat = gameState.activePlayer;
     const isFinished = gameState.winner !== null;
 
-    // Before pushing, draw cards for the NEXT player (the one whose turn it will be)
-    // We need to manage hand state for the next player
-    await mpDrawForSeat(nextSeat);
-
     const sharedState = mpScrubHands(gameState);
-    // Add deck length hints
-    sharedState._hostDeckLen = gameState.players[0].deck.length;
-    sharedState._guestDeckLen = gameState.players[1].deck.length;
 
     const update = {
       state:       sharedState,
@@ -5526,9 +5672,13 @@ async function mpPushState() {
       winner_seat: gameState.winner,
     };
 
-    // Also update OUR hand in the DB (it may have changed from card plays)
+    // Save OUR hand + deck (may have changed from card plays/discards)
     const myHandKey = mp_localSeat === 0 ? 'host_hand' : 'guest_hand';
+    const myDeckKey = mp_localSeat === 0 ? 'host_deck' : 'guest_deck';
     update[myHandKey] = JSON.stringify(gameState.players[mp_localSeat].hand);
+    update[myDeckKey] = JSON.stringify(gameState.players[mp_localSeat].deck);
+
+    // _handCounts is set by mpScrubHands for opponent's UI placeholder cards
 
     const { error } = await sb.from('mp_games').update(update).eq('id', mp_gameId);
     if (error) throw error;
@@ -5542,41 +5692,10 @@ async function mpPushState() {
   }
 }
 
-// ── Draw cards for a given seat ──────────────────────────────────────
-async function mpDrawForSeat(seat) {
-  // We only actually draw if it's for our local seat (we own our hand)
-  // For the opponent, we update their hand column in the DB from the current deck
-  const sb = mpInit();
-  if (!sb) return;
-
-  const p = gameState.players[seat];
-  if (!p) return;
-
-  const isFirst = gameState.firstDraw?.[seat] ?? false;
-  const drawCount = isFirst ? p.champion.cardDraw : 1;
-
-  if (p.hand.length < p.champion.handSize) {
-    const canDraw = Math.min(drawCount, p.champion.handSize - p.hand.length, p.deck.length);
-    if (canDraw > 0) {
-      // Rebuild deck if needed from champion
-      if (p.deck.length === 0) {
-        gameState.players[seat].deck = buildStarterDeck(p.champion.faction);
-        // shuffle — already shuffled by buildStarterDeck
-      }
-      const drawn = gameState.players[seat].deck.splice(0, canDraw);
-      gameState.players[seat].hand = [...gameState.players[seat].hand, ...drawn];
-      if (isFirst && gameState.firstDraw) gameState.firstDraw[seat] = false;
-
-      // Persist to opponent's hand column
-      if (seat !== mp_localSeat) {
-        const oppHandKey = seat === 0 ? 'host_hand' : 'guest_hand';
-        await sb.from('mp_games').update({
-          [oppHandKey]: JSON.stringify(gameState.players[seat].hand)
-        }).eq('id', mp_gameId);
-      }
-    }
-  }
-}
+// ── Card drawing in MP ───────────────────────────────────────────────
+// Opening hands: drawn in mpBuildInitialState() during game creation.
+// Subsequent turns: each client draws 1 card in mpHandleRemoteUpdate()
+// when the turn switches to them. Deck is persisted per-player in Supabase.
 
 
 function mpShowVictory(winner) {
@@ -5595,7 +5714,7 @@ function mpShowVictory(winner) {
 
 // Guard functions called from onclick
 function mpGuardedEndTurnHuman() {
-  if (!mp_isMultiplayer) { endTurnHuman(); return; }
+  if (gameMode !== 'mp') { endTurnHuman(); return; }
   if (gameState.activePlayer !== mp_localSeat) { showStatus("It's not your turn!", 'error'); return; }
   if (selectedCard && selectedCard._pendingMove && selectedCard.idx >= 0) {
     discardCard(gameState.activePlayer, selectedCard.idx);
@@ -5606,117 +5725,11 @@ function mpGuardedEndTurnHuman() {
 }
 
 function mpGuardedEnterMoveMode() {
-  if (mp_isMultiplayer && gameState.activePlayer !== mp_localSeat) { showStatus("It's not your turn!", 'error'); return; }
+  if (gameMode === 'mp' && gameState.activePlayer !== mp_localSeat) { showStatus("It's not your turn!", 'error'); return; }
   enterMoveMode();
 }
 
-// Patch core functions once DOM is ready
-document.addEventListener('DOMContentLoaded', function mpPatch() {
-  // renderAll — inject MP post-processing
-  const _origRA = renderAll;
-  window.renderAll = function() {
-    _origRA();
-    if (!mp_isMultiplayer) return;
-    // Hide opponent hand
-    const oppSeat = 1 - mp_localSeat;
-    const oppHandEl = document.getElementById('p' + oppSeat + '-hand');
-    if (oppHandEl) {
-      const count = gameState._oppHandCount || 0;
-      oppHandEl.innerHTML = count > 0
-        ? Array(count).fill('<div class="hidden-card"><div class="hidden-card-icon"></div><span class="hidden-card-label">HIDDEN</span></div>').join('')
-        : '<div style="font-size:10px;color:var(--text-dim);letter-spacing:.1em;padding:8px;border:1px solid var(--border);text-align:center;text-transform:uppercase;">Opponent Hand Hidden</div>';
-    }
-    // Turn banner override
-    const banner = document.getElementById('turn-banner');
-    const isMyTurn = gameState.activePlayer === mp_localSeat;
-    const me = (gameState.players[mp_localSeat] && gameState.players[mp_localSeat].champion && gameState.players[mp_localSeat].champion.name) || '';
-    const them = (gameState.players[1-mp_localSeat] && gameState.players[1-mp_localSeat].champion && gameState.players[1-mp_localSeat].champion.name) || '';
-    const phase = gameState.phase;
-    const phaseLabel = ({draw:'DRAW', action: isMyTurn ? 'YOUR TURN' : 'THEIR TURN', end_turn:'END', ended:'GAME OVER'})[phase] || phase;
-    if (banner) {
-      banner.textContent = isMyTurn
-        ? 'YOU (' + me.toUpperCase() + ') — ' + phaseLabel
-        : (mp_opponentName||'OPPONENT').toUpperCase() + ' (' + them.toUpperCase() + ') — ' + phaseLabel;
-      banner.className = 'turn-banner p' + (isMyTurn ? mp_localSeat : 1-mp_localSeat);
-    }
-    // Disable buttons when not our turn
-    const isMyPhase = isMyTurn && phase === 'action';
-    const endBtn = document.getElementById('btn-end');
-    const moveBtn = document.getElementById('btn-move');
-    if (endBtn) { endBtn.disabled = !isMyPhase; endBtn.style.opacity = isMyPhase ? '1' : '0.3'; }
-    if (moveBtn) {
-      // updateActionBar already set the class/colour; just enforce enable/disable here
-      moveBtn.disabled = !isMyPhase;
-      moveBtn.style.opacity = isMyPhase ? '1' : '0.3';
-    }
-    if (!isMyTurn) {
-      // Disable my own hand cards while waiting for opponent
-      const myHandEl = document.getElementById('p' + mp_localSeat + '-hand');
-      if (myHandEl) myHandEl.querySelectorAll('.card').forEach(function(el) {
-        el.classList.add('card-disabled'); el.style.pointerEvents = 'none';
-      });
-    }
-    mpUpdatePanelLabels();
-  };
-
-  // Patch buttons
-  const endBtn = document.getElementById('btn-end');
-  if (endBtn) endBtn.onclick = function() { mp_isMultiplayer ? mpGuardedEndTurnHuman() : endTurnHuman(); };
-  const moveBtn = document.getElementById('btn-move');
-  if (moveBtn) moveBtn.onclick = function() { mp_isMultiplayer ? mpGuardedEnterMoveMode() : enterMoveMode(); };
-
-  // Patch handleCellClick
-  const _origHCC = handleCellClick;
-  window.handleCellClick = function(r, c) {
-    if (mp_isMultiplayer && gameState.activePlayer !== mp_localSeat) { showStatus("It's not your turn!", 'error'); return; }
-    _origHCC(r, c);
-    if (mp_isMultiplayer && gameState.winner !== null) mpPushState();
-  };
-
-  // Patch handleWallClick
-  const _origHWC = handleWallClick;
-  window.handleWallClick = function(anchor, orientation, length, isPhantom, isDurable) {
-    if (mp_isMultiplayer && gameState.activePlayer !== mp_localSeat) { showStatus("It's not your turn!", 'error'); return; }
-    _origHWC(anchor, orientation, length, isPhantom, isDurable);
-    if (mp_isMultiplayer && gameState.winner !== null) mpPushState();
-  };
-
-  // Patch performDraw
-  const _origPD = performDraw;
-  window.performDraw = function() {
-    if (!mp_isMultiplayer) { _origPD(); return; }
-    if (gameState.phase === 'draw') {
-      gameState.phase = 'action';
-      renderAll();
-      updateActionBar();
-      mpUpdateTurnState();
-    }
-  };
-
-  // Patch showVictory
-  const _origSV = showVictory;
-  window.showVictory = function(winner) {
-    if (!mp_isMultiplayer) { _origSV(winner); return; }
-    mpShowVictory(winner);
-    if (gameState.winner !== null && mp_gameId && _sb) {
-      _sb.from('mp_games').update({ status: 'finished', winner_seat: gameState.winner, state: mpScrubHands(gameState) }).eq('id', mp_gameId).then(function(){});
-    }
-  };
-
-  // Patch resetGame
-  const _origRG = resetGame;
-  window.resetGame = function() {
-    if (mp_isMultiplayer) {
-      mp_isMultiplayer = false; mp_gameId = null; mp_localSeat = null;
-      if (mp_subscription && _sb) { _sb.removeChannel(mp_subscription); mp_subscription = null; }
-      const p0Label = document.querySelector('#panel-p0 .panel-label');
-      const p1Label = document.querySelector('#panel-p1 .panel-label');
-      if (p0Label) p0Label.textContent = 'PLAYER 0';
-      if (p1Label) p1Label.textContent = 'PLAYER 1';
-    }
-    _origRG(); // _origRG calls showLandingScreen
-  };
-}, {once: true});
+// Monkey-patching removed — all functions are now natively mode-aware via gameMode checks.
 
 console.log('[CORRIDORS] Async Multiplayer module loaded. Configure SUPABASE_URL and SUPABASE_ANON to activate.');
 
