@@ -1308,13 +1308,22 @@
   <div class="board-area" id="board-area">
     <div class="turn-banner p0" id="turn-banner">PLAYER 0 — DRAW PHASE</div>
 
+    <!-- Draw screen overlay (shown between turns) -->
+    <div class="draw-screen" id="draw-screen" style="display:none">
+      <div class="draw-screen-subtitle">HAND OFF DEVICE TO</div>
+      <div class="draw-screen-name" id="draw-screen-name" style="color:var(--p0)">PLAYER 0</div>
+      <div style="font-size:11px; color:var(--text-dim); letter-spacing:0.12em;">When ready, draw your hand</div>
+      <button class="draw-screen-btn" id="draw-screen-btn">DRAW HAND →</button>
+    </div>
+
     <div id="board-container" style="position:relative;">
       <!-- Board grid + wall layers built by JS -->
     </div>
 
     <div class="action-bar" id="action-bar">
-      <button class="action-btn primary" id="btn-move" onclick="mp_isMultiplayer ? mpGuardedEnterMoveMode() : enterMoveMode()">MOVE</button>
-      <button class="action-btn danger" id="btn-end" onclick="mp_isMultiplayer ? mpGuardedEndTurnHuman() : endTurnHuman()">END TURN</button>
+      <button class="action-btn primary" id="btn-move" onclick="enterMoveMode()">MOVE</button>
+
+      <button class="action-btn danger" id="btn-end" onclick="endTurnHuman()">END TURN</button>
     </div>
 
     <div class="mode-indicator" id="mode-indicator">Select an action above</div>
@@ -1860,39 +1869,43 @@ function performDraw() {
   const pi = gameState.activePlayer;
   const p = gameState.players[pi];
 
-  if (mp_isMultiplayer) {
-    // FIXED: Always draw automatically every turn in multiplayer
-    const isFirst = !!gameState.firstDraw?.[pi];
-    let deck = [...p.deck], discard = [...p.discard];
-    const drawn = [];
+  // First draw: fill to handSize. Subsequent turns: draw 1, but only if
+  // hand is below max. Never draw when at or above handSize.
+  const isFirst = !!gameState.firstDraw[pi];
+  const maxHand = p.champion.handSize;
 
-    const drawCount = isFirst 
-      ? Math.min(p.champion.cardDraw, Math.max(0, p.champion.handSize - p.hand.length))
-      : Math.min(1, Math.max(0, p.champion.handSize - p.hand.length));
+  let deck = [...p.deck], discard = [...p.discard];
+  const drawn = [];
 
-    for (let i = 0; i < drawCount; i++) {
-      if (!deck.length && discard.length) { 
-        deck = shuffle([...discard]); 
-        discard = []; 
+  if (isFirst) {
+    gameState.firstDraw[pi] = false;
+    // Opening hand = cardDraw cards (not full handSize)
+    const need = Math.min(p.champion.cardDraw, Math.max(0, maxHand - p.hand.length));
+    for (let i = 0; i < need; i++) {
+      if (!deck.length) {
+        if (!discard.length) break;
+        deck = shuffle([...discard]); discard = [];
       }
+      drawn.push(deck.shift());
+    }
+  } else {
+    // Subsequent turns: always draw exactly 1 card (if hand not full)
+    const drawCount = Math.min(1, Math.max(0, maxHand - p.hand.length));
+    for (let i = 0; i < drawCount; i++) {
+      if (!deck.length && discard.length) { deck = shuffle([...discard]); discard = []; }
       if (deck.length) drawn.push(deck.shift());
     }
-
-    gameState.players[pi] = { ...p, deck, discard, hand: [...p.hand, ...drawn] };
-    if (isFirst && gameState.firstDraw) gameState.firstDraw[pi] = false;
-
-    if (drawn.length) addLog(pi, 'draw', `Auto-drew ${drawn.length} card${drawn.length>1?'s':''}`);
-
-    gameState.phase = 'action';
-    hasMoved = false;
-    hasPlayedCard = false;
-    cardsPlayedThisTurn = 0;
-    gameState._sorenSecondMove = false;   // ← CRITICAL for Soren passive
-
-    renderAll();
-    mpUpdateTurnState();
-    return;
   }
+
+  const newHand = [...p.hand, ...drawn];
+  gameState.players[pi] = {...p, deck, discard, hand: newHand};
+  if (drawn.length) addLog(pi, 'draw', `Drew ${drawn.length}: ${drawn.filter(x=>x&&x.name).map(c=>c.name).join(', ')}`);
+
+  gameState.phase = 'action';
+  hasMoved = false;
+  hasPlayedCard = false;
+  renderAll();
+  showStatus(pi===AI_PLAYER ? 'AI is thinking...' : 'Your turn — MOVE or play a card', pi===AI_PLAYER ? '' : 'active');
 
   // AI's turn
   if (pi === AI_PLAYER) {
@@ -3789,9 +3802,6 @@ function renderAll() {
   updateUltimateButton(0);
   updateUltimateButton(1);
   if (debugVisible) updateDebug();
-  if (gameState.activePlayer === mp_localSeat && (gameState.phase === 'draw' || !gameState._sorenSecondMove === undefined)) {
-  gameState._sorenSecondMove = false;
-  }
 }
 
 function renderPanels() {
@@ -5328,14 +5338,6 @@ function mpLaunchGame(gameId, localSeat, myChampId, oppChampId, oppName, myHand,
   renderAll();
   mpUpdateTurnState();
 
-  gameState._sorenSecondMove = false;
-
-    // Force clean multiplayer start — skip draw screen
-  if (gameState.phase === 'draw' || !gameState.phase) {
-    gameState.phase = 'action';
-  }
-  performDraw();   // instant opening hand
-
   // Subscribe to realtime updates
   mpSubscribe(gameId, localSeat, myHand.length, myChampId, oppChampId);
 
@@ -5420,17 +5422,16 @@ async function mpHandleRemoteUpdate(row, localSeat, myChampId, oppChampId) {
       })),
     };
 
-    if (gameState.activePlayer === mp_localSeat) {
-      if (gameState.phase === 'draw' || gameState.phase === 'action') {
-        performDraw();   // This now draws the card AND resets Soren flag
-      }
-    }
-
     hasMoved = false;
     hasPlayedCard = false;
     cardsPlayedThisTurn = 0;
     uiMode = 'idle';
     selectedCard = null;
+
+    // In MP, draw phase doesn't exist — always force action phase
+    if (gameState.phase !== 'ended') {
+      gameState.phase = 'action';
+    }
 
     mpUpdatePanelLabels();
     renderAll();
@@ -5482,33 +5483,20 @@ function mpEndTurnLocal() {
   const next = pi === 0 ? 1 : 0;
   gameState.activePlayer = next;
   if (pi === 1) gameState.turnNumber++;
-  gameState.phase = 'draw';   // remote client will auto-draw
+  gameState.phase = 'action'; // In MP, draw is handled locally
 
   uiMode = 'idle';
   selectedCard = null;
   resetTurnState();
-  gameState._sorenSecondMove = false;   // ← CRITICAL reset for Soren
 
   addLog(next, 'system', `Turn ${gameState.turnNumber} — Seat ${next}`);
 
+  // Draw cards for the next player (this will be our opponent's hand — we store ours privately)
+  // In MP, we only actually need to draw for the local player when it's their turn
+  // Opponent's hand management is their own concern
+  // Actually we don't draw here in MP — drawing is done when the turn starts on opponent's browser
+
   mpPushState();
-}
-
-function mpGuardedEndTurnHuman() {
-  if (!mp_isMultiplayer) return endTurnHuman();
-  if (gameState.activePlayer !== mp_localSeat) { 
-    showStatus("It's not your turn", 'error'); 
-    return; 
-  }
-  mpEndTurnLocal();
-}
-
-function mpGuardedEnterMoveMode() {
-  if (mp_isMultiplayer && gameState.activePlayer !== mp_localSeat) { 
-    showStatus("It's not your turn", 'error'); 
-    return; 
-  }
-  enterMoveMode();
 }
 
 // ── Push state to Supabase ───────────────────────────────────────────
