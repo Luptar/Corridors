@@ -4849,6 +4849,9 @@ let mp_pendingJoin = null;  // invite code from URL
 let mp_lobbyInterval = null; // polling interval for lobby
 let mp_isMultiplayer = false; // true when in a multiplayer game
 let mp_opponentName = null;
+let mp_myChampId = null;    // champion id for local player
+let mp_oppChampId = null;   // champion id for opponent
+let mp_pollInterval = null; // fallback polling interval
 
 // ── Supabase initialisation ──────────────────────────────────────────
 function mpInit() {
@@ -5420,6 +5423,8 @@ function mpLaunchGame(gameId, localSeat, myChampId, oppChampId, oppName, myHand,
   mp_localSeat = localSeat;
   mp_isMultiplayer = true;
   mp_opponentName = oppName;
+  mp_myChampId = myChampId;
+  mp_oppChampId = oppChampId;
   gameMode = 'mp';
 
   const oppSeat = 1 - localSeat;
@@ -5497,10 +5502,14 @@ function mpUpdateTurnState() {
 function mpSubscribe(gameId, localSeat, myHandLen, myChampId, oppChampId) {
   if (!_sb) return;
 
-  // Clean up any old subscription
+  // Clean up any old subscription and polling
   if (mp_subscription) {
     _sb.removeChannel(mp_subscription);
     mp_subscription = null;
+  }
+  if (mp_pollInterval) {
+    clearInterval(mp_pollInterval);
+    mp_pollInterval = null;
   }
 
   mp_subscription = _sb
@@ -5520,15 +5529,59 @@ function mpSubscribe(gameId, localSeat, myHandLen, myChampId, oppChampId) {
         console.log('[MP] Realtime connected for game', gameId);
       } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
         console.error('[MP] Realtime subscription failed:', status, err);
-        showStatus('⚠ Realtime connection issue — board may not auto-update', 'error');
+        showStatus('⚠ Realtime connection issue — using polling fallback', 'error');
+        // Retry realtime after 5s
+        setTimeout(() => {
+          if (gameMode === 'mp' && gameState?.phase !== 'ended') {
+            mpSubscribe(gameId, localSeat, myHandLen, myChampId, oppChampId);
+          }
+        }, 5000);
       }
     });
+
+  // ── Polling fallback — fires every 4s when waiting for opponent ──────
+  // Ensures the board updates even if the realtime channel drops silently
+  mp_pollInterval = setInterval(async () => {
+    if (gameMode !== 'mp' || gameState?.phase === 'ended') {
+      clearInterval(mp_pollInterval);
+      mp_pollInterval = null;
+      return;
+    }
+    // Only poll while waiting for the opponent (not our turn)
+    if (gameState.activePlayer !== mp_localSeat) {
+      try {
+        const { data } = await _sb
+          .from('mp_games')
+          .select('active_seat,status,state,host_hand,host_deck,guest_hand,guest_deck,winner_seat')
+          .eq('id', mp_gameId)
+          .single();
+        if (data && data.active_seat === mp_localSeat) {
+          console.log('[MP] Polling detected turn change — applying update');
+          mpHandleRemoteUpdate(data, localSeat, myChampId, oppChampId);
+        }
+      } catch(e) {
+        console.warn('[MP] Poll error:', e);
+      }
+    }
+  }, 4000);
 }
+
+let _mp_lastProcessedTurn = -1; // dedup: prevent polling + realtime both firing
 
 async function mpHandleRemoteUpdate(row, localSeat, myChampId, oppChampId) {
   // Only process if it's now our turn (opponent just moved)
   if (row.active_seat === localSeat && row.status === 'active') {
     const shared = row.state;
+
+    // Deduplication: skip if we've already processed this turn transition
+    const sharedTurn = shared?.turnNumber ?? 0;
+    const turnKey = `${sharedTurn}-${shared?.activePlayer ?? localSeat}`;
+    if (_mp_lastProcessedTurn === turnKey) {
+      console.log('[MP] Skipping duplicate update for turn', turnKey);
+      return;
+    }
+    _mp_lastProcessedTurn = turnKey;
+
     const hId = localSeat === 0 ? myChampId : oppChampId;
     const gId = localSeat === 1 ? myChampId : oppChampId;
 
@@ -5542,12 +5595,12 @@ async function mpHandleRemoteUpdate(row, localSeat, myChampId, oppChampId) {
     let myHand = JSON.parse(myHandRaw || '[]');
     let myDeck = JSON.parse(myDeckRaw || '[]');
 
-    // ── Draw 1 card at turn start (if below hand size) ──
+    // ── Draw 1 card at turn start ──
     // On the very first turn of the game, opening hands were already dealt
     // in mpBuildInitialState, so _turnsPlayed[seat] === 0 means skip draw.
     const champDef = CHAMPIONS[myChampId];
     const turnsPlayed = (shared._turnsPlayed && shared._turnsPlayed[localSeat]) || 0;
-    if (turnsPlayed > 0 && myHand.length < champDef.handSize) {
+    if (turnsPlayed > 0) {
       // If deck is empty, shuffle discard pile back in
       if (myDeck.length === 0) {
         const myDiscard = shared.players?.[localSeat]?.discard || [];
@@ -5606,6 +5659,7 @@ async function mpHandleRemoteUpdate(row, localSeat, myChampId, oppChampId) {
 }
 
 function mpHandleGameFinished(row, localSeat) {
+  if (mp_pollInterval) { clearInterval(mp_pollInterval); mp_pollInterval = null; }
   if (gameState) {
     gameState.winner = row.winner_seat;
     gameState.phase = 'ended';
@@ -5647,6 +5701,7 @@ function mpEndTurnLocal() {
   uiMode = 'idle';
   selectedCard = null;
   resetTurnState();
+  _mp_lastProcessedTurn = -1; // reset dedup so opponent's next turn update is processed
 
   addLog(next, 'system', `Turn ${gameState.turnNumber} — Seat ${next}`);
 
