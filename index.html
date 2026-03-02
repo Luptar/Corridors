@@ -4660,7 +4660,10 @@ function showVictory(winner) {
   // ── MP mode: use multiplayer victory display ──
   if (gameMode === 'mp') {
     mpShowVictory(winner);
-    if (gameState.winner !== null && mp_gameId && _sb) {
+    // Only push the finished state if WE are the winner — the loser receives this
+    // update via realtime/polling and calls showVictory through mpHandleGameFinished,
+    // which must not re-push (that would loop and potentially overwrite winner_seat).
+    if (gameState.winner !== null && mp_gameId && _sb && winner === mp_localSeat) {
       _sb.from('mp_games').update({ status: 'finished', winner_seat: gameState.winner, state: mpScrubHands(gameState) }).eq('id', mp_gameId).then(function(){});
     }
     return;
@@ -5603,15 +5606,20 @@ function mpSubscribe(gameId, localSeat, myHandLen, myChampId, oppChampId) {
       mp_pollInterval = null;
       return;
     }
-    // Only poll while waiting for the opponent (not our turn)
-    if (gameState.activePlayer !== mp_localSeat) {
+    // Poll while waiting for the opponent (not our turn), OR on our turn (to catch wins)
+    if (gameState.activePlayer !== mp_localSeat || gameState.phase === 'action') {
       try {
         const { data } = await _sb
           .from('mp_games')
           .select('active_seat,status,state,host_hand,host_deck,guest_hand,guest_deck,winner_seat')
           .eq('id', mp_gameId)
           .single();
-        if (data && data.active_seat === mp_localSeat) {
+        if (!data) return;
+        // Always handle a finished game, regardless of whose turn it is
+        if (data.status === 'finished') {
+          console.log('[MP] Polling detected game finished');
+          mpHandleRemoteUpdate(data, localSeat, myChampId, oppChampId);
+        } else if (data.active_seat === mp_localSeat) {
           console.log('[MP] Polling detected turn change — applying update');
           mpHandleRemoteUpdate(data, localSeat, myChampId, oppChampId);
         }
