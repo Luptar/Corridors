@@ -5511,14 +5511,27 @@ function mpSubscribe(gameId, localSeat, myHandLen, myChampId, oppChampId) {
       table: 'mp_games',
       filter: `id=eq.${gameId}`,
     }, (payload) => {
+      console.log('[MP] Realtime update received:', payload.new?.active_seat, payload.new?.status);
       mpHandleRemoteUpdate(payload.new, localSeat, myChampId, oppChampId);
     })
-    .subscribe();
+    .subscribe((status, err) => {
+      console.log('[MP] Subscription status:', status, err || '');
+      if (status === 'SUBSCRIBED') {
+        console.log('[MP] Realtime connected for game', gameId);
+      } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+        console.error('[MP] Realtime subscription failed:', status, err);
+        showStatus('⚠ Realtime connection issue — board may not auto-update', 'error');
+      }
+    });
 }
 
 async function mpHandleRemoteUpdate(row, localSeat, myChampId, oppChampId) {
   // Only process if it's now our turn (opponent just moved)
   if (row.active_seat === localSeat && row.status === 'active') {
+    const shared = row.state;
+    const hId = localSeat === 0 ? myChampId : oppChampId;
+    const gId = localSeat === 1 ? myChampId : oppChampId;
+
     // Fetch our private hand AND deck
     const cols = localSeat === 0
       ? 'host_hand,host_deck'
@@ -5530,7 +5543,8 @@ async function mpHandleRemoteUpdate(row, localSeat, myChampId, oppChampId) {
     let myDeck = JSON.parse(myDeckRaw || '[]');
 
     // ── Draw 1 card at turn start (if below hand size) ──
-    // Skip on first turn — opening hand was already dealt in mpBuildInitialState
+    // On the very first turn of the game, opening hands were already dealt
+    // in mpBuildInitialState, so _turnsPlayed[seat] === 0 means skip draw.
     const champDef = CHAMPIONS[myChampId];
     const turnsPlayed = (shared._turnsPlayed && shared._turnsPlayed[localSeat]) || 0;
     if (turnsPlayed > 0 && myHand.length < champDef.handSize) {
@@ -5539,8 +5553,6 @@ async function mpHandleRemoteUpdate(row, localSeat, myChampId, oppChampId) {
         const myDiscard = shared.players?.[localSeat]?.discard || [];
         if (myDiscard.length > 0) {
           myDeck = shuffle([...myDiscard]);
-          // Clear discard in the shared state we're about to merge
-          // (it will be pushed next time we push state)
           if (shared.players && shared.players[localSeat]) {
             shared.players[localSeat].discard = [];
           }
@@ -5559,11 +5571,7 @@ async function mpHandleRemoteUpdate(row, localSeat, myChampId, oppChampId) {
       }
     }
 
-    // Merge updated state with our hand and deck
-    const shared = row.state;
-    const hId = localSeat === 0 ? myChampId : oppChampId;
-    const gId = localSeat === 1 ? myChampId : oppChampId;
-
+    // Merge updated shared state with our private hand and deck
     gameState = {
       ...shared,
       players: shared.players.map((p, i) => ({
