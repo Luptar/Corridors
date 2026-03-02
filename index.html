@@ -1737,12 +1737,15 @@ function wallEdges(wall) {
 
 function buildBlockedEdges(walls, moverPi) {
   // moverPi: the moving player's index.
-  // Phantom walls: BOTH players can physically move through them (walking through removes them).
-  // They only serve as a visual bluff. So phantoms are never blocking for movement purposes.
-  // When moverPi is undefined (BFS path-guarantee checks), phantoms are also ignored.
+  // Phantom walls block opponent movement; owner passes through own phantoms freely.
+  // When moverPi is undefined (BFS path-guarantee checks), phantoms are ignored.
   const blocked = new Set();
   for (const wall of walls) {
-    if (wall.isPhantom) continue; // phantoms are always passable (removal handled in executeMove)
+    if (wall.isPhantom) {
+      if (moverPi === undefined) continue;       // path checks ignore phantoms
+      if (wall.owner === moverPi) continue;      // owner moves freely through own phantoms
+      // Opponent's phantom: block the mover
+    }
     for (const e of wallEdges(wall)) blocked.add(edgeKey(e.a, e.b));
   }
   return blocked;
@@ -1963,14 +1966,7 @@ function executeMove(to) {
     }
     const mc = discardIdx >= 0 ? gameState.players[pi].hand[discardIdx] : null;
     if (mc) discardCard(pi, discardIdx);
-
-    // Soren (Fleetfoot): a movement card counts as his MOVE, not his card play.
-    // This preserves his passive — he can still play a non-movement card after,
-    // or use the second move. For all other champions, count it as a card played.
-    const champId = gameState.players[pi].champion.id;
-    if (champId !== 'soren') {
-      countCardPlayed(pi);
-    }
+    countCardPlayed(pi);
     addLog(pi, 'card', 'Played: ' + (mc ? mc.name : 'movement card') + ' (speed ' + (selectedCard.overrideSpeed||1) + ')');
   }
   // Re-read state after potential discard mutation, then update position
@@ -2099,20 +2095,6 @@ function endTurnHuman() {
     selectedCard = null;
     uiMode = 'idle';
   }
-  // If a pick-mode card is pending (wallPick, wallReconstruct, wallRedirect, wallSeal),
-  // cancel it and count it as played so the turn can end.
-  if (hasPendingPickCard()) {
-    const pi = gameState.activePlayer;
-    if (selectedCard && selectedCard.idx >= 0) {
-      discardCard(pi, selectedCard.idx);
-      countCardPlayed(pi);
-    }
-    gameState._redeployCardIdx = null;
-    gameState._redirectCardIdx = null;
-    gameState._reconstructCardIdx = null;
-    selectedCard = null;
-    uiMode = 'idle';
-  }
   endTurn();
 }
 
@@ -2124,9 +2106,9 @@ function endTurn() {
   const pi = gameState.activePlayer;
   const p = gameState.players[pi];
 
-  // Charge ultimate
+  // Charge ultimate — also clear the one-turn ultimateUsed lock if set
   const newCharge = Math.min(p.ultimateCharge+1, p.champion.ultimateCost);
-  const ready = newCharge >= p.champion.ultimateCost && !p.ultimateUsed;
+  const ready = newCharge >= p.champion.ultimateCost;
 
   // Tick status effects — when skip_move expires, grant 1-turn bind_cooldown so player can escape
   const hadSkip = p.statusEffects.some(e => e.type === 'skip_move' && e.turnsRemaining === 1);
@@ -2137,7 +2119,7 @@ function endTurn() {
     effects = [...effects, { type:'bind_cooldown', turnsRemaining:1 }];
   }
 
-  gameState.players[pi] = {...p, ultimateCharge: newCharge, ultimateReady: ready, statusEffects: effects};
+  gameState.players[pi] = {...p, ultimateCharge: newCharge, ultimateReady: ready, ultimateUsed: false, statusEffects: effects};
 
   // Tick temporary walls
   gameState.walls = gameState.walls.filter(w => !w.temporary || w.turnsRemaining > 1)
@@ -3196,11 +3178,6 @@ function selectCard(cardId, idx) {
   if (champId === 'soren' && hasMoved && cardsPlayedThisTurn === 0 && gameState._sorenSecondMove) {
     showStatus('Already used both moves — no card this turn', 'error'); return;
   }
-  // Soren: can only play one movement card per turn (it counts as his move, not his card play,
-  // so cardsPlayedThisTurn stays 0 — guard explicitly against stacking movement cards)
-  if (champId === 'soren' && hasMoved && card.type === 'Movement') {
-    showStatus('Already moved — cannot play another movement card this turn', 'error'); return;
-  }
 
   // If a card is already pending (move/wall mode), clicking any card cancels it first.
   // Clicking the SAME card again deselects it.
@@ -3253,28 +3230,6 @@ function countCardPlayed(pi) {
   const champId = gameState.players[pi].champion.id;
   // Track categories for Adept synergies
   // (Called after selectCard resolves type)
-}
-
-// Returns true if the player is currently mid-resolve on a pick-mode card
-// (wallPick, wallReconstruct, wallRedirect, wallSeal). These count as "card selected"
-// for the purpose of turn completion checks.
-function hasPendingPickCard() {
-  return selectedCard !== null && (
-    uiMode === 'wallPick' || uiMode === 'wallReconstruct' ||
-    uiMode === 'wallRedirect' || uiMode === 'wallSeal'
-  );
-}
-
-// isTurnDone but also counting a pending pick-mode card as played
-function isTurnDoneOrPending() {
-  if (hasPendingPickCard()) {
-    // Treat the in-flight card as if it were already counted
-    cardsPlayedThisTurn++;
-    const result = isTurnDone();
-    cardsPlayedThisTurn--;
-    return result;
-  }
-  return isTurnDone();
 }
 
 function trackCategory(type) {
@@ -3706,13 +3661,16 @@ function applyDisruptionCard(pi, card, idx) {
 
 // ── Ultimates ────────────────────────────────────────────────────────
 function activateUltimate(pi) {
+  // In MP, always operate on the local player regardless of which button was clicked
+  if (gameMode === 'mp') pi = mp_localSeat;
   if (!isHumanSeat(pi)) return;
   if (gameState.phase !== 'action' || gameState.activePlayer !== pi) {
     showStatus('Not your action phase', 'error'); return;
   }
   const p = gameState.players[pi];
   if (!p.ultimateReady) { showStatus('Ultimate not charged', 'error'); return; }
-  if (p.ultimateUsed)   { showStatus('Already used this match', 'error'); return; }
+  if (p.ultimateUsed)   { showStatus('Ultimate is recharging', 'error'); return; }
+  // Reset charge to 0 and mark as used (will be cleared at start of next charge cycle)
   gameState.players[pi] = { ...p, ultimateUsed:true, ultimateReady:false, ultimateCharge:0 };
   applyUltimate(pi, gameState.players[pi].champion.id);
 }
@@ -3799,6 +3757,8 @@ function applyUltimate(pi, champId) {
   // Ultimates do NOT consume the card-play budget — player can still move and play a card
   if (isTurnDone()) gameState.phase = 'end_turn';
   renderAll(); updateActionBar();
+  // In MP, push the state update so the opponent sees the effect immediately
+  if (gameMode === 'mp') mpPushState();
 }
 
 function maybeAIUltimate(pi) {
@@ -3807,8 +3767,7 @@ function maybeAIUltimate(pi) {
   gameState.players[pi] = { ...p, ultimateUsed:true, ultimateReady:false, ultimateCharge:0 };
   applyUltimate(pi, p.champion.id);
   return true;
-}
-function onEndTurnPassives(pi) {
+}function onEndTurnPassives(pi) {
   const champId = gameState.players[pi].champion.id;
   const p = gameState.players[pi];
   // Reset wall limit to base if it was temporarily increased
@@ -3856,7 +3815,8 @@ function updateUltimateButton(pi) {
   btn.style.pointerEvents= (ready && isMyTurn) ? 'auto' : 'none';
   btn.style.borderColor  = ready ? 'var(--amber)' : '';
   btn.style.color        = ready ? 'var(--amber)' : '';
-  btn.textContent = p.ultimateUsed ? '⚡ USED' : ready ? '⚡ ACTIVATE ULTIMATE' : '⚡ CHARGING...';
+  // Show USED only for this turn (ultimateUsed resets next turn), otherwise CHARGING
+  btn.textContent = p.ultimateUsed ? '⚡ RECHARGING...' : ready ? '⚡ ACTIVATE ULTIMATE' : '⚡ CHARGING...';
 }
 
 function updateActionBar() {
@@ -3881,11 +3841,7 @@ function updateActionBar() {
     else btnMove.textContent = 'MOVE';
   }
   if (btnEnd) {
-    // Allow ending turn if: not in draw/ended, not AI thinking,
-    // AND either turn is normally done OR a pick-mode card is pending (counts as played).
-    const pickModePending = hasPendingPickCard();
-    btnEnd.disabled = phase==='draw' || phase==='ended' || aiThinking ||
-      (phase === 'action' && !pickModePending && !isTurnDoneOrPending());
+    btnEnd.disabled = phase==='draw' || phase==='ended' || aiThinking;
   }
 }
 
@@ -3924,12 +3880,10 @@ function renderAll() {
       banner.className = 'turn-banner p' + (isMyTurn ? mp_localSeat : 1-mp_localSeat);
     }
     // Disable buttons when not our turn
-    const isMyPhase = isMyTurn && (phase === 'action' || phase === 'end_turn');
-    const pickModePending = hasPendingPickCard();
-    const canEnd = isMyTurn && (phase === 'action' || phase === 'end_turn') && (phase === 'end_turn' || pickModePending || isTurnDoneOrPending());
+    const isMyPhase = isMyTurn && phase === 'action';
     const endBtn = document.getElementById('btn-end');
     const moveBtn = document.getElementById('btn-move');
-    if (endBtn) { endBtn.disabled = !canEnd; endBtn.style.opacity = canEnd ? '1' : '0.3'; }
+    if (endBtn) { endBtn.disabled = !isMyPhase; endBtn.style.opacity = isMyPhase ? '1' : '0.3'; }
     if (moveBtn) {
       moveBtn.disabled = !isMyPhase;
       moveBtn.style.opacity = isMyPhase ? '1' : '0.3';
@@ -5622,7 +5576,12 @@ async function mpHandleRemoteUpdate(row, localSeat, myChampId, oppChampId) {
       }
     }
 
-    // Merge updated shared state with our private hand and deck
+    // Merge updated shared state with our private hand and deck.
+    // IMPORTANT: preserve our own ultimateCharge/ultimateUsed/ultimateReady from local state
+    // so that the opponent using their ultimate never clobbers our ultimate state.
+    const localUltimateCharge = gameState.players?.[localSeat]?.ultimateCharge ?? 0;
+    const localUltimateUsed   = gameState.players?.[localSeat]?.ultimateUsed   ?? false;
+    const localUltimateReady  = gameState.players?.[localSeat]?.ultimateReady  ?? false;
     gameState = {
       ...shared,
       players: shared.players.map((p, i) => ({
@@ -5630,6 +5589,13 @@ async function mpHandleRemoteUpdate(row, localSeat, myChampId, oppChampId) {
         champion: { ...CHAMPIONS[i === 0 ? hId : gId] },
         hand: i === localSeat ? myHand : [],
         deck: i === localSeat ? myDeck : [],
+        // Restore our own ultimate state — the shared blob reflects the opponent's push,
+        // which may have stale values for our seat.
+        ...(i === localSeat ? {
+          ultimateCharge: localUltimateCharge,
+          ultimateUsed:   localUltimateUsed,
+          ultimateReady:  localUltimateReady,
+        } : {}),
       })),
     };
 
@@ -5672,7 +5638,7 @@ function mpEndTurnLocal() {
   const p = gameState.players[pi];
 
   const newCharge = Math.min(p.ultimateCharge + 1, p.champion.ultimateCost);
-  const ready = newCharge >= p.champion.ultimateCost && !p.ultimateUsed;
+  const ready = newCharge >= p.champion.ultimateCost;
 
   const hadSkip = p.statusEffects.some(e => e.type === 'skip_move' && e.turnsRemaining === 1);
   let effects = p.statusEffects
@@ -5682,7 +5648,7 @@ function mpEndTurnLocal() {
     effects = [...effects, { type: 'bind_cooldown', turnsRemaining: 1 }];
   }
 
-  gameState.players[pi] = { ...p, ultimateCharge: newCharge, ultimateReady: ready, statusEffects: effects };
+  gameState.players[pi] = { ...p, ultimateCharge: newCharge, ultimateReady: ready, ultimateUsed: false, statusEffects: effects };
   gameState.walls = gameState.walls.filter(w => !w.temporary || w.turnsRemaining > 1)
     .map(w => w.temporary ? { ...w, turnsRemaining: w.turnsRemaining - 1 } : w);
 
@@ -5776,18 +5742,6 @@ function mpGuardedEndTurnHuman() {
   if (selectedCard && selectedCard._pendingMove && selectedCard.idx >= 0) {
     discardCard(gameState.activePlayer, selectedCard.idx);
     countCardPlayed(gameState.activePlayer);
-    selectedCard = null; uiMode = 'idle';
-  }
-  // Cancel any pending pick-mode card (discard it and count as played)
-  if (hasPendingPickCard()) {
-    const pi = gameState.activePlayer;
-    if (selectedCard && selectedCard.idx >= 0) {
-      discardCard(pi, selectedCard.idx);
-      countCardPlayed(pi);
-    }
-    gameState._redeployCardIdx = null;
-    gameState._redirectCardIdx = null;
-    gameState._reconstructCardIdx = null;
     selectedCard = null; uiMode = 'idle';
   }
   mpEndTurnLocal();
