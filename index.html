@@ -1861,7 +1861,7 @@ function performDraw() {
   const p = gameState.players[pi];
 
   if (mp_isMultiplayer) {
-    // MULTIPLAYER AUTO-DRAW (silent + instant) — no draw screen
+    // FIXED: Always draw automatically every turn in multiplayer
     const isFirst = !!gameState.firstDraw?.[pi];
     let deck = [...p.deck], discard = [...p.discard];
     const drawn = [];
@@ -1887,6 +1887,7 @@ function performDraw() {
     hasMoved = false;
     hasPlayedCard = false;
     cardsPlayedThisTurn = 0;
+    gameState._sorenSecondMove = false;   // ← CRITICAL for Soren passive
 
     renderAll();
     mpUpdateTurnState();
@@ -3788,6 +3789,9 @@ function renderAll() {
   updateUltimateButton(0);
   updateUltimateButton(1);
   if (debugVisible) updateDebug();
+  if (gameState.activePlayer === mp_localSeat && (gameState.phase === 'draw' || !gameState._sorenSecondMove === undefined)) {
+  gameState._sorenSecondMove = false;
+  }
 }
 
 function renderPanels() {
@@ -5324,6 +5328,8 @@ function mpLaunchGame(gameId, localSeat, myChampId, oppChampId, oppName, myHand,
   renderAll();
   mpUpdateTurnState();
 
+  gameState._sorenSecondMove = false;
+
     // Force clean multiplayer start — skip draw screen
   if (gameState.phase === 'draw' || !gameState.phase) {
     gameState.phase = 'action';
@@ -5414,17 +5420,17 @@ async function mpHandleRemoteUpdate(row, localSeat, myChampId, oppChampId) {
       })),
     };
 
+    if (gameState.activePlayer === mp_localSeat) {
+      if (gameState.phase === 'draw' || gameState.phase === 'action') {
+        performDraw();   // This now draws the card AND resets Soren flag
+      }
+    }
+
     hasMoved = false;
     hasPlayedCard = false;
     cardsPlayedThisTurn = 0;
     uiMode = 'idle';
     selectedCard = null;
-
-    // Force clean multiplayer start — skip draw screen
-    if (gameState.phase === 'draw' || !gameState.phase) {
-      gameState.phase = 'action';
-    }
-    performDraw();
 
     mpUpdatePanelLabels();
     renderAll();
@@ -5476,11 +5482,12 @@ function mpEndTurnLocal() {
   const next = pi === 0 ? 1 : 0;
   gameState.activePlayer = next;
   if (pi === 1) gameState.turnNumber++;
-  gameState.phase = 'draw';   // Remote player auto-draws instantly
+  gameState.phase = 'draw';   // remote client will auto-draw
 
   uiMode = 'idle';
   selectedCard = null;
   resetTurnState();
+  gameState._sorenSecondMove = false;   // ← CRITICAL reset for Soren
 
   addLog(next, 'system', `Turn ${gameState.turnNumber} — Seat ${next}`);
 
