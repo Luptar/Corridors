@@ -5323,6 +5323,11 @@ function mpLaunchGame(gameId, localSeat, myChampId, oppChampId, oppName, myHand,
   // We patch rendering: player 0 is always host, player 1 is always guest
   // localSeat 0 = you're player 0; localSeat 1 = you're player 1
 
+  // In MP, hands are pre-dealt — skip the draw phase entirely
+  if (gameState.phase === 'draw') {
+    gameState.phase = 'action';
+  }
+
   mpUpdatePanelLabels();
   renderAll();
   mpUpdateTurnState();
@@ -5416,6 +5421,11 @@ async function mpHandleRemoteUpdate(row, localSeat, myChampId, oppChampId) {
     cardsPlayedThisTurn = 0;
     uiMode = 'idle';
     selectedCard = null;
+
+    // In MP, draw phase is skipped — hands are managed privately
+    if (gameState.phase === 'draw') {
+      gameState.phase = 'action';
+    }
 
     mpUpdatePanelLabels();
     renderAll();
