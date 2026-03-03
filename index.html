@@ -2109,7 +2109,8 @@ function executePlaceWall(anchor, orientation, length, isPhantom=false, isDurabl
   // AR1 Reinforced Slab places a pre-reinforced wall
   const cardDef = CARDS[fromCardId];
   const isReinforced = !!(cardDef?.reinforced);
-  const isBinding    = !!(cardDef?.binding);
+  // isBinding: from card def OR from _binding on selectedCard (Eviction preserves binding walls)
+  const isBinding    = !!(cardDef?.binding) || !!(selectedCard?._binding);
   const isNoJump     = !!(cardDef?.noJump);
   const wall = {
     id: `w${gameState.nextWallId++}`,
@@ -2180,6 +2181,7 @@ function endTurnHuman() {
     gameState._redeployCardIdx = null;
     gameState._redirectCardIdx = null;
     gameState._reconstructCardIdx = null;
+    gameState._evictionInProgress = false;
     selectedCard = null;
     uiMode = 'idle';
   }
@@ -3262,8 +3264,9 @@ function selectCard(cardId, idx) {
   if (!card) return;
 
   // ── Cancellation BEFORE budget guards — a pending card must always be switchable ──
-  // Same card re-clicked: deselect it.
+  // Same card re-clicked: deselect it (but not if Eviction has been committed).
   if (selectedCard && selectedCard.idx === idx && (uiMode === 'wall' || uiMode === 'move')) {
+    if (selectedCard._evictionPlacing) { showStatus('Eviction committed — place the wall to finish', 'error'); return; }
     if (selectedCard._pendingMove) { cardsPlayedThisTurn = Math.max(0, cardsPlayedThisTurn - 1); hasPlayedCard = cardsPlayedThisTurn > 0; }
     selectedCard = null; uiMode = 'idle'; renderAll(); showStatus('Card deselected', ''); return;
   }
@@ -3274,10 +3277,15 @@ function selectCard(cardId, idx) {
     selectedCard = null; uiMode = 'idle';
   }
   // Different card clicked while a wall/pick mode is pending: cancel (wall budget not yet counted).
+  // Exception: Eviction locks out cancel once a wall has been picked (_evictionInProgress).
   if (selectedCard && (uiMode === 'wall' || uiMode === 'wallPick' || uiMode === 'wallRedirect' || uiMode === 'wallSeal' || uiMode === 'wallPunch' || uiMode === 'wallReconstruct') && selectedCard.idx >= 0) {
+    if (gameState._evictionInProgress || selectedCard._evictionPlacing) {
+      showStatus('Eviction committed — place the wall to finish', 'error'); return;
+    }
     gameState._redeployCardIdx = null;
     gameState._redirectCardIdx = null;
     gameState._reconstructCardIdx = null;
+    gameState._evictionInProgress = false;
     selectedCard = null; uiMode = 'idle';
   }
 
@@ -3380,6 +3388,9 @@ function onWallPlaced(pi, fromCardId) {
   const isT2Phantom = !!gameState._t2phantomPending;
   if (!isT2Phantom) countCardPlayed(pi);
   gameState._t2phantomPending = false;
+
+  // Clear eviction state now that the wall has been placed
+  gameState._evictionInProgress = false;
 
   // Track last card played for Faction Mirror
   if (fromCardId && CARDS[fromCardId]) {
@@ -3576,15 +3587,16 @@ function applyDisruptionCard(pi, card, idx) {
     return;
   }
 
-  // ── WD3: Eviction — move 1 non-reinforced opponent wall to any legal location ──
+  // ── WD3: Eviction — move any non-reinforced opponent wall (incl. phantom & binding) ──
   if (card.id === 'WD3') {
-    const oppWalls = gameState.walls.filter(w => w.owner===opp && !w.isPhantom && !w.permanent && !w.reinforced && !w.immune);
+    const oppWalls = gameState.walls.filter(w => w.owner===opp && !w.reinforced && !w.immune);
     if (!oppWalls.length) { showStatus("No moveable opponent walls (reinforced walls are immune)", 'error'); return; }
     gameState._redirectCardIdx = idx;
+    gameState._evictionInProgress = false; // true once a wall has been picked (locks out cancel)
     uiMode = 'wallRedirect';
     selectedCard = { id:'WD3', idx };
     renderAll();
-    showStatus('Eviction — click a non-reinforced opponent wall to relocate it', 'active');
+    showStatus('Eviction — click any non-reinforced opponent wall to relocate it', 'active');
     return;
   }
 
@@ -4238,7 +4250,8 @@ function renderWalls() {
     const el = document.createElement('div');
     const _activePi = gameState.activePlayer;
     const isPickable    = uiMode === 'wallPick'      && wall.owner === _activePi && !wall.isPhantom && !wall.permanent;
-    const isRedirect    = uiMode === 'wallRedirect'  && wall.owner === (1-_activePi) && !wall.isPhantom && !wall.permanent;
+    // Eviction (WD3) can target any non-reinforced opponent wall, including phantoms & binding walls
+    const isRedirect    = uiMode === 'wallRedirect'  && wall.owner === (1-_activePi) && !wall.reinforced && !wall.immune;
     const isSealable    = uiMode === 'wallSeal'      && wall.owner === _activePi && !wall.isPhantom && !wall.permanent;
     const isPunchable   = uiMode === 'wallPunch'     && !wall.isPhantom && !wall.permanent && !wall.reinforced && !wall.immune;
     const isReinforceable = uiMode === 'wallReinforce' && wall.owner === gameState.activePlayer && !wall.isPhantom && !wall.reinforced;
@@ -4337,24 +4350,41 @@ function pickWallForRedirect(wall) {
   const pi  = gameState.activePlayer;
   const opp = 1 - pi;
   const cardIdx = gameState._redirectCardIdx;
+  const isEviction = (selectedCard && selectedCard.id === 'WD3');
 
   // Lift the opponent wall — it keeps counting toward OPPONENT's wall count
-  // (the wall is now in transit, owned by opponent but placed by player)
   const len = wall.length;
+  const wasPhantom = !!wall.isPhantom;
+  const wasBinding = !!wall.binding;
+  const wasDurable = !!wall.durable;
   gameState.walls = gameState.walls.filter(w => w.id !== wall.id);
   // NOTE: wallsInPlay NOT decremented — wall still counts as opponent's
-  // It will be re-added to the board owned by opponent via executePlaceWall below
+
+  // Mark that a wall has been picked — cancel is now locked out
+  gameState._evictionInProgress = true;
 
   discardCard(pi, cardIdx);
   gameState._redirectCardIdx = null;
 
-  addLog(pi, 'card', 'Redirect: lifted opponent wall (' + len + '-tile) — placing it');
-  // Enter wall placement — wall placed as OPPONENT's piece (not player's)
-  // We store the opponent ownership in selectedCard for executePlaceWall to use
-  selectedCard = { id:'T3', idx:-1, length:len, isPhantom:false, isDurable:false, _redirectOwner:opp };
+  const label = isEviction ? 'Eviction' : 'Redirect';
+  const wallDesc = wasPhantom ? 'phantom' : wasBinding ? 'binding' : '';
+  addLog(pi, 'card', `${label}: lifted opponent ${wallDesc} wall (${len}-tile) — placing it`);
+
+  // Enter wall placement — preserve phantom/binding/durable properties of the lifted wall
+  selectedCard = {
+    id: isEviction ? 'WD3' : 'T3',
+    idx: -1,
+    length: len,
+    isPhantom: wasPhantom,
+    isDurable: wasDurable,
+    _binding: wasBinding,
+    _redirectOwner: opp,
+    _evictionPlacing: true, // prevents cancel during placement phase
+  };
   uiMode = 'wall';
   renderAll();
-  showStatus("Redirect: place the opponent's wall in a new location", 'active');
+  const placingDesc = wasPhantom ? "phantom wall" : wasBinding ? "binding wall" : "wall";
+  showStatus(`${label}: place the opponent's ${placingDesc} in a new location`, 'active');
 }
 
 function pickWallForSeal(wall) {
@@ -6038,6 +6068,7 @@ function mpGuardedEndTurnHuman() {
     gameState._redeployCardIdx = null;
     gameState._redirectCardIdx = null;
     gameState._reconstructCardIdx = null;
+    gameState._evictionInProgress = false;
     selectedCard = null; uiMode = 'idle';
   }
   mpEndTurnLocal();
