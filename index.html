@@ -601,6 +601,18 @@
     background: rgba(212,144,58,0.35);
   }
 
+  /* ── Nyx ghost piece (Illusory Trail) ────────────────────── */
+  @keyframes nyxGhostPulse {
+    0%   { opacity: 0.70; filter: blur(1.5px); }
+    50%  { opacity: 0.40; filter: blur(2.8px); }
+    100% { opacity: 0.70; filter: blur(1.5px); }
+  }
+  .champion-piece.nyx-ghost {
+    animation: nyxGhostPulse 1.8s ease-in-out infinite;
+    border-style: dashed !important;
+    box-shadow: 0 0 14px rgba(160, 80, 220, 0.55) !important;
+  }
+
   /* ── Decoy tokens ──────────────────────────────────────────────── */
   .decoy-token {
     position: absolute;
@@ -696,18 +708,6 @@
   .action-btn.danger:hover:not(:disabled) {
     border-color: var(--danger);
     background: rgba(192,64,64,0.1);
-  }
-  .action-btn.danger.ready {
-    border-color: var(--success);
-    color: var(--success);
-    animation: pulse-end 1.2s ease-in-out infinite;
-  }
-  .action-btn.danger.ready:hover:not(:disabled) {
-    background: rgba(80,160,96,0.15);
-  }
-  @keyframes pulse-end {
-    0%, 100% { box-shadow: 0 0 0 0 rgba(80,160,96,0); }
-    50%       { box-shadow: 0 0 6px 2px rgba(80,160,96,0.35); }
   }
   .action-btn.active {
     border-color: var(--amber);
@@ -1465,7 +1465,7 @@ const CHAMPIONS = {
   // Architects: maze-building, indestructible walls, double-card passive
   magnus: {
     id:'magnus', name:'Magnus', title:'Stoneweaver', faction:'Architects',
-    wallLimit:10, handSize:6, cardDraw:3, moveSpeed:1,
+    wallLimit:10, handSize:6, cardDraw:5, moveSpeed:1,
     ultimateCost:5, ultimateName:'Living Blueprint',
     passiveName:'Master Mason',
     passiveDesc:'Each turn you may play a 2nd Wall card instead of moving.',
@@ -1524,13 +1524,13 @@ const CARDS = {
   RC: { id:'RC', name:'Reconstruction',   faction:'Basic', rarity:'Common',   type:'Disruption',
         desc:'Remove one of your own walls anywhere on the board. Draw 1 card.' },
   AV: { id:'AV', name:'Advance',          faction:'Basic', rarity:'Common',   type:'Movement',
-        desc:'Gain +1 orthogonal move this turn. Cannot pass walls.' },
+        desc:'Move up to 2 spaces this turn. Cannot pass walls.', overrideSpeed:2 },
   QS: { id:'QS', name:'Quick Step',       faction:'Basic', rarity:'Uncommon', type:'Movement',
-        desc:'Gain +1 diagonal move this turn. Cannot pass walls.', overrideSpeed:2 },
+        desc:'Move 1 space diagonally. Blocked by a single wall; can slip through corner gaps where two walls meet.', overrideSpeed:1, diagonal:true },
   SW: { id:'SW', name:'Swift Leap',       faction:'Basic', rarity:'Uncommon', type:'Movement',
         desc:'Gain +1 move and may jump over the opponent this turn.', overrideSpeed:2 },
   WS: { id:'WS', name:'Wind Sprint',      faction:'Basic', rarity:'Rare',     type:'Movement',
-        desc:'Gain +2 orthogonal moves this turn. May pass through walls you own.', overrideSpeed:3 },
+        desc:'Move up to 2 spaces this turn. May pass through your own walls.', overrideSpeed:2, ownWallsPassthrough:true },
 
   // ── ARCHITECTS ───────────────────────────────────────────────────────
   AR1: { id:'AR1', name:'Reinforced Slab',  faction:'Architects', rarity:'Common',   type:'Wall',
@@ -1791,25 +1791,61 @@ function hasPath(from, goalRow, walls) {
 }
 
 // ── Legal moves ─────────────────────────────────────────────────────
-function getLegalMoves(state, pIdx, overrideSpeed) {
+function getLegalMoves(state, pIdx, overrideSpeed, tunnelThrough, diagonal, ownWallsPassthrough) {
   const player = state.players[pIdx];
   const opponent = state.players[pIdx === 0 ? 1 : 0];
-  // Stormpath: ignore all walls this turn
-  const effectiveWalls = player.stormpath ? [] : state.walls;
+  // Build effective wall set based on card flags:
+  // - tunnelThrough / stormpath: ignore ALL walls
+  // - ownWallsPassthrough: ignore only the mover's own walls
+  let effectiveWalls;
+  if (player.stormpath || tunnelThrough) {
+    effectiveWalls = [];
+  } else if (ownWallsPassthrough) {
+    effectiveWalls = state.walls.filter(w => w.owner !== pIdx);
+  } else {
+    effectiveWalls = state.walls;
+  }
   const blocked = buildBlockedEdges(effectiveWalls, pIdx);
+  // For diagonal wall-corner checks we always need the full wall set
+  const blockedFull = (player.stormpath || tunnelThrough) ? new Set() : buildBlockedEdges(state.walls, pIdx);
   const pos = player.position;
   const speed = (overrideSpeed !== undefined && overrideSpeed !== null) ? overrideSpeed : player.champion.moveSpeed;
   const opPos = opponent.position;
   const key = p => `${p.row},${p.col}`;
-  const dirs = [{r:-1,c:0},{r:1,c:0},{r:0,c:1},{r:0,c:-1}];
 
   const visited = new Set([key(pos)]);
   let frontier = [pos];
   const reachable = [];
 
+  if (diagonal) {
+    // Diagonal-only BFS (Quick Step). One step, 8-directional.
+    // A diagonal is blocked only if BOTH orthogonal edges crossing that corner are blocked
+    // (i.e. both walls meeting at the corner are present — fully walled corner).
+    const diagDirs = [{r:-1,c:-1},{r:-1,c:1},{r:1,c:-1},{r:1,c:1}];
+    for (const d of diagDirs) {
+      const nb = {row:pos.row+d.r, col:pos.col+d.c};
+      if (nb.row<0||nb.row>=BOARD_SIZE||nb.col<0||nb.col>=BOARD_SIZE) continue;
+      const k = key(nb);
+      if (k === key(opPos)) continue;
+      // A diagonal from pos to nb passes through the gap between cellA and cellB.
+      // The two crossing edges are cellA→nb and cellB→nb.
+      // - Neither blocked: open space → allow
+      // - Both blocked: the two walls END at that corner, creating a diagonal gap → allow
+      // - Exactly one blocked: a single wall cuts across the path → block
+      const cellA = {row:pos.row+d.r, col:pos.col};
+      const cellB = {row:pos.row,     col:pos.col+d.c};
+      const crossA = blockedFull.has(edgeKey(cellA, nb));
+      const crossB = blockedFull.has(edgeKey(cellB, nb));
+      if (crossA !== crossB) continue; // exactly one wall = blocked
+      reachable.push(nb);
+    }
+    return reachable;
+  }
+
   for (let step = 0; step < speed; step++) {
     const nextFrontier = [];
     for (const cur of frontier) {
+      const dirs = [{r:-1,c:0},{r:1,c:0},{r:0,c:1},{r:0,c:-1}];
       for (const d of dirs) {
         const nb = {row:cur.row+d.r, col:cur.col+d.c};
         if (nb.row<0||nb.row>=BOARD_SIZE||nb.col<0||nb.col>=BOARD_SIZE) continue;
@@ -1961,7 +1997,7 @@ function performDraw() {
 function executeMove(to) {
   const pi   = gameState.activePlayer;
   const from = gameState.players[pi].position;
-  addLog(pi, 'move', `Moved (${from.row},${from.col}) → (${to.row},${to.col})`);
+  if (gameState.players[pi]?.champion?.id !== 'nyx') addLog(pi, 'move', `Moved (${from.row},${from.col}) → (${to.row},${to.col})`);
   // If a movement card was pending, resolve it now (discard + count)
   if (selectedCard && selectedCard._pendingMove) {
     // Find the card in hand — idx may have shifted, so search by ID as fallback
@@ -1975,23 +2011,29 @@ function executeMove(to) {
     }
     const mc = discardIdx >= 0 ? gameState.players[pi].hand[discardIdx] : null;
     if (mc) discardCard(pi, discardIdx);
-    // Soren (Fleetfoot): a movement card counts as his MOVE, not his card play.
-    // This preserves his passive — he can still play a non-movement card after,
-    // or use the second move. For all other champions, count it as a card played.
-    const champId = gameState.players[pi].champion.id;
-    if (champId !== 'soren') {
-      countCardPlayed(pi);
-    }
+    // NOTE: countCardPlayed was already called in applyMovementCard on activation — do NOT call again.
     addLog(pi, 'card', 'Played: ' + (mc ? mc.name : 'movement card') + ' (speed ' + (selectedCard.overrideSpeed||1) + ')');
   }
   // Re-read state after potential discard mutation, then update position
   gameState.players[pi] = {...gameState.players[pi], position: to};
   // Clear stormpath after move (one-turn effect)
+
+  // Nyx (Illusory Trail) passive in MP: store previous position so the
+  // opponent sees Nyx at the old tile for one full turn (delayed reveal).
+  if (gameMode === 'mp' && gameState.players[pi].champion.id === 'nyx') {
+    if (!gameState._nyxTrail) gameState._nyxTrail = [null, null];
+    gameState._nyxTrail[pi] = { pos: { row: from.row, col: from.col }, turnsRemaining: 1 };
+    addLog(pi, 'passive', 'Illusory Trail: previous position lingers for one turn');
+  }
+
+  const wasStormpath = !!(gameState.players[pi].stormpath);
   if (gameState.players[pi].stormpath) {
     gameState.players[pi] = {...gameState.players[pi], stormpath: false};
     countCardPlayed(pi); // counts the ultimate usage
   }
-  hasMoved = true;
+  // Movement cards and Stormpath (ultimate) don't consume the free move.
+  const wasCardMove = !!(selectedCard && selectedCard._pendingMove);
+  if (!wasCardMove && !wasStormpath) hasMoved = true;
   uiMode = 'idle';
   selectedCard = null;
 
@@ -2072,7 +2114,7 @@ function executePlaceWall(anchor, orientation, length, isPhantom=false, isDurabl
     gameState.players[wallOwner] = {...gameState.players[wallOwner],
       wallsInPlay: gameState.players[wallOwner].wallsInPlay + 1};
   }
-  addLog(pi, 'wall', `Placed ${isPhantom?'Phantom ':''}${isReinforced?'Reinforced ':''}wall at (${anchor.row},${anchor.col}) ${orientation}${length}`);
+  addLog(pi, 'wall', `Placed ${isReinforced?'Reinforced ':''}wall at (${anchor.row},${anchor.col}) ${orientation}${length}`);
   uiMode = 'idle';
   selectedCard = null;
   onWallPlaced(pi, fromCardId);
@@ -2102,11 +2144,11 @@ function endTurnHuman() {
   if (aiThinking || !isHumanSeat(gameState.activePlayer)) {
     showStatus("It's not your turn", 'error'); return;
   }
-  // If a movement card is pending (selected but not yet used), discard it now
+  // If a movement card is pending (selected but destination not chosen), discard it.
+  // hasPlayedCard was already set true on activation — do NOT call countCardPlayed again.
   if (selectedCard && selectedCard._pendingMove && selectedCard.idx >= 0) {
     const pi = gameState.activePlayer;
     discardCard(pi, selectedCard.idx);
-    countCardPlayed(pi);
     selectedCard = null;
     uiMode = 'idle';
   }
@@ -2163,7 +2205,7 @@ function endTurn() {
   selectedCard = null;
   resetTurnState();
 
-  addLog(next, 'system', `Turn ${gameState.turnNumber} — Player ${next=== AI_PLAYER?'AI':'0'}`);
+  addLog(next, 'system', `Turn ${gameState.turnNumber} — ${gameState.players[next]?.champion?.name || 'Player ' + next}`);
   renderAll();
   performDraw();
 }
@@ -2513,9 +2555,12 @@ function runAI() {
   {
     const moveCards = st.aiHand.filter(c => c.type === 'Movement');
     for (const card of moveCards) {
-      const speed = card.overrideSpeed || 2;
+      const speed = card.overrideSpeed !== undefined ? card.overrideSpeed : 1;
+      const tunnel = !!card.tunnelThrough;
+      const diag = !!card.diagonal;
+      const ownPass = !!card.ownWallsPassthrough;
       const simState = {...gameState, walls: st.walls};
-      const boostedMoves = getLegalMoves(simState, pi, speed);
+      const boostedMoves = getLegalMoves(simState, pi, speed, tunnel, diag, ownPass);
       let bestMoveWithCard = -Infinity;
       let bestDest = null;
       for (const to of boostedMoves) {
@@ -2951,6 +2996,11 @@ function showChampionSelect() {
         color:var(--amber);font-family:'JetBrains Mono',monospace;font-size:13px;
         letter-spacing:.2em;text-transform:uppercase;cursor:pointer;opacity:0.4;
       ">SELECT CHAMPION TO CONTINUE &#8594;</button>
+      <button onclick="document.getElementById('champion-select-overlay').remove();showLandingScreen();" style="
+        margin-top:16px;padding:8px 24px;background:transparent;border:1px solid var(--text-dim);
+        color:var(--text-dim);font-family:'JetBrains Mono',monospace;font-size:11px;
+        letter-spacing:.2em;text-transform:uppercase;cursor:pointer;
+      ">&#8592; BACK TO MENU</button>
     </div>
   `);
 }
@@ -3194,6 +3244,26 @@ function selectCard(cardId, idx) {
   const card   = gameState.players[pi].hand[idx];
   if (!card) return;
 
+  // ── Cancellation BEFORE budget guards — a pending card must always be switchable ──
+  // Same card re-clicked: deselect it.
+  if (selectedCard && selectedCard.idx === idx && (uiMode === 'wall' || uiMode === 'move')) {
+    if (selectedCard._pendingMove) { cardsPlayedThisTurn = Math.max(0, cardsPlayedThisTurn - 1); hasPlayedCard = cardsPlayedThisTurn > 0; }
+    selectedCard = null; uiMode = 'idle'; renderAll(); showStatus('Card deselected', ''); return;
+  }
+  // Different card clicked while a movement card is pending: cancel and restore budget.
+  if (selectedCard && selectedCard._pendingMove && uiMode === 'move') {
+    cardsPlayedThisTurn = Math.max(0, cardsPlayedThisTurn - 1);
+    hasPlayedCard = cardsPlayedThisTurn > 0;
+    selectedCard = null; uiMode = 'idle';
+  }
+  // Different card clicked while a wall/pick mode is pending: cancel (wall budget not yet counted).
+  if (selectedCard && (uiMode === 'wall' || uiMode === 'wallPick' || uiMode === 'wallRedirect' || uiMode === 'wallSeal' || uiMode === 'wallPunch' || uiMode === 'wallReconstruct') && selectedCard.idx >= 0) {
+    gameState._redeployCardIdx = null;
+    gameState._redirectCardIdx = null;
+    gameState._reconstructCardIdx = null;
+    selectedCard = null; uiMode = 'idle';
+  }
+
   // Guard: can we play a card?
   if (rule.cardOrMove && hasMoved) {
     showStatus('Already moved — this faction plays cards OR moves, not both', 'error'); return;
@@ -3206,28 +3276,6 @@ function selectCard(cardId, idx) {
   // Soren (Fleetfoot): if already moved twice, no card allowed this turn
   if (champId === 'soren' && hasMoved && cardsPlayedThisTurn === 0 && gameState._sorenSecondMove) {
     showStatus('Already used both moves — no card this turn', 'error'); return;
-  }
-  // Soren: can only play one movement card per turn (it counts as his move, not his card play,
-  // so cardsPlayedThisTurn stays 0 — guard explicitly against stacking movement cards)
-  if (champId === 'soren' && hasMoved && card.type === 'Movement') {
-    showStatus('Already moved — cannot play another movement card this turn', 'error'); return;
-  }
-
-  // If a card is already pending (move/wall mode), clicking any card cancels it first.
-  // Clicking the SAME card again deselects it.
-  if (selectedCard && selectedCard.idx === idx && (uiMode === 'wall' || uiMode === 'move')) {
-    selectedCard = null; uiMode = 'idle'; renderAll(); showStatus('Card deselected', ''); return;
-  }
-  // Clicking a DIFFERENT card while in move mode: cancel pending movement card (no cost)
-  if (selectedCard && selectedCard._pendingMove && uiMode === 'move') {
-    selectedCard = null; uiMode = 'idle';
-  }
-  // Clicking a DIFFERENT card while in wall/pick mode: cancel pending action (no cost)
-  if (selectedCard && (uiMode === 'wall' || uiMode === 'wallPick' || uiMode === 'wallRedirect' || uiMode === 'wallSeal' || uiMode === 'wallPunch' || uiMode === 'wallReconstruct') && selectedCard.idx >= 0) {
-    gameState._redeployCardIdx = null;
-    gameState._redirectCardIdx = null;
-    gameState._reconstructCardIdx = null;
-    selectedCard = null; uiMode = 'idle';
   }
 
   selectedCard = { id: cardId, idx };
@@ -3417,15 +3465,25 @@ function drawCards(pi, n) {
 
 // ── Movement card handler ─────────────────────────────────────────────
 function applyMovementCard(pi, card, idx) {
-  // Don't discard or count yet — player must confirm by selecting a destination.
-  // They can click a different card to cancel this selection.
-  let speed = card.overrideSpeed || gameState.players[pi].champion.moveSpeed;
+  // Movement cards have a FIXED base speed — champion moveSpeed is NOT factored in.
+  // overrideSpeed on the card definition is the authoritative move range.
+  // If no overrideSpeed is set, default to 1 (one step).
+  let speed = card.overrideSpeed !== undefined ? card.overrideSpeed : 1;
   if (card.reactive && opponentLastPlayedWall) speed = 3;
-  // Store pending card info; discard+count happens in executeMove
-  selectedCard = { id: card.id, idx, overrideSpeed: speed, tunnelThrough: !!card.tunnel, _pendingMove: true };
+
+  // Mark the card play as consumed immediately on activation (countCardPlayed increments
+  // cardsPlayedThisTurn so cancellation can decrement it back symmetrically).
+  // The physical discard still happens in executeMove once a destination is confirmed.
+  countCardPlayed(pi);
+
+  // Store pending card info with all movement flags; discard happens in executeMove.
+  selectedCard = { id: card.id, idx, overrideSpeed: speed, tunnelThrough: !!card.tunnelThrough,
+                   diagonal: !!card.diagonal, ownWallsPassthrough: !!card.ownWallsPassthrough,
+                   _pendingMove: true };
   uiMode = 'move';
   renderAll();
-  showStatus(card.name + ' — select destination (' + speed + ' step' + (speed>1?'s':'') + '), or click another card to cancel', 'active');
+  const tunnelNote = card.tunnelThrough ? ' (can pass through walls)' : '';
+  showStatus(card.name + ' — select destination (' + speed + ' step' + (speed>1?'s':'') + ')' + tunnelNote + ', or click another card to cancel', 'active');
 }
 
 // ── Disruption card handler ───────────────────────────────────────────
@@ -3514,8 +3572,22 @@ function applyDisruptionCard(pi, card, idx) {
     if (gameState.walls.filter(w => w.owner===opp && !w.isPhantom).length < 3) {
       showStatus('Tax Notice requires opponent to have 3+ walls', 'error'); return;
     }
+    if (gameMode === 'mp') {
+      // In MP, opponent's hand is private in Supabase — fetch and remove remotely
+      drawCards(pi, 1);
+      discardCard(pi, idx); selectedCard = null; countCardPlayed(pi);
+      if (isTurnDone()) gameState.phase = 'end_turn';
+      renderAll(); showStatus('Tax Notice: removing opponent card…', 'active');
+      mpRemoveOpponentCards(opp, 1).then(({ discarded, newHandLength }) => {
+        const names = discarded.map(c => c.name).join(', ') || '(empty hand)';
+        addLog(pi, 'card', 'Tax Notice: opponent discarded ' + names);
+        renderAll();
+        mpPushState();
+        showStatus('Tax Notice: opponent discarded!', 'success');
+      });
+      return;
+    }
     if (op.hand.length) {
-      // Player (human) picks which card; for simplicity discard first (could be improved to let player choose)
       const ridx = Math.floor(Math.random() * op.hand.length);
       const gone = op.hand[ridx];
       gameState.players[opp] = { ...op,
@@ -3532,10 +3604,24 @@ function applyDisruptionCard(pi, card, idx) {
 
   // ── WD4: Confiscate — opponent discards 2 cards, no draw for player ──
   if (card.id === 'WD4') {
+    if (gameMode === 'mp') {
+      // In MP, opponent's hand is private in Supabase — fetch and remove remotely
+      discardCard(pi, idx); selectedCard = null; countCardPlayed(pi);
+      if (isTurnDone()) gameState.phase = 'end_turn';
+      renderAll(); showStatus('Confiscate: removing opponent cards…', 'active');
+      mpRemoveOpponentCards(opp, 2).then(({ discarded, newHandLength }) => {
+        const count = discarded.length;
+        const names = discarded.map(c => c.name).join(', ') || '(empty hand)';
+        addLog(pi, 'card', `Confiscate: opponent discarded ${names}!`);
+        renderAll();
+        mpPushState();
+        showStatus(`Confiscate: opponent discarded ${count} card(s)!`, 'success');
+      });
+      return;
+    }
     const op = gameState.players[opp];
     const discardCount = Math.min(2, op.hand.length);
     if (discardCount > 0) {
-      // Discard 2 random cards from opponent's hand
       let hand = [...op.hand];
       const discarded = [];
       for (let i = 0; i < discardCount; i++) {
@@ -3681,6 +3767,20 @@ function applyDisruptionCard(pi, card, idx) {
 
   // ── T4: Scatter — opponent discards 1 random card ──
   if (card.id === 'T4') {
+    if (gameMode === 'mp') {
+      // In MP, opponent's hand is private in Supabase — fetch and remove remotely
+      discardCard(pi, idx); selectedCard = null; countCardPlayed(pi);
+      if (isTurnDone()) gameState.phase = 'end_turn';
+      renderAll(); showStatus('Scatter: removing opponent card…', 'active');
+      mpRemoveOpponentCards(opp, 1).then(({ discarded, newHandLength }) => {
+        const names = discarded.map(c => c.name).join(', ') || '(empty hand)';
+        addLog(pi, 'card', 'Scatter: opponent discarded ' + names);
+        renderAll();
+        mpPushState();
+        showStatus('Scatter: opponent discarded!', 'success');
+      });
+      return;
+    }
     const op = gameState.players[opp];
     if (op.hand.length) {
       const ridx = Math.floor(Math.random() * op.hand.length);
@@ -3857,6 +3957,13 @@ function maybeAIUltimate(pi) {
       addLog(pi, 'system', `Bound! Adjacent to a Binding Wall — move skipped next turn.`);
     }
   }
+
+  // Nyx trail: decrement when this player's turn ends (ghost clears after 1 opponent turn)
+  if (gameState._nyxTrail && gameState._nyxTrail[pi]) {
+    const t = gameState._nyxTrail[pi];
+    t.turnsRemaining--;
+    if (t.turnsRemaining <= 0) gameState._nyxTrail[pi] = null;
+  }
 }
 
 function updateUltimateButton(pi) {
@@ -3896,11 +4003,8 @@ function updateActionBar() {
     else btnMove.textContent = 'MOVE';
   }
   if (btnEnd) {
-    // Allow ending turn at any point during the action phase (early end is permitted).
-    btnEnd.disabled = phase==='draw' || phase==='ended' || aiThinking;
-    // Highlight when the turn is naturally complete (move + card done)
-    const turnComplete = phase === 'end_turn' || (phase === 'action' && isTurnDoneOrPending());
-    btnEnd.className = 'action-btn danger' + (turnComplete && !btnEnd.disabled ? ' ready' : '');
+    // Allow ending turn any time during the action phase — player can always pass.
+    btnEnd.disabled = phase==='draw' || phase==='ended' || aiThinking || !isHuman;
   }
 }
 
@@ -3919,7 +4023,8 @@ function renderAll() {
   if (gameMode === 'mp') {
     const oppSeat = 1 - mp_localSeat;
     const oppHandEl = document.getElementById('p' + oppSeat + '-hand');
-    if (oppHandEl) {
+    const localIsThorne = gameState.players[mp_localSeat] && gameState.players[mp_localSeat].champion.id === 'thorne';
+    if (oppHandEl && !localIsThorne) {
       const count = (gameState._handCounts && gameState._handCounts[oppSeat]) || 0;
       oppHandEl.innerHTML = count > 0
         ? Array(count).fill('<div class="hidden-card"><div class="hidden-card-icon"></div><span class="hidden-card-label">HIDDEN</span></div>').join('')
@@ -3944,12 +4049,7 @@ function renderAll() {
     const canEnd = isMyTurn && (phase === 'action' || phase === 'end_turn');
     const endBtn = document.getElementById('btn-end');
     const moveBtn = document.getElementById('btn-move');
-    if (endBtn) {
-      endBtn.disabled = !canEnd;
-      endBtn.style.opacity = canEnd ? '1' : '0.3';
-      const turnComplete = phase === 'end_turn' || (phase === 'action' && canEnd && isTurnDoneOrPending());
-      endBtn.className = 'action-btn danger' + (turnComplete && canEnd ? ' ready' : '');
-    }
+    if (endBtn) { endBtn.disabled = !canEnd; endBtn.style.opacity = canEnd ? '1' : '0.3'; }
     if (moveBtn) {
       moveBtn.disabled = !isMyPhase;
       moveBtn.style.opacity = isMyPhase ? '1' : '0.3';
@@ -4000,11 +4100,15 @@ function renderPanels() {
         }).join('');
     }
 
-    // Hand — player 0 always sees own cards; AI hand shown as hidden (unless Thorne's Stare)
+    // Hand — human sees own cards; opponent hand hidden unless Thorne's Warden's Stare is active
     const handEl = document.getElementById(`${prefix}-hand`);
     if (handEl) {
-      const isThorne = gameState.players[0].champion.id === 'thorne' && pi === AI_PLAYER;
-      if (!isHumanSeat(pi) && !isThorne) {
+      // Warden's Stare: local player is Thorne AND we are rendering the opponent's panel
+      const localSeat = (gameMode === 'mp') ? mp_localSeat : 0;
+      const oppSeatForPassive = (localSeat !== null) ? 1 - localSeat : AI_PLAYER;
+      const localIsThorne = gameState.players[localSeat] && gameState.players[localSeat].champion.id === 'thorne';
+      const wardenStareActive = localIsThorne && pi === oppSeatForPassive;
+      if (!isHumanSeat(pi) && !wardenStareActive) {
         handEl.innerHTML = p.hand.map(()=>
           `<div class="hidden-card"><div class="hidden-card-icon"></div><span class="hidden-card-label">HIDDEN</span></div>`
         ).join('');
@@ -4062,7 +4166,10 @@ function renderBoard() {
 
   const grid = document.getElementById('board-grid');
   const overrideSpeed = selectedCard && selectedCard.overrideSpeed;
-  const legalMoves = uiMode==='move' ? getLegalMoves(gameState, gameState.activePlayer, overrideSpeed) : [];
+  const tunnelThrough = !!(selectedCard && selectedCard.tunnelThrough);
+  const diagonal = !!(selectedCard && selectedCard.diagonal);
+  const ownWallsPassthrough = !!(selectedCard && selectedCard.ownWallsPassthrough);
+  const legalMoves = uiMode==='move' ? getLegalMoves(gameState, gameState.activePlayer, overrideSpeed, tunnelThrough, diagonal, ownWallsPassthrough) : [];
   const legalSet = new Set(legalMoves.map(m=>`${m.row},${m.col}`));
 
   for (let r=0; r<BOARD_SIZE; r++) {
@@ -4076,14 +4183,36 @@ function renderBoard() {
     }
   }
 
-  // Pieces
+  // Pieces (with Nyx Illusory Trail + Veil of Shadows support in MP)
+  const localViewer = (gameMode === 'mp') ? mp_localSeat : 0;
   for (const pi of [0,1]) {
-    const pos = gameState.players[pi].position;
-    const cellEl = grid.children[pos.row*BOARD_SIZE + pos.col];
+    const champId = gameState.players[pi].champion.id;
+    const isOpponentPerspective = (gameMode === 'mp') && (pi !== localViewer);
+
+    // Veil of Shadows: hide the opponent piece entirely while veiled
+    if (isOpponentPerspective) {
+      const veiled = (gameState.players[pi].statusEffects || []).some(
+        e => e.type === 'veil_of_shadows' && e.turnsRemaining > 0
+      );
+      if (veiled) continue;
+    }
+
+    // Illusory Trail: opponent sees Nyx at the ghost (previous) position
+    let renderPos = gameState.players[pi].position;
+    let isGhost = false;
+    if (isOpponentPerspective && champId === 'nyx') {
+      const trail = gameState._nyxTrail && gameState._nyxTrail[pi];
+      if (trail && trail.turnsRemaining > 0) {
+        renderPos = trail.pos;
+        isGhost = true;
+      }
+    }
+
+    const cellEl = grid.children[renderPos.row * BOARD_SIZE + renderPos.col];
     if (cellEl) {
-      const isActive = pi===gameState.activePlayer && !aiThinking;
+      const isActive = pi === gameState.activePlayer && !aiThinking;
       const piece = document.createElement('div');
-      piece.className = `champion-piece p${pi}${isActive?' active-piece':''}`;
+      piece.className = `champion-piece p${pi}${isActive ? ' active-piece' : ''}${isGhost ? ' nyx-ghost' : ''}`;
       piece.textContent = gameState.players[pi].champion.name[0];
       cellEl.appendChild(piece);
     }
@@ -4519,8 +4648,8 @@ function renderLog() {
   const logEl = document.getElementById('game-log');
   if (!logEl) return;
   logEl.innerHTML = gameState.log.slice(-60).map(e => {
-    const isAI = e.player === AI_PLAYER;
-    const tag = e.type==='system' ? `<span class="sys-tag">SYS</span>` : `<span class="${isAI?'p1-tag':'p0-tag'}">${isAI?'AI ':'YOU'}</span>`;
+    const playerName = (gameState.players[e.player]?.champion?.name || `P${e.player}`).toUpperCase();
+    const tag = e.type==='system' ? `<span class="sys-tag">SYS</span>` : `<span class="${e.player===0?'p0-tag':'p1-tag'}">${playerName}</span>`;
     return `<div class="log-entry"><span class="turn-num">[T${e.turn}]</span>${tag} ${e.message}</div>`;
   }).join('');
   logEl.scrollTop = logEl.scrollHeight;
@@ -5431,6 +5560,47 @@ function mpBuildInitialState(hostChampId, guestChampId, firstSeat) {
   return state;
 }
 
+// ── MP: Remove cards from opponent's private hand in Supabase ───────
+// Used by disruption cards (Confiscate, Tax Notice, Scatter) that affect
+// the opponent's hand. In MP the opponent's hand is stored privately in
+// Supabase — it is NOT present in local gameState — so we must fetch,
+// mutate, and persist it directly rather than touching gameState.players[opp].hand.
+//
+// Returns { discarded: Card[], newHandLength: number }
+async function mpRemoveOpponentCards(oppSeat, count) {
+  if (!_sb || !mp_gameId) return { discarded: [], newHandLength: 0 };
+
+  const handKey = oppSeat === 0 ? 'host_hand' : 'guest_hand';
+  const discardKey = oppSeat === 0 ? 'host_deck' : 'guest_deck'; // we add to discard inside state blob, not deck
+
+  // Fetch opponent's current private hand
+  const { data: g } = await _sb.from('mp_games').select(handKey).eq('id', mp_gameId).single();
+  if (!g) return { discarded: [], newHandLength: 0 };
+
+  let oppHand = JSON.parse(g[handKey] || '[]');
+  const discarded = [];
+  const removeCount = Math.min(count, oppHand.length);
+
+  for (let i = 0; i < removeCount; i++) {
+    const ridx = Math.floor(Math.random() * oppHand.length);
+    discarded.push(oppHand.splice(ridx, 1)[0]);
+  }
+
+  // Persist updated hand back to Supabase
+  await _sb.from('mp_games').update({ [handKey]: JSON.stringify(oppHand) }).eq('id', mp_gameId);
+
+  // Also update the shared state's discard pile for the opponent so it's tracked
+  // (we do this by updating gameState.players[opp].discard locally — it gets pushed with the next mpPushState)
+  const oppState = gameState.players[oppSeat];
+  gameState.players[oppSeat] = { ...oppState, discard: [...oppState.discard, ...discarded] };
+
+  // Update _handCounts so opponent's card-back display is immediately correct
+  if (!gameState._handCounts) gameState._handCounts = [0, 0];
+  gameState._handCounts[oppSeat] = oppHand.length;
+
+  return { discarded, newHandLength: oppHand.length };
+}
+
 function mpScrubHands(state) {
   // Return a copy where hand/deck arrays are empty (stored separately per player)
   // but hand counts are preserved for opponent's UI (placeholder card display)
@@ -5673,12 +5843,12 @@ async function mpHandleRemoteUpdate(row, localSeat, myChampId, oppChampId) {
     let myHand = JSON.parse(myHandRaw || '[]');
     let myDeck = JSON.parse(myDeckRaw || '[]');
 
-    // ── Draw 1 card at turn start ──
+    // ── Draw 1 card at turn start (if below hand size cap) ──
     // On the very first turn of the game, opening hands were already dealt
     // in mpBuildInitialState, so _turnsPlayed[seat] === 0 means skip draw.
     const champDef = CHAMPIONS[myChampId];
     const turnsPlayed = (shared._turnsPlayed && shared._turnsPlayed[localSeat]) || 0;
-    if (turnsPlayed > 0) {
+    if (turnsPlayed > 0 && myHand.length < champDef.handSize) {
       // If deck is empty, shuffle discard pile back in
       if (myDeck.length === 0) {
         const myDiscard = shared.players?.[localSeat]?.discard || [];
@@ -5869,7 +6039,7 @@ function mpGuardedEndTurnHuman() {
   if (gameState.activePlayer !== mp_localSeat) { showStatus("It's not your turn!", 'error'); return; }
   if (selectedCard && selectedCard._pendingMove && selectedCard.idx >= 0) {
     discardCard(gameState.activePlayer, selectedCard.idx);
-    countCardPlayed(gameState.activePlayer);
+    // hasPlayedCard was already set at activation — do NOT call countCardPlayed again.
     selectedCard = null; uiMode = 'idle';
   }
   // Cancel any pending pick-mode card (discard it and count as played)
