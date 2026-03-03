@@ -603,14 +603,31 @@
 
   /* ── Nyx ghost piece (Illusory Trail) ────────────────────── */
   @keyframes nyxGhostPulse {
-    0%   { opacity: 0.70; filter: blur(1.5px); }
-    50%  { opacity: 0.40; filter: blur(2.8px); }
-    100% { opacity: 0.70; filter: blur(1.5px); }
+    0%   { opacity: 0.80; filter: blur(2px) brightness(1.2); }
+    40%  { opacity: 0.45; filter: blur(4px) brightness(0.8); }
+    100% { opacity: 0.80; filter: blur(2px) brightness(1.2); }
   }
+  /* What the opponent sees: a blurred ghost at the old position */
   .champion-piece.nyx-ghost {
-    animation: nyxGhostPulse 1.8s ease-in-out infinite;
+    animation: nyxGhostPulse 1.6s ease-in-out infinite;
     border-style: dashed !important;
-    box-shadow: 0 0 14px rgba(160, 80, 220, 0.55) !important;
+    border-color: rgba(160, 80, 220, 0.8) !important;
+    box-shadow: 0 0 18px rgba(140, 60, 210, 0.7), 0 0 6px rgba(200, 140, 255, 0.5) !important;
+    color: rgba(200, 160, 255, 0.9) !important;
+    pointer-events: none;
+  }
+  /* What Nyx's owner sees: a faint echo confirming the passive fired */
+  @keyframes nyxEchoPulse {
+    0%   { opacity: 0.30; filter: blur(3px); }
+    50%  { opacity: 0.15; filter: blur(5px); }
+    100% { opacity: 0.30; filter: blur(3px); }
+  }
+  .champion-piece.nyx-trail-echo {
+    animation: nyxEchoPulse 1.6s ease-in-out infinite;
+    border-style: dashed !important;
+    border-color: rgba(160, 80, 220, 0.4) !important;
+    box-shadow: 0 0 8px rgba(140, 60, 210, 0.3) !important;
+    pointer-events: none;
   }
 
   /* ── Decoy tokens ──────────────────────────────────────────────── */
@@ -1578,7 +1595,7 @@ const CARDS = {
   PH3: { id:'PH3', name:'Echo Strike',   faction:'Phantoms', rarity:'Uncommon', type:'Wall',
          desc:'Place a Phantom Wall on your side of the board and simultaneously place a real mirrored wall on the opponent\'s side at no extra cost.', wallLen:2, phantom:true, special:'echoStrike' },
   PH4: { id:'PH4', name:'Veil Lattice',  faction:'Phantoms', rarity:'Rare',     type:'Wall',
-         desc:'Place 2 Phantom Walls anywhere on the board. These Phantom Walls do not expire automatically — they persist until walked through voluntarily.', wallLen:2, phantom:true, special:'veilLattice' },
+         desc:'Place 1 Phantom Wall and 1 real wall anywhere on the board. The Phantom Wall does not auto-expire — it persists until walked through.', wallLen:2, phantom:true, special:'veilLattice' },
   PH5: { id:'PH5', name:'Compel Storm',  faction:'Phantoms', rarity:'Rare',     type:'Disruption',
          desc:'Force the opponent\'s champion to move up to 3 spaces in directions of your choice. Real walls block individual steps. Phantom Walls do not trigger removal.' },
 
@@ -2114,7 +2131,7 @@ function executePlaceWall(anchor, orientation, length, isPhantom=false, isDurabl
     gameState.players[wallOwner] = {...gameState.players[wallOwner],
       wallsInPlay: gameState.players[wallOwner].wallsInPlay + 1};
   }
-  addLog(pi, 'wall', `Placed ${isReinforced?'Reinforced ':''}wall at (${anchor.row},${anchor.col}) ${orientation}${length}`);
+  addLog(pi, 'wall', `Placed ${isPhantom ? 'Phantom' : (isReinforced ? 'Reinforced ' : 'real')} wall at (${anchor.row},${anchor.col}) ${orientation}${length}`);
   uiMode = 'idle';
   selectedCard = null;
   onWallPlaced(pi, fromCardId);
@@ -3288,7 +3305,11 @@ function selectCard(cardId, idx) {
     selectedCard = { ...selectedCard, length, isPhantom, isDurable };
     uiMode = 'wall';
     renderAll();
-    showStatus(card.name + ' — click a wall edge to place', 'active');
+    if (card.id === 'PH4') {
+      showStatus('Veil Lattice: place the Phantom Wall first, then the real wall', 'active');
+    } else {
+      showStatus(card.name + ' — click a wall edge to place', 'active');
+    }
   } else if (card.type === 'Movement') {
     trackCategory('Movement');
     applyMovementCard(pi, card, idx);
@@ -3389,14 +3410,15 @@ function onWallPlaced(pi, fromCardId) {
     return;
   }
 
-  // PH4 Veil Lattice: place 2 phantom walls
+  // PH4 Veil Lattice: place 1 phantom wall then 1 real wall
   if (fromCardId === 'PH4') {
     if (!gameState._veilCount) gameState._veilCount = 0;
     gameState._veilCount++;
     if (gameState._veilCount < 2) {
-      selectedCard = { id:'PH4', idx:-1, length:2, isPhantom:true, isDurable:false };
+      // First wall was phantom — now place the real wall
+      selectedCard = { id:'PH4', idx:-1, length:2, isPhantom:false, isDurable:false };
       uiMode = 'wall';
-      renderAll(); showStatus('Veil Lattice: place the 2nd Phantom Wall (persists until walked through)', 'active'); return;
+      renderAll(); showStatus('Veil Lattice: now place the real wall', 'active'); return;
     }
     gameState._veilCount = 0;
   }
@@ -3572,22 +3594,8 @@ function applyDisruptionCard(pi, card, idx) {
     if (gameState.walls.filter(w => w.owner===opp && !w.isPhantom).length < 3) {
       showStatus('Tax Notice requires opponent to have 3+ walls', 'error'); return;
     }
-    if (gameMode === 'mp') {
-      // In MP, opponent's hand is private in Supabase — fetch and remove remotely
-      drawCards(pi, 1);
-      discardCard(pi, idx); selectedCard = null; countCardPlayed(pi);
-      if (isTurnDone()) gameState.phase = 'end_turn';
-      renderAll(); showStatus('Tax Notice: removing opponent card…', 'active');
-      mpRemoveOpponentCards(opp, 1).then(({ discarded, newHandLength }) => {
-        const names = discarded.map(c => c.name).join(', ') || '(empty hand)';
-        addLog(pi, 'card', 'Tax Notice: opponent discarded ' + names);
-        renderAll();
-        mpPushState();
-        showStatus('Tax Notice: opponent discarded!', 'success');
-      });
-      return;
-    }
     if (op.hand.length) {
+      // Player (human) picks which card; for simplicity discard first (could be improved to let player choose)
       const ridx = Math.floor(Math.random() * op.hand.length);
       const gone = op.hand[ridx];
       gameState.players[opp] = { ...op,
@@ -3604,24 +3612,10 @@ function applyDisruptionCard(pi, card, idx) {
 
   // ── WD4: Confiscate — opponent discards 2 cards, no draw for player ──
   if (card.id === 'WD4') {
-    if (gameMode === 'mp') {
-      // In MP, opponent's hand is private in Supabase — fetch and remove remotely
-      discardCard(pi, idx); selectedCard = null; countCardPlayed(pi);
-      if (isTurnDone()) gameState.phase = 'end_turn';
-      renderAll(); showStatus('Confiscate: removing opponent cards…', 'active');
-      mpRemoveOpponentCards(opp, 2).then(({ discarded, newHandLength }) => {
-        const count = discarded.length;
-        const names = discarded.map(c => c.name).join(', ') || '(empty hand)';
-        addLog(pi, 'card', `Confiscate: opponent discarded ${names}!`);
-        renderAll();
-        mpPushState();
-        showStatus(`Confiscate: opponent discarded ${count} card(s)!`, 'success');
-      });
-      return;
-    }
     const op = gameState.players[opp];
     const discardCount = Math.min(2, op.hand.length);
     if (discardCount > 0) {
+      // Discard 2 random cards from opponent's hand
       let hand = [...op.hand];
       const discarded = [];
       for (let i = 0; i < discardCount; i++) {
@@ -3767,20 +3761,6 @@ function applyDisruptionCard(pi, card, idx) {
 
   // ── T4: Scatter — opponent discards 1 random card ──
   if (card.id === 'T4') {
-    if (gameMode === 'mp') {
-      // In MP, opponent's hand is private in Supabase — fetch and remove remotely
-      discardCard(pi, idx); selectedCard = null; countCardPlayed(pi);
-      if (isTurnDone()) gameState.phase = 'end_turn';
-      renderAll(); showStatus('Scatter: removing opponent card…', 'active');
-      mpRemoveOpponentCards(opp, 1).then(({ discarded, newHandLength }) => {
-        const names = discarded.map(c => c.name).join(', ') || '(empty hand)';
-        addLog(pi, 'card', 'Scatter: opponent discarded ' + names);
-        renderAll();
-        mpPushState();
-        showStatus('Scatter: opponent discarded!', 'success');
-      });
-      return;
-    }
     const op = gameState.players[opp];
     if (op.hand.length) {
       const ridx = Math.floor(Math.random() * op.hand.length);
@@ -3958,11 +3938,14 @@ function maybeAIUltimate(pi) {
     }
   }
 
-  // Nyx trail: decrement when this player's turn ends (ghost clears after 1 opponent turn)
-  if (gameState._nyxTrail && gameState._nyxTrail[pi]) {
-    const t = gameState._nyxTrail[pi];
+  // Nyx trail: decrement for the OPPONENT's seat when their turn ends.
+  // The trail is set when Nyx moves, survives through Nyx's own end-turn push,
+  // and expires after the opponent has had their full turn to see the ghost.
+  const nyxOppSeat = 1 - pi;
+  if (gameState._nyxTrail && gameState._nyxTrail[nyxOppSeat]) {
+    const t = gameState._nyxTrail[nyxOppSeat];
     t.turnsRemaining--;
-    if (t.turnsRemaining <= 0) gameState._nyxTrail[pi] = null;
+    if (t.turnsRemaining <= 0) gameState._nyxTrail[nyxOppSeat] = null;
   }
 }
 
@@ -4197,24 +4180,40 @@ function renderBoard() {
       if (veiled) continue;
     }
 
-    // Illusory Trail: opponent sees Nyx at the ghost (previous) position
-    let renderPos = gameState.players[pi].position;
-    let isGhost = false;
-    if (isOpponentPerspective && champId === 'nyx') {
-      const trail = gameState._nyxTrail && gameState._nyxTrail[pi];
-      if (trail && trail.turnsRemaining > 0) {
-        renderPos = trail.pos;
-        isGhost = true;
-      }
-    }
+    // Illusory Trail: handle Nyx ghost rendering
+    const trail = (champId === 'nyx') ? (gameState._nyxTrail && gameState._nyxTrail[pi]) : null;
+    const trailActive = trail && trail.turnsRemaining > 0;
 
-    const cellEl = grid.children[renderPos.row * BOARD_SIZE + renderPos.col];
-    if (cellEl) {
-      const isActive = pi === gameState.activePlayer && !aiThinking;
-      const piece = document.createElement('div');
-      piece.className = `champion-piece p${pi}${isActive ? ' active-piece' : ''}${isGhost ? ' nyx-ghost' : ''}`;
-      piece.textContent = gameState.players[pi].champion.name[0];
-      cellEl.appendChild(piece);
+    if (isOpponentPerspective && champId === 'nyx' && trailActive) {
+      // Opponent view: show ONLY the ghost at the old position (real pos hidden)
+      const ghostCellEl = grid.children[trail.pos.row * BOARD_SIZE + trail.pos.col];
+      if (ghostCellEl) {
+        const ghost = document.createElement('div');
+        ghost.className = `champion-piece p${pi} nyx-ghost`;
+        ghost.textContent = gameState.players[pi].champion.name[0];
+        ghostCellEl.appendChild(ghost);
+      }
+    } else {
+      // Real position — shown to Nyx's owner (or when no trail)
+      const realPos = gameState.players[pi].position;
+      const realCellEl = grid.children[realPos.row * BOARD_SIZE + realPos.col];
+      if (realCellEl) {
+        const isActive = pi === gameState.activePlayer && !aiThinking;
+        const piece = document.createElement('div');
+        piece.className = `champion-piece p${pi}${isActive ? ' active-piece' : ''}`;
+        piece.textContent = gameState.players[pi].champion.name[0];
+        realCellEl.appendChild(piece);
+      }
+      // Nyx's owner also sees a faint trail echo at the old position (so they know passive fired)
+      if (champId === 'nyx' && trailActive && !isOpponentPerspective) {
+        const echoCellEl = grid.children[trail.pos.row * BOARD_SIZE + trail.pos.col];
+        if (echoCellEl) {
+          const echo = document.createElement('div');
+          echo.className = `champion-piece p${pi} nyx-trail-echo`;
+          echo.textContent = gameState.players[pi].champion.name[0];
+          echoCellEl.appendChild(echo);
+        }
+      }
     }
   }
 
@@ -5560,47 +5559,6 @@ function mpBuildInitialState(hostChampId, guestChampId, firstSeat) {
   return state;
 }
 
-// ── MP: Remove cards from opponent's private hand in Supabase ───────
-// Used by disruption cards (Confiscate, Tax Notice, Scatter) that affect
-// the opponent's hand. In MP the opponent's hand is stored privately in
-// Supabase — it is NOT present in local gameState — so we must fetch,
-// mutate, and persist it directly rather than touching gameState.players[opp].hand.
-//
-// Returns { discarded: Card[], newHandLength: number }
-async function mpRemoveOpponentCards(oppSeat, count) {
-  if (!_sb || !mp_gameId) return { discarded: [], newHandLength: 0 };
-
-  const handKey = oppSeat === 0 ? 'host_hand' : 'guest_hand';
-  const discardKey = oppSeat === 0 ? 'host_deck' : 'guest_deck'; // we add to discard inside state blob, not deck
-
-  // Fetch opponent's current private hand
-  const { data: g } = await _sb.from('mp_games').select(handKey).eq('id', mp_gameId).single();
-  if (!g) return { discarded: [], newHandLength: 0 };
-
-  let oppHand = JSON.parse(g[handKey] || '[]');
-  const discarded = [];
-  const removeCount = Math.min(count, oppHand.length);
-
-  for (let i = 0; i < removeCount; i++) {
-    const ridx = Math.floor(Math.random() * oppHand.length);
-    discarded.push(oppHand.splice(ridx, 1)[0]);
-  }
-
-  // Persist updated hand back to Supabase
-  await _sb.from('mp_games').update({ [handKey]: JSON.stringify(oppHand) }).eq('id', mp_gameId);
-
-  // Also update the shared state's discard pile for the opponent so it's tracked
-  // (we do this by updating gameState.players[opp].discard locally — it gets pushed with the next mpPushState)
-  const oppState = gameState.players[oppSeat];
-  gameState.players[oppSeat] = { ...oppState, discard: [...oppState.discard, ...discarded] };
-
-  // Update _handCounts so opponent's card-back display is immediately correct
-  if (!gameState._handCounts) gameState._handCounts = [0, 0];
-  gameState._handCounts[oppSeat] = oppHand.length;
-
-  return { discarded, newHandLength: oppHand.length };
-}
-
 function mpScrubHands(state) {
   // Return a copy where hand/deck arrays are empty (stored separately per player)
   // but hand counts are preserved for opponent's UI (placeholder card display)
@@ -5624,14 +5582,18 @@ async function mpStartHostGame(gameId, myChamp, oppChamp, oppName) {
   const myHand = JSON.parse(g.host_hand || '[]');
   const myDeck = JSON.parse(g.host_deck || '[]');
   const sharedState = g.state;
-  mpLaunchGame(gameId, 0, myChamp, oppChamp, oppName, myHand, sharedState, myDeck);
+  // Warden's Stare: if host is Thorne, fetch opponent's hand for passive reveal
+  const oppHand_host = myChamp === 'thorne' ? JSON.parse(g.guest_hand || '[]') : null;
+  mpLaunchGame(gameId, 0, myChamp, oppChamp, oppName, myHand, sharedState, myDeck, oppHand_host);
 }
 
 // ── Start game (guest) ───────────────────────────────────────────────
 function mpStartGuestGame(gameId, myChamp, oppChamp, oppName, firstSeat, myHand, myDeck, fullState) {
   closeMpLobby(true);
   const sharedState = mpScrubHands(fullState);
-  mpLaunchGame(gameId, 1, myChamp, oppChamp, oppName, myHand, sharedState, myDeck);
+  // Warden's Stare: if guest is Thorne, host's hand is available in fullState before scrub
+  const oppHand_guest = myChamp === 'thorne' ? fullState.players[0].hand : null;
+  mpLaunchGame(gameId, 1, myChamp, oppChamp, oppName, myHand, sharedState, myDeck, oppHand_guest);
 }
 
 // ── Resume an existing game ──────────────────────────────────────────
@@ -5655,7 +5617,10 @@ async function mpResumeGame(gameId) {
     if (!g.state) { alert('Game state not available'); return; }
 
     closeMpLobby(true);
-    mpLaunchGame(gameId, mySeat, myChamp, oppChamp, oppName, myHand, g.state, myDeck);
+    // Warden's Stare: if local player is Thorne, also load opponent's hand for passive reveal
+    const oppHandRaw_resume = iAmHost ? g.guest_hand : g.host_hand;
+    const oppHand_resume = myChamp === 'thorne' ? JSON.parse(oppHandRaw_resume || '[]') : null;
+    mpLaunchGame(gameId, mySeat, myChamp, oppChamp, oppName, myHand, g.state, myDeck, oppHand_resume);
   } catch(e) {
     console.error('[MP] resume error:', e);
     alert('Failed to load game: ' + e.message);
@@ -5663,7 +5628,8 @@ async function mpResumeGame(gameId) {
 }
 
 // ── Core: Launch multiplayer game ────────────────────────────────────
-function mpLaunchGame(gameId, localSeat, myChampId, oppChampId, oppName, myHand, sharedState, myDeck) {
+// oppHand: optional — only populated when local player is Thorne (Warden's Stare passive)
+function mpLaunchGame(gameId, localSeat, myChampId, oppChampId, oppName, myHand, sharedState, myDeck, oppHand) {
   mp_gameId = gameId;
   mp_localSeat = localSeat;
   mp_isMultiplayer = true;
@@ -5674,6 +5640,7 @@ function mpLaunchGame(gameId, localSeat, myChampId, oppChampId, oppName, myHand,
   gameMode = 'mp';
 
   const oppSeat = 1 - localSeat;
+  const localIsThorne = myChampId === 'thorne';
 
   // Reconstruct full gameState from shared state + private hand + deck
   const hId = localSeat === 0 ? myChampId : oppChampId;
@@ -5684,10 +5651,12 @@ function mpLaunchGame(gameId, localSeat, myChampId, oppChampId, oppName, myHand,
     ...sharedState,
     players: sharedState.players.map((p, i) => {
       const isMe = i === localSeat;
+      // Warden's Stare: if we are Thorne, populate opponent's hand for rendering
+      const resolvedHand = isMe ? myHand : (localIsThorne && oppHand ? oppHand : []);
       return {
         ...p,
         champion: { ...CHAMPIONS[i === 0 ? hId : gId] },
-        hand: isMe ? myHand : [],
+        hand: resolvedHand,
         // Real deck for our seat, empty for opponent (they manage theirs)
         deck: isMe ? (myDeck || []) : [],
       };
@@ -5786,15 +5755,19 @@ function mpSubscribe(gameId, localSeat, myHandLen, myChampId, oppChampId) {
     });
 
   // ── Polling fallback — fires every 4s when waiting for opponent ──────
-  // Ensures the board updates even if the realtime channel drops silently
+  // Ensures the board updates even if the realtime channel drops silently.
+  // IMPORTANT: only poll when it is NOT our turn. Polling during our own
+  // turn would fetch Supabase (which still has active_seat=us from our last
+  // push) and cause mpHandleRemoteUpdate to re-process our own turn start,
+  // resetting hasMoved/hasPlayedCard mid-turn.
   mp_pollInterval = setInterval(async () => {
     if (gameMode !== 'mp' || gameState?.phase === 'ended') {
       clearInterval(mp_pollInterval);
       mp_pollInterval = null;
       return;
     }
-    // Poll while waiting for the opponent (not our turn), OR on our turn (to catch wins)
-    if (gameState.activePlayer !== mp_localSeat || gameState.phase === 'action') {
+    // Only poll while waiting for the opponent — never during our own action phase.
+    if (gameState.activePlayer !== mp_localSeat) {
       try {
         const { data } = await _sb
           .from('mp_games')
@@ -5822,6 +5795,14 @@ async function mpHandleRemoteUpdate(row, localSeat, myChampId, oppChampId) {
   if (row.active_seat === localSeat && row.status === 'active') {
     const shared = row.state;
 
+    // Safety guard: if our local gameState already has us as activePlayer AND we have
+    // already taken action this turn (moved or played a card), this is a stale echo of
+    // our own last push — do NOT reset the turn state.
+    if (gameState?.activePlayer === localSeat && (hasMoved || hasPlayedCard || cardsPlayedThisTurn > 0)) {
+      console.log('[MP] Ignoring stale remote update — mid-turn action already in progress');
+      return;
+    }
+
     // Deduplication: skip if we've already processed this turn transition
     const turnKey = `${shared?.turnNumber ?? 0}-${shared?.activePlayer ?? localSeat}`;
     if (_mp_lastProcessedTurn === turnKey) {
@@ -5833,15 +5814,19 @@ async function mpHandleRemoteUpdate(row, localSeat, myChampId, oppChampId) {
     const hId = localSeat === 0 ? myChampId : oppChampId;
     const gId = localSeat === 1 ? myChampId : oppChampId;
 
-    // Fetch our private hand AND deck
+    // Fetch our private hand AND deck (+ opponent hand if we are Thorne — Warden's Stare)
+    const localIsThorne_ru = myChampId === 'thorne';
     const cols = localSeat === 0
-      ? 'host_hand,host_deck'
-      : 'guest_hand,guest_deck';
+      ? (localIsThorne_ru ? 'host_hand,host_deck,guest_hand' : 'host_hand,host_deck')
+      : (localIsThorne_ru ? 'guest_hand,guest_deck,host_hand' : 'guest_hand,guest_deck');
     const { data: g } = await _sb.from('mp_games').select(cols).eq('id', mp_gameId).single();
     const myHandRaw = localSeat === 0 ? g?.host_hand : g?.guest_hand;
     const myDeckRaw = localSeat === 0 ? g?.host_deck : g?.guest_deck;
     let myHand = JSON.parse(myHandRaw || '[]');
     let myDeck = JSON.parse(myDeckRaw || '[]');
+    // Warden's Stare: opponent's real hand (null if not Thorne)
+    const oppHandRaw_ru = localIsThorne_ru ? (localSeat === 0 ? g?.guest_hand : g?.host_hand) : null;
+    const oppHand_ru = oppHandRaw_ru ? JSON.parse(oppHandRaw_ru) : null;
 
     // ── Draw 1 card at turn start (if below hand size cap) ──
     // On the very first turn of the game, opening hands were already dealt
@@ -5883,7 +5868,8 @@ async function mpHandleRemoteUpdate(row, localSeat, myChampId, oppChampId) {
       players: shared.players.map((p, i) => ({
         ...p,
         champion: { ...CHAMPIONS[i === 0 ? hId : gId] },
-        hand: i === localSeat ? myHand : [],
+        // Warden's Stare: if we are Thorne, populate opponent's full hand for rendering
+        hand: i === localSeat ? myHand : (localIsThorne_ru && oppHand_ru ? oppHand_ru : []),
         deck: i === localSeat ? myDeck : [],
         // Restore our own ultimate state — the shared blob reflects the opponent's push,
         // which may have stale values for our seat.
