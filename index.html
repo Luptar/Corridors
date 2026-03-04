@@ -2186,11 +2186,11 @@ const CARDS = {
         desc:'Remove one of your own walls anywhere on the board. Draw 1 card.' },
   AV: { id:'AV', name:'Advance',          faction:'Basic', rarity:'Common',   type:'Movement',
         desc:'Move up to 2 spaces this turn. Cannot pass walls.', overrideSpeed:2 },
-  QS: { id:'QS', name:'Quick Step',       faction:'Basic', rarity:'Uncommon', type:'Movement',
+  QS: { id:'QS', name:'Quick Step',       faction:'Basic', rarity:'Common', type:'Movement',
         desc:'Move 1 space diagonally. Blocked by a single wall; can slip through corner gaps where two walls meet.', overrideSpeed:1, diagonal:true },
   SW: { id:'SW', name:'Swift Leap',       faction:'Basic', rarity:'Uncommon', type:'Movement',
         desc:'Gain +1 move and may jump over the opponent this turn.', overrideSpeed:2 },
-  WS: { id:'WS', name:'Wind Sprint',      faction:'Basic', rarity:'Rare',     type:'Movement',
+  WS: { id:'WS', name:'Wind Sprint',      faction:'Basic', rarity:'Uncommon',     type:'Movement',
         desc:'Move up to 2 spaces this turn. May pass through your own walls.', overrideSpeed:2, ownWallsPassthrough:true },
 
   // ── ARCHITECTS ───────────────────────────────────────────────────────
@@ -2198,49 +2198,49 @@ const CARDS = {
          desc:'Place a 2-tile indestructible wall (H or V). Permanent. Cannot be destroyed or moved.', wallLen:2, reinforced:true },
   AR2: { id:'AR2', name:'Repossess',        faction:'Architects', rarity:'Common',   type:'Disruption',
          desc:'Seize ownership of one of the opponent\'s walls. It becomes yours — you can move or remove it with your other cards. Cannot target reinforced or phantom walls.' },
-  AR3: { id:'AR3', name:'Blueprint Shift',  faction:'Architects', rarity:'Uncommon', type:'Disruption',
+  AR3: { id:'AR3', name:'Blueprint Shift',  faction:'Architects', rarity:'Common', type:'Disruption',
          desc:'Move one of your non-reinforced walls to any legal location on the board.' },
-  AR4: { id:'AR4', name:'Grand Bastion',    faction:'Architects', rarity:'Rare',     type:'Wall',
+  AR4: { id:'AR4', name:'Grand Bastion',    faction:'Architects', rarity:'Uncommon',     type:'Wall',
          desc:'Place a 3-tile straight wall. Permanent.', wallLen:3 },
-  AR5: { id:'AR5', name:'Labyrinth Core',   faction:'Architects', rarity:'Legendary',type:'Wall',
+  AR5: { id:'AR5', name:'Labyrinth Core',   faction:'Architects', rarity:'Uncommon',type:'Wall',
          desc:'Place a 4-tile straight wall. All your walls adjacent to it gain Reinforce.', wallLen:4, reinforced:true },
 
   // ── PATHFINDERS ──────────────────────────────────────────────────────
-  PF1: { id:'PF1', name:'Momentum',     faction:'Pathfinders', rarity:'Common',   type:'Movement',
+  PF1: { id:'PF1', name:'Momentum',     faction:'Pathfinders', rarity:'Uncommon',   type:'Movement',
          desc:'Gain +2 orthogonal moves this turn.', overrideSpeed:3 },
-  PF2: { id:'PF2', name:'Leap',         faction:'Pathfinders', rarity:'Common',   type:'Movement',
+  PF2: { id:'PF2', name:'Leap',         faction:'Pathfinders', rarity:'Uncommon',   type:'Movement',
          desc:'Gain +1 move and may jump over the opponent even if not adjacent.', overrideSpeed:2 },
   PF3: { id:'PF3', name:'Shortcut',     faction:'Pathfinders', rarity:'Uncommon', type:'Movement',
-         desc:'Move up to 3 spaces this turn ignoring diagonal restrictions.', overrideSpeed:3 },
-  PF4: { id:'PF4', name:'Eternal Path', faction:'Pathfinders', rarity:'Rare',     type:'Movement',
+         desc:'Move up to 3 spaces this turn ignoring diagonal restrictions.', overrideSpeed:3, diagonal:true },
+  PF4: { id:'PF4', name:'Eternal Path', faction:'Pathfinders', rarity:'Uncommon',     type:'Movement',
          desc:'Move up to 4 spaces this turn.', overrideSpeed:4 },
   PF5: { id:'PF5', name:'Wall Vault',   faction:'Pathfinders', rarity:'Uncommon', type:'Movement',
          desc:'Move up to 2 spaces this turn and may pass through one wall of any kind.', overrideSpeed:2, tunnelThrough:true },
 
   // ── WARDENS ──────────────────────────────────────────────────────────
-  WD1: { id:'WD1', name:'Binding Wall',   faction:'Wardens', rarity:'Common',   type:'Wall',
+  WD1: { id:'WD1', name:'Binding Wall',   faction:'Wardens', rarity:'Uncommon',   type:'Wall',
          desc:'Place a 1-tile Binding Wall. If the opponent ends their turn adjacent to it, they skip their move action next turn (may still play a card).', wallLen:1, binding:true },
   WD2: { id:'WD2', name:'Tax Notice',     faction:'Wardens', rarity:'Common',   type:'Disruption',
          desc:'If the opponent has 3+ walls in play, they must discard 1 card of your choice. Draw 1 card.' },
   WD3: { id:'WD3', name:'Eviction',       faction:'Wardens', rarity:'Uncommon', type:'Disruption',
          desc:'Move 1 non-reinforced opponent wall to any legal location on the board. The opponent cannot respond.' },
-  WD4: { id:'WD4', name:'Confiscate',          faction:'Wardens', rarity:'Rare',     type:'Disruption',
+  WD4: { id:'WD4', name:'Confiscate',          faction:'Wardens', rarity:'Uncommon',     type:'Disruption',
          desc:"Force the opponent to discard 2 random cards from their hand." },
-  WD5: { id:'WD5', name:'Total Seizure',        faction:'Wardens', rarity:'Legendary',type:'Disruption',
+  WD5: { id:'WD5', name:'Total Seizure',        faction:'Wardens', rarity:'Rare',type:'Disruption',
          desc:'Move ALL opponent walls currently on the board to any legal locations of your choice. Reinforced walls are not exempt.' },
-  WD6: { id:'WD6', name:'Condemned Passage',    faction:'Wardens', rarity:'Rare',     type:'Wall',
+  WD6: { id:'WD6', name:'Condemned Passage',    faction:'Wardens', rarity:'Uncommon',     type:'Wall',
          desc:'Place a 2-tile Binding Wall. Permanent. The opponent cannot jump over it — jump movement through this wall is blocked entirely.', wallLen:2, binding:true, noJump:true },
 
   // ── PHANTOMS ─────────────────────────────────────────────────────────
   PH1: { id:'PH1', name:'Phantom Wall',  faction:'Phantoms', rarity:'Common',   type:'Wall',
          desc:'Place a phantom wall. Appears as a real 2-tile wall to the opponent. Both players can walk through it freely — doing so removes it immediately and frees the wall slot.', wallLen:2, phantom:true },
-  PH2: { id:'PH2', name:'Compel',        faction:'Phantoms', rarity:'Uncommon', type:'Disruption',
+  PH2: { id:'PH2', name:'Compel',        faction:'Phantoms', rarity:'Common', type:'Disruption',
          desc:'Force the opponent\'s champion to move 1 space in a direction of your choice. This is not voluntary movement — Phantom Walls are not removed by this.' },
-  PH3: { id:'PH3', name:'Echo Strike',   faction:'Phantoms', rarity:'Uncommon', type:'Wall',
+  PH3: { id:'PH3', name:'Echo Strike',   faction:'Phantoms', rarity:'Common', type:'Wall',
          desc:'Place a Phantom Wall on your side of the board and simultaneously place a real mirrored wall on the opponent\'s side at no extra cost.', wallLen:2, phantom:true, special:'echoStrike' },
-  PH4: { id:'PH4', name:'Veil Lattice',  faction:'Phantoms', rarity:'Rare',     type:'Wall',
+  PH4: { id:'PH4', name:'Veil Lattice',  faction:'Phantoms', rarity:'Uncommon',     type:'Wall',
          desc:'Place 1 Phantom Wall and 1 real wall anywhere on the board. The Phantom Wall does not auto-expire — it persists until walked through.', wallLen:2, phantom:true, special:'veilLattice' },
-  PH5: { id:'PH5', name:'Compel Storm',  faction:'Phantoms', rarity:'Rare',     type:'Disruption',
+  PH5: { id:'PH5', name:'Compel Storm',  faction:'Phantoms', rarity:'Uncommon',     type:'Disruption',
          desc:'Force the opponent\'s champion to move up to 3 spaces in directions of your choice. Real walls block individual steps. Phantom Walls do not trigger removal.' },
 
   // ── ADEPTS ───────────────────────────────────────────────────────────
@@ -2248,11 +2248,11 @@ const CARDS = {
          desc:'Gain +1 orthogonal move this turn. If you also played a Wall card this turn, draw 1 card (Equilibrium).', overrideSpeed:2 },
   AD2: { id:'AD2', name:'Adaptive Block', faction:'Adepts', rarity:'Common',   type:'Wall',
          desc:'Place a 1-tile wall (H or V). If you also moved your champion this turn, wall becomes 2 tiles (extended in direction of your choice).', wallLen:1, special:'adaptiveBlock' },
-  AD3: { id:'AD3', name:'Resonant Burst', faction:'Adepts', rarity:'Uncommon', type:'Movement',
+  AD3: { id:'AD3', name:'Resonant Burst', faction:'Adepts', rarity:'Common', type:'Movement',
          desc:'+1 move per different card category played this turn (Wall/Disruption/Movement each count once). Minimum +1.', overrideSpeed:2, reactive:true },
   AD4: { id:'AD4', name:'Faction Mirror', faction:'Adepts', rarity:'Rare',     type:'Disruption',
          desc:'Copy the last card your opponent played. If it was a Wall card, the wall belongs to you.' },
-  AD5: { id:'AD5', name:'Synthesis Wall', faction:'Adepts', rarity:'Rare',     type:'Wall',
+  AD5: { id:'AD5', name:'Synthesis Wall', faction:'Adepts', rarity:'Uncommon',     type:'Wall',
          desc:'Place a 2-tile wall. If you have played both a Movement and a Disruption card this turn, the wall gains Reinforce.', wallLen:2 },
 };
 
@@ -2273,10 +2273,10 @@ function shuffle(arr) {
 function buildStarterDeck(faction) {
   const deckDefs = {
     Architects:  ['BB','BB','BB','AR1','AR1','AR2','AR3','AR4','RC','RC'],
-    Pathfinders: ['BB','BB','BB','RC','RC','QS','QS','SW','SW','WS'],
-    Wardens:     ['BB','BB','RC','WD1','WD1','WD2','WD3','WD3','WD4','WD6'],
-    Phantoms:    ['BB','BB','BB','PH1','PH1','PH1','RC','PH2','PH2','PH4'],
-    Adepts:      ['AD1','AD1','AD2','AD2','AD3','AD4','BB','PF1','WD3','PH1'],
+    Pathfinders: ['BB','BB','BB','RC','RC','QS','QS','AV','SW','PF1'],
+    Wardens:     ['BB','BB','BB','BB','RC','WD1','WD1','WD2','WD3','WD3'],
+    Phantoms:    ['BB','PH1','PH1','PH1','PH3','PH4','PH5','RC','PH2','PH2'],
+    Adepts:      ['AD1','AD1','AD2','AD2','AD3','AD3','AD4','BB','WD3','PH1'],
   };
   const ids = deckDefs[faction] || deckDefs['Architects'];
   // 10-card deck — no doubling
@@ -4114,6 +4114,9 @@ function resetTurnState() {
     gameState._turnCategoryDisruption = false;
     gameState._adeptEqDrawn = false;
     gameState._sorenSecondMove = false;
+    // _lastCardPlayed persists across turns (Faction Mirror needs it)
+    // but initialize if not set
+    if (!gameState._lastCardPlayed) gameState._lastCardPlayed = [null, null];
   }
 }
 
@@ -4204,9 +4207,11 @@ function selectCard(cardId, idx) {
 function countCardPlayed(pi) {
   cardsPlayedThisTurn++;
   hasPlayedCard = true;
-  const champId = gameState.players[pi].champion.id;
-  // Track categories for Adept synergies
-  // (Called after selectCard resolves type)
+  // Track last card played per seat for Faction Mirror (AD4)
+  if (selectedCard && selectedCard.id && CARDS[selectedCard.id]) {
+    if (!gameState._lastCardPlayed) gameState._lastCardPlayed = [null, null];
+    gameState._lastCardPlayed[pi] = CARDS[selectedCard.id];
+  }
 }
 
 // Returns true if the player is currently mid-resolve on a pick-mode card
@@ -4252,15 +4257,18 @@ function trackCategory(type) {
 function onWallPlaced(pi, fromCardId) {
   // T2 phantom step: don't count as a second card play
   const isT2Phantom = !!gameState._t2phantomPending;
-  if (!isT2Phantom) countCardPlayed(pi);
+  // WD5 Total Seizure chain: card was already counted on activation — don't count again per wall
+  const isSeizureChain = !!(gameState._seizureWalls !== undefined && gameState._seizureWalls !== null);
+  if (!isT2Phantom && !isSeizureChain) countCardPlayed(pi);
   gameState._t2phantomPending = false;
 
   // Clear eviction state now that the wall has been placed
   gameState._evictionInProgress = false;
 
-  // Track last card played for Faction Mirror
+  // Track last card played for Faction Mirror (wall cards go through here)
   if (fromCardId && CARDS[fromCardId]) {
-    gameState.lastOpponentCard = CARDS[fromCardId];
+    if (!gameState._lastCardPlayed) gameState._lastCardPlayed = [null, null];
+    gameState._lastCardPlayed[pi] = CARDS[fromCardId];
   }
 
   const card = CARDS[fromCardId];
@@ -4321,12 +4329,103 @@ function onWallPlaced(pi, fromCardId) {
     }
   }
 
+  // AD2 Adaptive Block: if champion moved this turn, extend 1-tile wall to 2 tiles
+  if (fromCardId === 'AD2' && hasMoved && !gameState._adaptiveExtended) {
+    const baseWall = gameState.walls[gameState.walls.length - 1];
+    if (baseWall) {
+      // Offer player a choice: extend from the anchor end or the far end
+      // Build two candidate extended walls and let the player pick
+      const extA = { // extend in the "positive" direction from anchor
+        anchor: baseWall.anchor,
+        orientation: baseWall.orientation,
+        length: 2,
+      };
+      const extB = { // extend in the "negative" direction (shift anchor back 1)
+        anchor: baseWall.orientation === 'H'
+          ? {row: baseWall.anchor.row, col: baseWall.anchor.col - 1}
+          : {row: baseWall.anchor.row - 1, col: baseWall.anchor.col},
+        orientation: baseWall.orientation,
+        length: 2,
+      };
+      const validA = isWallLegal(extA.anchor, extA.orientation, 2,
+        gameState.walls.filter(w => w.id !== baseWall.id),
+        gameState.players[0].position, gameState.players[1].position, false);
+      const validB = isWallLegal(extB.anchor, extB.orientation, 2,
+        gameState.walls.filter(w => w.id !== baseWall.id),
+        gameState.players[0].position, gameState.players[1].position, false);
+
+      if (!validA && !validB) {
+        addLog(pi, 'card', 'Adaptive Block: no room to extend (both directions blocked)');
+      } else if (validA && !validB) {
+        // Only one option — extend automatically
+        gameState._adaptiveExtended = true;
+        gameState.walls = gameState.walls.map(w =>
+          w.id === baseWall.id ? {...w, anchor: extA.anchor, length: 2} : w
+        );
+        addLog(pi, 'card', 'Adaptive Block: auto-extended to 2 tiles (forward)');
+        gameState._adaptiveExtended = false;
+      } else if (!validA && validB) {
+        gameState._adaptiveExtended = true;
+        gameState.walls = gameState.walls.map(w =>
+          w.id === baseWall.id ? {...w, anchor: extB.anchor, length: 2} : w
+        );
+        addLog(pi, 'card', 'Adaptive Block: auto-extended to 2 tiles (backward)');
+        gameState._adaptiveExtended = false;
+      } else {
+        // Both valid — show picker
+        gameState._adaptiveExtended = true;
+        showExtensionPicker(baseWall, extA, extB, (chosen) => {
+          gameState.walls = gameState.walls.map(w =>
+            w.id === baseWall.id ? {...w, anchor: chosen.anchor, length: 2} : w
+          );
+          addLog(pi, 'card', 'Adaptive Block: extended to 2 tiles!');
+          gameState._adaptiveExtended = false;
+          if (isTurnDone()) gameState.phase = 'end_turn';
+          renderAll(); showStatus('Adaptive Block: wall extended to 2 tiles!', 'success');
+        });
+        return; // picker callback handles render
+      }
+    }
+  }
+
+  // AR5 Labyrinth Core: all your walls adjacent to the just-placed wall gain Reinforce
+  if (fromCardId === 'AR5') {
+    const coreWall = gameState.walls[gameState.walls.length - 1];
+    if (coreWall) {
+      let reinforcedCount = 0;
+      gameState.walls = gameState.walls.map(w => {
+        if (w.id === coreWall.id || w.owner !== pi || w.isPhantom || w.reinforced) return w;
+        // Adjacent = same orientation, touching or overlapping tile range
+        if (w.orientation !== coreWall.orientation) return w;
+        const dr = Math.abs(w.anchor.row - coreWall.anchor.row);
+        const dc = Math.abs(w.anchor.col - coreWall.anchor.col);
+        const adjacent = (w.orientation === 'H')
+          ? (dr === 0 && dc <= coreWall.length + w.length)
+          : (dc === 0 && dr <= coreWall.length + w.length);
+        if (!adjacent) return w;
+        reinforcedCount++;
+        return {...w, reinforced:true, immune:true, permanent:true};
+      });
+      if (reinforcedCount > 0)
+        addLog(pi, 'card', `Labyrinth Core: reinforced ${reinforcedCount} adjacent wall(s)!`);
+    }
+  }
+
   // AD1 Flexible Form: if both a wall and a move happened this turn, draw 1 (Equilibrium)
   if (fromCardId === 'AD1' && hasMoved) {
     drawCards(pi, 1); addLog(pi, 'passive', 'Equilibrium: drew 1 from Flexible Form');
   }
 
   opponentLastPlayedWall = (pi !== 0);
+
+  // WD5 Total Seizure chain: fire next wall placement callback if one is queued
+  const onPlacedCb = selectedCard?._onPlaced;
+  if (onPlacedCb) {
+    selectedCard = null;
+    onPlacedCb();
+    return; // callback handles renderAll / phase transition
+  }
+
   if (isTurnDone()) gameState.phase = 'end_turn';
   renderAll(); updateActionBar();
 }
@@ -4368,7 +4467,17 @@ function applyMovementCard(pi, card, idx) {
   // overrideSpeed on the card definition is the authoritative move range.
   // If no overrideSpeed is set, default to 1 (one step).
   let speed = card.overrideSpeed !== undefined ? card.overrideSpeed : 1;
-  if (card.reactive && opponentLastPlayedWall) speed = 3;
+  // AD3 Resonant Burst: +1 move per different card category played this turn (Wall/Disruption/Movement each count once, minimum 1)
+  // The base overrideSpeed of 2 already gives 1 move; each extra category adds +1 more.
+  if (card.id === 'AD3') {
+    const cats = [gameState._turnCategoryWall, gameState._turnCategoryMovement, gameState._turnCategoryDisruption].filter(Boolean).length;
+    // We are now playing a Movement card (AD3 itself), so count it:
+    const totalCats = Math.max(cats, 1); // movement counts (this card itself is movement)
+    // +1 for each additional category beyond the first (wall played = +1 extra, disruption played = +1 extra)
+    const wallBonus      = gameState._turnCategoryWall       ? 1 : 0;
+    const disruptBonus   = gameState._turnCategoryDisruption ? 1 : 0;
+    speed = 1 + wallBonus + disruptBonus; // base 1, +1 per other category already played
+  }
 
   // Mark the card play as consumed immediately on activation (countCardPlayed increments
   // cardsPlayedThisTurn so cancellation can decrement it back symmetrically).
@@ -4465,26 +4574,35 @@ function applyDisruptionCard(pi, card, idx) {
     return;
   }
 
-  // ── WD2: Tax Notice — opponent discards 1 card if they have 3+ walls ──
+  // ── WD2: Tax Notice — opponent discards 1 card of YOUR choice if they have 3+ walls ──
   if (card.id === 'WD2') {
     const op = gameState.players[opp];
     if (gameState.walls.filter(w => w.owner===opp && !w.isPhantom).length < 3) {
       showStatus('Tax Notice requires opponent to have 3+ walls', 'error'); return;
     }
-    if (op.hand.length) {
-      // Player (human) picks which card; for simplicity discard first (could be improved to let player choose)
-      const ridx = Math.floor(Math.random() * op.hand.length);
-      const gone = op.hand[ridx];
-      gameState.players[opp] = { ...op,
-        hand: op.hand.filter((_,i)=>i!==ridx), discard:[...op.discard, gone] };
-      addLog(pi, 'card', 'Tax Notice: opponent discarded ' + gone.name);
-    } else {
+    if (!op.hand.length) {
       addLog(pi, 'card', 'Tax Notice: opponent hand was empty');
+      drawCards(pi, 1);
+      discardCard(pi, idx); selectedCard = null; countCardPlayed(pi);
+      if (isTurnDone()) gameState.phase = 'end_turn';
+      renderAll(); showStatus('Tax Notice: opponent hand was empty', 'success'); return;
     }
-    drawCards(pi, 1);
-    discardCard(pi, idx); selectedCard = null; countCardPlayed(pi);
-    if (isTurnDone()) gameState.phase = 'end_turn';
-    renderAll(); showStatus('Tax Notice: opponent discarded!', 'success'); return;
+    // Show hand picker — human chooses which opponent card to discard
+    showHandPicker(op.hand, 'TAX NOTICE', 'Choose 1 opponent card to discard:', 1, (chosen) => {
+      let hand = [...gameState.players[opp].hand];
+      let discard = [...gameState.players[opp].discard];
+      for (const c of chosen) {
+        const ci = hand.findIndex(x => x === c);
+        if (ci !== -1) { discard.push(hand.splice(ci, 1)[0]); }
+      }
+      gameState.players[opp] = { ...gameState.players[opp], hand, discard };
+      addLog(pi, 'card', 'Tax Notice: opponent discarded ' + chosen.map(c=>c.name).join(', '));
+      drawCards(pi, 1);
+      discardCard(pi, idx); selectedCard = null; countCardPlayed(pi);
+      if (isTurnDone()) gameState.phase = 'end_turn';
+      renderAll(); showStatus('Tax Notice: opponent discarded!', 'success');
+    });
+    return;
   }
 
   // ── WD4: Confiscate — opponent discards 2 cards, no draw for player ──
@@ -4509,32 +4627,51 @@ function applyDisruptionCard(pi, card, idx) {
     renderAll(); showStatus(`Confiscate: opponent discarded ${discardCount} card(s)!`, 'success'); return;
   }
 
-  // ── WD5: Total Seizure — move ALL opponent walls (bypasses Reinforce) ──
+  // ── WD5: Total Seizure — move ALL opponent walls to locations of YOUR choice ──
   if (card.id === 'WD5') {
-    // AI-side: just place them randomly; Human: simplified to random legal placement
-    const oppWalls = [...gameState.walls.filter(w => w.owner===opp && !w.isPhantom)];
-    let moved = 0;
-    for (const w of oppWalls) {
-      gameState.walls = gameState.walls.filter(x => x.id !== w.id);
-      // Try to find a legal new position for each wall
-      const candidates = generateWallCandidates(gameState.players[0].position, w.length);
-      let placed = false;
-      for (const {anchor, orientation} of shuffle(candidates)) {
-        if (isWallLegal(anchor, orientation, w.length, gameState.walls,
-            gameState.players[0].position, gameState.players[1].position, false)) {
-          gameState.walls.push({...w, anchor, orientation});
-          moved++;
-          placed = true;
-          break;
-        }
-      }
-      // If can't find new position, restore wall in place (don't delete it)
-      if (!placed) gameState.walls.push({...w});
+    const oppWalls = gameState.walls.filter(w => w.owner===opp && !w.isPhantom);
+    if (!oppWalls.length) {
+      addLog(pi, 'card', 'Total Seizure: no opponent walls to seize');
+      discardCard(pi, idx); selectedCard = null; countCardPlayed(pi);
+      if (isTurnDone()) gameState.phase = 'end_turn';
+      renderAll(); showStatus('Total Seizure: opponent has no walls!', 'success'); return;
     }
-    addLog(pi, 'card', `Total Seizure: relocated ${moved} opponent walls!`);
+    // Discard and count the card immediately — placement chain follows
     discardCard(pi, idx); selectedCard = null; countCardPlayed(pi);
-    if (isTurnDone()) gameState.phase = 'end_turn';
-    renderAll(); showStatus(`Total Seizure: moved ${moved} opponent walls!`, 'success'); return;
+    addLog(pi, 'card', `Total Seizure: seizing ${oppWalls.length} opponent wall(s) — place them now`);
+    // Kick off iterative placement: pull walls off board one at a time, let human place each
+    gameState._seizureWalls = oppWalls.map(w => ({...w}));
+    gameState._seizureMoved = 0;
+    // Remove all seized walls from board immediately
+    const seizureIds = new Set(oppWalls.map(w => w.id));
+    gameState.walls = gameState.walls.filter(w => !seizureIds.has(w.id));
+    function placeNextSeizureWall() {
+      if (!gameState._seizureWalls || !gameState._seizureWalls.length) {
+        const n = gameState._seizureMoved || 0;
+        gameState._seizureWalls = null; gameState._seizureMoved = 0;
+        if (isTurnDone()) gameState.phase = 'end_turn';
+        renderAll(); showStatus(`Total Seizure: placed ${n} wall(s)!`, 'success');
+        // In MP, push state now that the full seizure chain is complete
+        if (gameMode === 'mp') mpPushState();
+        return;
+      }
+      const w = gameState._seizureWalls.shift();
+      gameState._seizureMoved = (gameState._seizureMoved || 0) + 1;
+      const remaining = gameState._seizureWalls.length;
+      // Enter redirect-place mode for this wall — _redirectOwner keeps it counted as opp's wall
+      selectedCard = {
+        id: 'WD5', idx: -1, length: w.length,
+        isPhantom: false, isDurable: false,
+        _binding: !!w.binding, _redirectOwner: opp,
+        _evictionPlacing: true,
+        _onPlaced: placeNextSeizureWall,
+      };
+      uiMode = 'wall';
+      renderAll();
+      showStatus(`Total Seizure: place wall ${gameState._seizureMoved} of ${gameState._seizureMoved + remaining} (${w.length}-tile)${remaining ? ' — ' + remaining + ' more after this' : ''}`, 'active');
+    }
+    placeNextSeizureWall();
+    return;
   }
 
   // ── PH2: Compel — force opponent to move 1 space (not voluntary, no phantom removal) ──
@@ -4563,39 +4700,64 @@ function applyDisruptionCard(pi, card, idx) {
     return;
   }
 
-  // ── PH5: Compel Storm — force opponent up to 3 steps (no phantom removal) ──
+  // ── PH5: Compel Storm — force opponent up to 3 steps, each direction chosen by you ──
   if (card.id === 'PH5') {
-    const dirs = [{r:-1,c:0},{r:1,c:0},{r:0,c:1},{r:0,c:-1}];
-    let pos = {...gameState.players[opp].position};
-    for (let step = 0; step < 3; step++) {
+    const allDirs = [{r:-1,c:0,label:'UP ↑'},{r:1,c:0,label:'DOWN ↓'},{r:0,c:1,label:'RIGHT →'},{r:0,c:-1,label:'LEFT ←'}];
+    discardCard(pi, idx); selectedCard = null; countCardPlayed(pi);
+    let stepsDone = 0;
+    function doCompelStormStep() {
+      if (stepsDone >= 3) {
+        addLog(pi, 'card', `Compel Storm: forced opponent ${stepsDone} step(s) to (${gameState.players[opp].position.row},${gameState.players[opp].position.col})`);
+        if (isTurnDone()) gameState.phase = 'end_turn';
+        renderAll(); showStatus(`Compel Storm: opponent forced ${stepsDone} space(s)!`, 'success');
+        if (gameMode === 'mp') mpPushState();
+        return;
+      }
+      const pos = gameState.players[opp].position;
       const blocked = buildBlockedEdges(gameState.walls.filter(w => !w.isPhantom), opp);
-      const legalDirs = dirs.filter(d => {
+      const legalDirs = allDirs.filter(d => {
         const nb = {row:pos.row+d.r, col:pos.col+d.c};
         return nb.row>=0&&nb.row<BOARD_SIZE&&nb.col>=0&&nb.col<BOARD_SIZE && !isEdgeBlocked(pos, nb, blocked);
       });
-      if (!legalDirs.length) break;
-      const chosen = legalDirs[Math.floor(Math.random() * legalDirs.length)];
-      pos = {row:pos.row+chosen.r, col:pos.col+chosen.c};
+      if (!legalDirs.length) {
+        addLog(pi, 'card', `Compel Storm: opponent blocked after ${stepsDone} step(s)`);
+        if (isTurnDone()) gameState.phase = 'end_turn';
+        renderAll(); showStatus(`Compel Storm: opponent blocked after ${stepsDone} step(s)!`, 'success');
+        if (gameMode === 'mp') mpPushState();
+        return;
+      }
+      const remaining = 3 - stepsDone;
+      showDirectionPicker(legalDirs, (chosen) => {
+        const newPos = {row:pos.row+chosen.r, col:pos.col+chosen.c};
+        gameState.players[opp] = {...gameState.players[opp], position: newPos};
+        stepsDone++;
+        renderAll();
+        if (stepsDone < 3) {
+          showStatus(`Compel Storm: step ${stepsDone}/3 done — choose next direction (or it ends when blocked)`, 'active');
+        }
+        doCompelStormStep();
+      }, `COMPEL STORM (step ${stepsDone+1}/3)`, `Push opponent which direction? (${remaining} step${remaining>1?'s':''} remaining)`);
     }
-    gameState.players[opp] = {...gameState.players[opp], position: pos};
-    addLog(pi, 'card', `Compel Storm: forced opponent up to 3 spaces to (${pos.row},${pos.col})`);
-    discardCard(pi, idx); selectedCard = null; countCardPlayed(pi);
-    if (isTurnDone()) gameState.phase = 'end_turn';
-    renderAll(); showStatus('Compel Storm: opponent blasted 3 spaces!', 'success'); return;
+    doCompelStormStep();
+    return;
   }
 
   // ── AD4: Faction Mirror — copy the last card the opponent played ──
   if (card.id === 'AD4') {
-    const lastOppCard = gameState.lastOpponentCard;
-    if (!lastOppCard) { showStatus('No opponent card to copy', 'error'); return; }
-    // Inject a copy of opponent's last card into hand and "play" it
-    addLog(pi, 'card', `Faction Mirror: copying opponent's ${lastOppCard.name}`);
+    const opp = 1 - pi;
+    // Prefer per-seat tracking; fall back to legacy lastOpponentCard
+    const lastOppCard = (gameState._lastCardPlayed && gameState._lastCardPlayed[opp]) || gameState.lastOpponentCard;
+    if (!lastOppCard) { showStatus('No opponent card to copy yet', 'error'); return; }
+    // AD4 itself consumes the card play budget
     discardCard(pi, idx);
-    // Add to hand temporarily and select it
+    countCardPlayed(pi);
+    addLog(pi, 'card', `Faction Mirror: copying opponent's ${lastOppCard.name}`);
+    // Temporarily revert the count by 1 so the mirrored card fires "free"
+    cardsPlayedThisTurn--;
+    // Add mirrored card to hand and execute it via selectCard
     const mirrored = {...lastOppCard};
     gameState.players[pi] = {...gameState.players[pi], hand: [...gameState.players[pi].hand, mirrored]};
     const mirroredIdx = gameState.players[pi].hand.length - 1;
-    // Directly call selectCard to execute the mirrored card
     selectCard(mirrored.id, mirroredIdx);
     return;
   }
@@ -5577,7 +5739,127 @@ function renderLog() {
   logEl.scrollTop = logEl.scrollHeight;
 }
 
-function showDirectionPicker(dirs, onChoose) {
+// ── Hand Picker modal — choose N cards from a hand to discard ────────────
+function showHandPicker(hand, title, subtitle, count, onChoose) {
+  const existing = document.getElementById('hand-picker');
+  if (existing) existing.remove();
+
+  const overlay = document.createElement('div');
+  overlay.id = 'hand-picker';
+  overlay.style.cssText = `
+    position:fixed; top:0; left:0; width:100%; height:100%;
+    background:rgba(0,0,0,0.78); z-index:200;
+    display:flex; align-items:center; justify-content:center;
+    font-family:'JetBrains Mono',monospace;
+  `;
+  const panel = document.createElement('div');
+  panel.style.cssText = `
+    background:#1a1a2a; border:1px solid #3a2a5a; border-radius:10px;
+    padding:24px 28px; display:flex; flex-direction:column; align-items:center; gap:14px;
+    box-shadow:0 0 30px rgba(100,60,180,0.3); min-width:280px; max-width:420px;
+  `;
+  panel.innerHTML = `
+    <div style="color:#a78bfa;font-size:10px;letter-spacing:0.18em;text-transform:uppercase">${title}</div>
+    <div style="color:#d0c8e0;font-size:12px;text-align:center">${subtitle}</div>
+  `;
+  const cardList = document.createElement('div');
+  cardList.style.cssText = 'display:flex;flex-direction:column;gap:6px;width:100%';
+  let selected = [];
+  hand.forEach((c, i) => {
+    const btn = document.createElement('button');
+    btn.style.cssText = `
+      padding:8px 14px; background:#1e1e30; border:1px solid #3a2a5a;
+      color:#c0b8d8; font-family:'JetBrains Mono',monospace; font-size:11px;
+      letter-spacing:0.1em; cursor:pointer; border-radius:6px; text-align:left;
+      transition:all 0.12s;
+    `;
+    btn.textContent = `${c.name}  [${c.faction} · ${c.type}]`;
+    btn.dataset.idx = i;
+    btn.onclick = () => {
+      const already = selected.indexOf(c);
+      if (already !== -1) {
+        selected.splice(already, 1);
+        btn.style.background = '#1e1e30';
+        btn.style.borderColor = '#3a2a5a';
+        btn.style.color = '#c0b8d8';
+      } else if (selected.length < count) {
+        selected.push(c);
+        btn.style.background = '#2a1a4a';
+        btn.style.borderColor = '#a78bfa';
+        btn.style.color = '#ffffff';
+      }
+      confirmBtn.disabled = selected.length !== count;
+      confirmBtn.style.opacity = selected.length === count ? '1' : '0.4';
+    };
+    cardList.appendChild(btn);
+  });
+  panel.appendChild(cardList);
+  const confirmBtn = document.createElement('button');
+  confirmBtn.textContent = `CONFIRM (${count} card${count>1?'s':''})`;
+  confirmBtn.disabled = true;
+  confirmBtn.style.cssText = `
+    padding:10px 28px; background:transparent; border:1px solid #a78bfa;
+    color:#a78bfa; font-family:'JetBrains Mono',monospace; font-size:11px;
+    letter-spacing:0.16em; text-transform:uppercase; cursor:pointer;
+    border-radius:6px; opacity:0.4; transition:all 0.15s;
+  `;
+  confirmBtn.onclick = () => {
+    overlay.remove();
+    onChoose(selected);
+  };
+  panel.appendChild(confirmBtn);
+  overlay.appendChild(panel);
+  document.body.appendChild(overlay);
+}
+
+// ── Extension Picker — AD2 Adaptive Block: choose which end to extend ────
+function showExtensionPicker(baseWall, extA, extB, onChoose) {
+  const existing = document.getElementById('extension-picker');
+  if (existing) existing.remove();
+
+  const overlay = document.createElement('div');
+  overlay.id = 'extension-picker';
+  overlay.style.cssText = `
+    position:fixed; top:0; left:0; width:100%; height:100%;
+    background:rgba(0,0,0,0.78); z-index:200;
+    display:flex; align-items:center; justify-content:center;
+    font-family:'JetBrains Mono',monospace;
+  `;
+  const panel = document.createElement('div');
+  panel.style.cssText = `
+    background:#1a1a2a; border:1px solid #3a2a5a; border-radius:10px;
+    padding:24px 28px; display:flex; flex-direction:column; align-items:center; gap:14px;
+    box-shadow:0 0 30px rgba(100,60,180,0.3);
+  `;
+  panel.innerHTML = `
+    <div style="color:#a78bfa;font-size:10px;letter-spacing:0.18em;text-transform:uppercase">ADAPTIVE BLOCK</div>
+    <div style="color:#d0c8e0;font-size:12px;text-align:center">You moved this turn — extend wall which direction?</div>
+  `;
+  const dir = baseWall.orientation === 'H' ? 'horizontal' : 'vertical';
+  const btnRow = document.createElement('div');
+  btnRow.style.cssText = 'display:flex;gap:12px;';
+  [
+    { label: baseWall.orientation === 'H' ? '→ Extend Right' : '↓ Extend Down', ext: extA },
+    { label: baseWall.orientation === 'H' ? '← Extend Left' : '↑ Extend Up',   ext: extB },
+  ].forEach(({label, ext}) => {
+    const btn = document.createElement('button');
+    btn.textContent = label;
+    btn.style.cssText = `
+      padding:10px 18px; background:#2a1a4a; border:1px solid #5a3a8a;
+      color:#d0c8e0; font-family:'JetBrains Mono',monospace; font-size:11px;
+      letter-spacing:0.12em; cursor:pointer; border-radius:6px; transition:all 0.12s;
+    `;
+    btn.onmouseover = () => { btn.style.borderColor='#a78bfa'; btn.style.color='#fff'; };
+    btn.onmouseout  = () => { btn.style.borderColor='#5a3a8a'; btn.style.color='#d0c8e0'; };
+    btn.onclick = () => { overlay.remove(); onChoose(ext); };
+    btnRow.appendChild(btn);
+  });
+  panel.appendChild(btnRow);
+  overlay.appendChild(panel);
+  document.body.appendChild(overlay);
+}
+
+function showDirectionPicker(dirs, onChoose, title, subtitle) {
   const existing = document.getElementById('direction-picker');
   if (existing) existing.remove();
 
@@ -5599,8 +5881,10 @@ function showDirectionPicker(dirs, onChoose) {
   `;
 
   const header = document.createElement('div');
-  header.innerHTML = `<span style="color:#a78bfa;font-size:10px;letter-spacing:0.18em;text-transform:uppercase">Compel</span><br>
-    <span style="color:#d0c8e0;font-size:13px;margin-top:4px;display:block">Push opponent which direction?</span>`;
+  const titleText = title || 'Compel';
+  const subtitleText = subtitle || 'Push opponent which direction?';
+  header.innerHTML = `<span style="color:#a78bfa;font-size:10px;letter-spacing:0.18em;text-transform:uppercase">${titleText}</span><br>
+    <span style="color:#d0c8e0;font-size:13px;margin-top:4px;display:block">${subtitleText}</span>`;
   panel.appendChild(header);
 
   // D-pad grid: [_, UP, _] [LEFT, _, RIGHT] [_, DOWN, _]
@@ -7867,10 +8151,10 @@ function viewStarterDeck(championId) {
 
   const deckDefs = {
     Architects:  ['BB','BB','BB','AR1','AR1','AR2','AR3','AR4','RC','RC'],
-    Pathfinders: ['BB','BB','BB','RC','RC','QS','QS','SW','SW','WS'],
-    Wardens:     ['BB','BB','RC','WD1','WD1','WD2','WD3','WD3','WD4','WD6'],
-    Phantoms:    ['BB','BB','BB','PH1','PH1','PH1','RC','PH2','PH2','PH4'],
-    Adepts:      ['AD1','AD1','AD2','AD2','AD3','AD4','BB','PF1','WD3','PH1'],
+    Pathfinders: ['BB','BB','BB','RC','RC','QS','QS','AV','SW','PF1'],
+    Wardens:     ['BB','BB','BB','BB','RC','WD1','WD1','WD2','WD3','WD3'],
+    Phantoms:    ['BB','PH1','PH1','PH1','PH3','PH4','PH5','RC','PH2','PH2'],
+    Adepts:      ['AD1','AD1','AD2','AD2','AD3','AD3','AD4','BB','WD3','PH1'],
   };
   const ids = deckDefs[champ.faction] || [];
 
@@ -7957,10 +8241,10 @@ function useStarterAsTemplate(championId) {
 
   const deckDefs = {
     Architects:  ['BB','BB','BB','AR1','AR1','AR2','AR3','AR4','RC','RC'],
-    Pathfinders: ['BB','BB','BB','RC','RC','QS','QS','SW','SW','WS'],
-    Wardens:     ['BB','BB','RC','WD1','WD1','WD2','WD3','WD3','WD4','WD6'],
-    Phantoms:    ['BB','BB','BB','PH1','PH1','PH1','RC','PH2','PH2','PH4'],
-    Adepts:      ['AD1','AD1','AD2','AD2','AD3','AD4','BB','PF1','WD3','PH1'],
+    Pathfinders: ['BB','BB','BB','RC','RC','QS','QS','AV','SW','PF1'],
+    Wardens:     ['BB','BB','BB','BB','RC','WD1','WD1','WD2','WD3','WD3'],
+    Phantoms:    ['BB','PH1','PH1','PH1','PH3','PH4','PH5','RC','PH2','PH2'],
+    Adepts:      ['AD1','AD1','AD2','AD2','AD3','AD3','AD4','BB','WD3','PH1'],
   };
   const ids = deckDefs[champ.faction] || [];
 
