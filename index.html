@@ -2137,7 +2137,7 @@ const CHAMPIONS = {
   soren: {
     id:'soren', name:'Soren', title:'Swiftstride', faction:'Pathfinders',
     wallLimit:7, handSize:4, cardDraw:2, moveSpeed:1,
-    ultimateCost:5, ultimateName:'Stormpath',
+    ultimateCost:6, ultimateName:'Stormpath',
     passiveName:'Fleetfoot',
     passiveDesc:'Each turn you may take a 2nd move instead of playing a card.',
     ultimateDesc:'Ignore all walls for this entire turn — move freely through them.',
@@ -2188,7 +2188,7 @@ const CARDS = {
         desc:'Move up to 2 spaces this turn. Cannot pass walls.', overrideSpeed:2 },
   QS: { id:'QS', name:'Quick Step',       faction:'Basic', rarity:'Common', type:'Movement',
         desc:'Move 1 space diagonally. Blocked by a single wall; can slip through corner gaps where two walls meet.', overrideSpeed:1, diagonal:true },
-  SW: { id:'SW', name:'Swift Leap',       faction:'Basic', rarity:'Uncommon', type:'Movement',
+  SW: { id:'SW', name:'Swift Leap',       faction:'Basic', rarity:'Rare',     type:'Movement',
         desc:'Gain +1 move and may jump over the opponent this turn.', overrideSpeed:2 },
   WS: { id:'WS', name:'Wind Sprint',      faction:'Basic', rarity:'Uncommon',     type:'Movement',
         desc:'Move up to 2 spaces this turn. May pass through your own walls.', overrideSpeed:2, ownWallsPassthrough:true },
@@ -2208,13 +2208,13 @@ const CARDS = {
   // ── PATHFINDERS ──────────────────────────────────────────────────────
   PF1: { id:'PF1', name:'Momentum',     faction:'Pathfinders', rarity:'Uncommon',   type:'Movement',
          desc:'Gain +2 orthogonal moves this turn.', overrideSpeed:3 },
-  PF2: { id:'PF2', name:'Leap',         faction:'Pathfinders', rarity:'Uncommon',   type:'Movement',
+  PF2: { id:'PF2', name:'Leap',         faction:'Pathfinders', rarity:'Rare',       type:'Movement',
          desc:'Gain +1 move and may jump over the opponent even if not adjacent.', overrideSpeed:2 },
   PF3: { id:'PF3', name:'Shortcut',     faction:'Pathfinders', rarity:'Uncommon', type:'Movement',
          desc:'Move up to 3 spaces this turn ignoring diagonal restrictions.', overrideSpeed:3, diagonal:true },
   PF4: { id:'PF4', name:'Eternal Path', faction:'Pathfinders', rarity:'Uncommon',     type:'Movement',
          desc:'Move up to 4 spaces this turn.', overrideSpeed:4 },
-  PF5: { id:'PF5', name:'Wall Vault',   faction:'Pathfinders', rarity:'Uncommon', type:'Movement',
+  PF5: { id:'PF5', name:'Wall Vault',   faction:'Pathfinders', rarity:'Rare',     type:'Movement',
          desc:'Move up to 2 spaces this turn and may pass through one wall of any kind.', overrideSpeed:2, tunnelThrough:true },
 
   // ── WARDENS ──────────────────────────────────────────────────────────
@@ -2273,9 +2273,9 @@ function shuffle(arr) {
 function buildStarterDeck(faction) {
   const deckDefs = {
     Architects:  ['BB','BB','BB','AR1','AR1','AR2','AR3','AR4','RC','RC'],
-    Pathfinders: ['BB','BB','BB','RC','RC','QS','QS','AV','SW','PF1'],
+    Pathfinders: ['BB','BB','BB','RC','RC','QS','QS','WS','PF1','PF3'],
     Wardens:     ['BB','BB','BB','BB','RC','WD1','WD1','WD2','WD3','WD3'],
-    Phantoms:    ['BB','PH1','PH1','PH1','PH3','PH4','PH5','RC','PH2','PH2'],
+    Phantoms:    ['BB','PH1','PH1','PH3','PH3','PH4','PH5','RC','PH2','PH2'],
     Adepts:      ['AD1','AD1','AD2','AD2','AD3','AD3','AD4','BB','WD3','PH1'],
   };
   const ids = deckDefs[faction] || deckDefs['Architects'];
@@ -4114,6 +4114,9 @@ function resetTurnState() {
     gameState._turnCategoryDisruption = false;
     gameState._adeptEqDrawn = false;
     gameState._sorenSecondMove = false;
+    // _lastCardPlayed persists across turns (Faction Mirror needs it)
+    // but initialize if not set
+    if (!gameState._lastCardPlayed) gameState._lastCardPlayed = [null, null];
   }
 }
 
@@ -4204,9 +4207,11 @@ function selectCard(cardId, idx) {
 function countCardPlayed(pi) {
   cardsPlayedThisTurn++;
   hasPlayedCard = true;
-  const champId = gameState.players[pi].champion.id;
-  // Track categories for Adept synergies
-  // (Called after selectCard resolves type)
+  // Track last card played per seat for Faction Mirror (AD4)
+  if (selectedCard && selectedCard.id && CARDS[selectedCard.id]) {
+    if (!gameState._lastCardPlayed) gameState._lastCardPlayed = [null, null];
+    gameState._lastCardPlayed[pi] = CARDS[selectedCard.id];
+  }
 }
 
 // Returns true if the player is currently mid-resolve on a pick-mode card
@@ -4260,9 +4265,10 @@ function onWallPlaced(pi, fromCardId) {
   // Clear eviction state now that the wall has been placed
   gameState._evictionInProgress = false;
 
-  // Track last card played for Faction Mirror
+  // Track last card played for Faction Mirror (wall cards go through here)
   if (fromCardId && CARDS[fromCardId]) {
-    gameState.lastOpponentCard = CARDS[fromCardId];
+    if (!gameState._lastCardPlayed) gameState._lastCardPlayed = [null, null];
+    gameState._lastCardPlayed[pi] = CARDS[fromCardId];
   }
 
   const card = CARDS[fromCardId];
@@ -4461,7 +4467,17 @@ function applyMovementCard(pi, card, idx) {
   // overrideSpeed on the card definition is the authoritative move range.
   // If no overrideSpeed is set, default to 1 (one step).
   let speed = card.overrideSpeed !== undefined ? card.overrideSpeed : 1;
-  if (card.reactive && opponentLastPlayedWall) speed += 1; // Resonant Burst: +1 move if opponent played wall last turn
+  // AD3 Resonant Burst: +1 move per different card category played this turn (Wall/Disruption/Movement each count once, minimum 1)
+  // The base overrideSpeed of 2 already gives 1 move; each extra category adds +1 more.
+  if (card.id === 'AD3') {
+    const cats = [gameState._turnCategoryWall, gameState._turnCategoryMovement, gameState._turnCategoryDisruption].filter(Boolean).length;
+    // We are now playing a Movement card (AD3 itself), so count it:
+    const totalCats = Math.max(cats, 1); // movement counts (this card itself is movement)
+    // +1 for each additional category beyond the first (wall played = +1 extra, disruption played = +1 extra)
+    const wallBonus      = gameState._turnCategoryWall       ? 1 : 0;
+    const disruptBonus   = gameState._turnCategoryDisruption ? 1 : 0;
+    speed = 1 + wallBonus + disruptBonus; // base 1, +1 per other category already played
+  }
 
   // Mark the card play as consumed immediately on activation (countCardPlayed increments
   // cardsPlayedThisTurn so cancellation can decrement it back symmetrically).
@@ -4634,7 +4650,10 @@ function applyDisruptionCard(pi, card, idx) {
         const n = gameState._seizureMoved || 0;
         gameState._seizureWalls = null; gameState._seizureMoved = 0;
         if (isTurnDone()) gameState.phase = 'end_turn';
-        renderAll(); showStatus(`Total Seizure: placed ${n} wall(s)!`, 'success'); return;
+        renderAll(); showStatus(`Total Seizure: placed ${n} wall(s)!`, 'success');
+        // In MP, push state now that the full seizure chain is complete
+        if (gameMode === 'mp') mpPushState();
+        return;
       }
       const w = gameState._seizureWalls.shift();
       gameState._seizureMoved = (gameState._seizureMoved || 0) + 1;
@@ -4690,7 +4709,9 @@ function applyDisruptionCard(pi, card, idx) {
       if (stepsDone >= 3) {
         addLog(pi, 'card', `Compel Storm: forced opponent ${stepsDone} step(s) to (${gameState.players[opp].position.row},${gameState.players[opp].position.col})`);
         if (isTurnDone()) gameState.phase = 'end_turn';
-        renderAll(); showStatus(`Compel Storm: opponent forced ${stepsDone} space(s)!`, 'success'); return;
+        renderAll(); showStatus(`Compel Storm: opponent forced ${stepsDone} space(s)!`, 'success');
+        if (gameMode === 'mp') mpPushState();
+        return;
       }
       const pos = gameState.players[opp].position;
       const blocked = buildBlockedEdges(gameState.walls.filter(w => !w.isPhantom), opp);
@@ -4701,7 +4722,9 @@ function applyDisruptionCard(pi, card, idx) {
       if (!legalDirs.length) {
         addLog(pi, 'card', `Compel Storm: opponent blocked after ${stepsDone} step(s)`);
         if (isTurnDone()) gameState.phase = 'end_turn';
-        renderAll(); showStatus(`Compel Storm: opponent blocked after ${stepsDone} step(s)!`, 'success'); return;
+        renderAll(); showStatus(`Compel Storm: opponent blocked after ${stepsDone} step(s)!`, 'success');
+        if (gameMode === 'mp') mpPushState();
+        return;
       }
       const remaining = 3 - stepsDone;
       showDirectionPicker(legalDirs, (chosen) => {
@@ -4721,16 +4744,20 @@ function applyDisruptionCard(pi, card, idx) {
 
   // ── AD4: Faction Mirror — copy the last card the opponent played ──
   if (card.id === 'AD4') {
-    const lastOppCard = gameState.lastOpponentCard;
-    if (!lastOppCard) { showStatus('No opponent card to copy', 'error'); return; }
-    // Inject a copy of opponent's last card into hand and "play" it
-    addLog(pi, 'card', `Faction Mirror: copying opponent's ${lastOppCard.name}`);
+    const opp = 1 - pi;
+    // Prefer per-seat tracking; fall back to legacy lastOpponentCard
+    const lastOppCard = (gameState._lastCardPlayed && gameState._lastCardPlayed[opp]) || gameState.lastOpponentCard;
+    if (!lastOppCard) { showStatus('No opponent card to copy yet', 'error'); return; }
+    // AD4 itself consumes the card play budget
     discardCard(pi, idx);
-    // Add to hand temporarily and select it
+    countCardPlayed(pi);
+    addLog(pi, 'card', `Faction Mirror: copying opponent's ${lastOppCard.name}`);
+    // Temporarily revert the count by 1 so the mirrored card fires "free"
+    cardsPlayedThisTurn--;
+    // Add mirrored card to hand and execute it via selectCard
     const mirrored = {...lastOppCard};
     gameState.players[pi] = {...gameState.players[pi], hand: [...gameState.players[pi].hand, mirrored]};
     const mirroredIdx = gameState.players[pi].hand.length - 1;
-    // Directly call selectCard to execute the mirrored card
     selectCard(mirrored.id, mirroredIdx);
     return;
   }
@@ -8124,9 +8151,9 @@ function viewStarterDeck(championId) {
 
   const deckDefs = {
     Architects:  ['BB','BB','BB','AR1','AR1','AR2','AR3','AR4','RC','RC'],
-    Pathfinders: ['BB','BB','BB','RC','RC','QS','QS','AV','SW','PF1'],
+    Pathfinders: ['BB','BB','BB','RC','RC','QS','QS','WS','PF1','PF3'],
     Wardens:     ['BB','BB','BB','BB','RC','WD1','WD1','WD2','WD3','WD3'],
-    Phantoms:    ['BB','PH1','PH1','PH1','PH3','PH4','PH5','RC','PH2','PH2'],
+    Phantoms:    ['BB','PH1','PH1','PH3','PH3','PH4','PH5','RC','PH2','PH2'],
     Adepts:      ['AD1','AD1','AD2','AD2','AD3','AD3','AD4','BB','WD3','PH1'],
   };
   const ids = deckDefs[champ.faction] || [];
@@ -8214,9 +8241,9 @@ function useStarterAsTemplate(championId) {
 
   const deckDefs = {
     Architects:  ['BB','BB','BB','AR1','AR1','AR2','AR3','AR4','RC','RC'],
-    Pathfinders: ['BB','BB','BB','RC','RC','QS','QS','AV','SW','PF1'],
+    Pathfinders: ['BB','BB','BB','RC','RC','QS','QS','WS','PF1','PF3'],
     Wardens:     ['BB','BB','BB','BB','RC','WD1','WD1','WD2','WD3','WD3'],
-    Phantoms:    ['BB','PH1','PH1','PH1','PH3','PH4','PH5','RC','PH2','PH2'],
+    Phantoms:    ['BB','PH1','PH1','PH3','PH3','PH4','PH5','RC','PH2','PH2'],
     Adepts:      ['AD1','AD1','AD2','AD2','AD3','AD3','AD4','BB','WD3','PH1'],
   };
   const ids = deckDefs[champ.faction] || [];
