@@ -6614,6 +6614,7 @@ function mpLaunchGame(gameId, localSeat, myChampId, oppChampId, oppName, myHand,
   mp_gameId = gameId;
   mp_localSeat = localSeat;
   mp_isMultiplayer = true;
+  _mpVictoryIssued = false;  // reset reward guard for new game
   mp_opponentName = oppName;
   mp_myChampId = myChampId;
   mp_oppChampId = oppChampId;
@@ -6758,7 +6759,8 @@ function mpSubscribe(gameId, localSeat, myHandLen, myChampId, oppChampId) {
         if (!data) return;
         // Always handle a finished game, regardless of whose turn it is
         if (data.status === 'finished') {
-          console.log('[MP] Polling detected game finished');
+          console.log('[MP] Polling detected game finished — stopping poll');
+          if (mp_pollInterval) { clearInterval(mp_pollInterval); mp_pollInterval = null; }
           mpHandleRemoteUpdate(data, localSeat, myChampId, oppChampId);
         } else if (data.active_seat === mp_localSeat) {
           console.log('[MP] Polling detected turn change — applying update');
@@ -6986,6 +6988,7 @@ async function mpPushState() {
 // when the turn switches to them. Deck is persisted per-player in Supabase.
 
 
+let _mpVictoryIssued = false;
 function mpShowVictory(winner) {
   const overlay = document.getElementById('victory-overlay');
   if (!overlay) return;
@@ -7002,8 +7005,9 @@ function mpShowVictory(winner) {
   const vt = document.getElementById('v-turns'); if (vt) vt.textContent = gameState?.turnNumber || '?';
   const vw = document.getElementById('v-walls'); if (vw) vw.textContent = (gameState?.walls?.filter(w => !w.isPhantom).length || 0);
 
-  // ── Issue and display card rewards if logged in ──
-  if (_userProfile) {
+  // ── Issue and display card rewards if logged in — only once per game ──
+  if (_userProfile && !_mpVictoryIssued) {
+    _mpVictoryIssued = true;
     const victoryCard = overlay.querySelector('.victory-card') || overlay;
     // Remove any stale reward section from a previous game
     victoryCard.querySelector('.mp-reward-section')?.remove();
