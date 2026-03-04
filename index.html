@@ -2137,7 +2137,7 @@ const CHAMPIONS = {
   soren: {
     id:'soren', name:'Soren', title:'Swiftstride', faction:'Pathfinders',
     wallLimit:7, handSize:4, cardDraw:2, moveSpeed:1,
-    ultimateCost:5, ultimateName:'Stormpath',
+    ultimateCost:6, ultimateName:'Stormpath',
     passiveName:'Fleetfoot',
     passiveDesc:'Each turn you may take a 2nd move instead of playing a card.',
     ultimateDesc:'Ignore all walls for this entire turn — move freely through them.',
@@ -2188,7 +2188,7 @@ const CARDS = {
         desc:'Move up to 2 spaces this turn. Cannot pass walls.', overrideSpeed:2 },
   QS: { id:'QS', name:'Quick Step',       faction:'Basic', rarity:'Common', type:'Movement',
         desc:'Move 1 space diagonally. Blocked by a single wall; can slip through corner gaps where two walls meet.', overrideSpeed:1, diagonal:true },
-  SW: { id:'SW', name:'Swift Leap',       faction:'Basic', rarity:'Uncommon', type:'Movement',
+  SW: { id:'SW', name:'Swift Leap',       faction:'Basic', rarity:'Rare',     type:'Movement',
         desc:'Gain +1 move and may jump over the opponent this turn.', overrideSpeed:2 },
   WS: { id:'WS', name:'Wind Sprint',      faction:'Basic', rarity:'Uncommon',     type:'Movement',
         desc:'Move up to 2 spaces this turn. May pass through your own walls.', overrideSpeed:2, ownWallsPassthrough:true },
@@ -2208,13 +2208,13 @@ const CARDS = {
   // ── PATHFINDERS ──────────────────────────────────────────────────────
   PF1: { id:'PF1', name:'Momentum',     faction:'Pathfinders', rarity:'Uncommon',   type:'Movement',
          desc:'Gain +2 orthogonal moves this turn.', overrideSpeed:3 },
-  PF2: { id:'PF2', name:'Leap',         faction:'Pathfinders', rarity:'Uncommon',   type:'Movement',
+  PF2: { id:'PF2', name:'Leap',         faction:'Pathfinders', rarity:'Rare',       type:'Movement',
          desc:'Gain +1 move and may jump over the opponent even if not adjacent.', overrideSpeed:2 },
   PF3: { id:'PF3', name:'Shortcut',     faction:'Pathfinders', rarity:'Uncommon', type:'Movement',
          desc:'Move up to 3 spaces this turn ignoring diagonal restrictions.', overrideSpeed:3, diagonal:true },
   PF4: { id:'PF4', name:'Eternal Path', faction:'Pathfinders', rarity:'Uncommon',     type:'Movement',
          desc:'Move up to 4 spaces this turn.', overrideSpeed:4 },
-  PF5: { id:'PF5', name:'Wall Vault',   faction:'Pathfinders', rarity:'Uncommon', type:'Movement',
+  PF5: { id:'PF5', name:'Wall Vault',   faction:'Pathfinders', rarity:'Rare',     type:'Movement',
          desc:'Move up to 2 spaces this turn and may pass through one wall of any kind.', overrideSpeed:2, tunnelThrough:true },
 
   // ── WARDENS ──────────────────────────────────────────────────────────
@@ -2273,9 +2273,9 @@ function shuffle(arr) {
 function buildStarterDeck(faction) {
   const deckDefs = {
     Architects:  ['BB','BB','BB','AR1','AR1','AR2','AR3','AR4','RC','RC'],
-    Pathfinders: ['BB','BB','BB','RC','RC','QS','QS','AV','SW','PF1'],
+    Pathfinders: ['BB','BB','BB','RC','RC','QS','QS','WS','PF1','PF3'],
     Wardens:     ['BB','BB','BB','BB','RC','WD1','WD1','WD2','WD3','WD3'],
-    Phantoms:    ['BB','PH1','PH1','PH1','PH3','PH4','PH5','RC','PH2','PH2'],
+    Phantoms:    ['BB','PH1','PH1','PH3','PH3','PH4','PH5','RC','PH2','PH2'],
     Adepts:      ['AD1','AD1','AD2','AD2','AD3','AD3','AD4','BB','WD3','PH1'],
   };
   const ids = deckDefs[faction] || deckDefs['Architects'];
@@ -2793,8 +2793,11 @@ function executePlaceWall(anchor, orientation, length, isPhantom=false, isDurabl
   }
   addLog(pi, 'wall', `Placed ${isReinforced ? 'Reinforced ' : 'a'} wall at (${anchor.row},${anchor.col}) ${orientation}${length}`);
   uiMode = 'idle';
+  const _pendingOnPlaced = selectedCard?._onPlaced || null;
   selectedCard = null;
   onWallPlaced(pi, fromCardId);
+  // WD5 Total Seizure chain: fire after onWallPlaced so state is stable
+  if (_pendingOnPlaced) { _pendingOnPlaced(); return; }
 }
 
 function discardCard(pi, idx) {
@@ -4418,14 +4421,8 @@ function onWallPlaced(pi, fromCardId) {
 
   opponentLastPlayedWall = (pi !== 0);
 
-  // WD5 Total Seizure chain: fire next wall placement callback if one is queued
-  const onPlacedCb = selectedCard?._onPlaced;
-  if (onPlacedCb) {
-    selectedCard = null;
-    onPlacedCb();
-    return; // callback handles renderAll / phase transition
-  }
-
+  // During WD5 seizure chain, skip phase/render — the callback handles it after all walls are placed
+  if (gameState._seizureWalls !== null && gameState._seizureWalls !== undefined) return;
   if (isTurnDone()) gameState.phase = 'end_turn';
   renderAll(); updateActionBar();
 }
@@ -8151,9 +8148,9 @@ function viewStarterDeck(championId) {
 
   const deckDefs = {
     Architects:  ['BB','BB','BB','AR1','AR1','AR2','AR3','AR4','RC','RC'],
-    Pathfinders: ['BB','BB','BB','RC','RC','QS','QS','AV','SW','PF1'],
+    Pathfinders: ['BB','BB','BB','RC','RC','QS','QS','WS','PF1','PF3'],
     Wardens:     ['BB','BB','BB','BB','RC','WD1','WD1','WD2','WD3','WD3'],
-    Phantoms:    ['BB','PH1','PH1','PH1','PH3','PH4','PH5','RC','PH2','PH2'],
+    Phantoms:    ['BB','PH1','PH1','PH3','PH3','PH4','PH5','RC','PH2','PH2'],
     Adepts:      ['AD1','AD1','AD2','AD2','AD3','AD3','AD4','BB','WD3','PH1'],
   };
   const ids = deckDefs[champ.faction] || [];
@@ -8241,9 +8238,9 @@ function useStarterAsTemplate(championId) {
 
   const deckDefs = {
     Architects:  ['BB','BB','BB','AR1','AR1','AR2','AR3','AR4','RC','RC'],
-    Pathfinders: ['BB','BB','BB','RC','RC','QS','QS','AV','SW','PF1'],
+    Pathfinders: ['BB','BB','BB','RC','RC','QS','QS','WS','PF1','PF3'],
     Wardens:     ['BB','BB','BB','BB','RC','WD1','WD1','WD2','WD3','WD3'],
-    Phantoms:    ['BB','PH1','PH1','PH1','PH3','PH4','PH5','RC','PH2','PH2'],
+    Phantoms:    ['BB','PH1','PH1','PH3','PH3','PH4','PH5','RC','PH2','PH2'],
     Adepts:      ['AD1','AD1','AD2','AD2','AD3','AD3','AD4','BB','WD3','PH1'],
   };
   const ids = deckDefs[champ.faction] || [];
