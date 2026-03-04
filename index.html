@@ -1441,6 +1441,74 @@
   }
   .db-cancel-btn:hover { border-color: var(--border-hi); color: var(--text); }
 
+  /* ── SP Deck Picker modal ───────────────────────────────────────── */
+  .dp-box {
+    background: var(--surface); border: 1px solid var(--border-hi);
+    padding: 28px; width: 380px; display: flex; flex-direction: column; gap: 16px;
+  }
+  .dp-header {
+    font-family: 'Teko', sans-serif; font-size: 22px; font-weight: 600;
+    letter-spacing: .25em; text-transform: uppercase;
+  }
+  .dp-subhead {
+    font-size: 10px; color: var(--text-dim); letter-spacing: .15em;
+    text-transform: uppercase; margin-top: -8px;
+  }
+  .dp-options { display: flex; flex-direction: column; gap: 6px; }
+  .dp-option {
+    padding: 12px 14px; background: var(--surface2);
+    border: 1px solid var(--border); cursor: pointer; transition: all 0.12s;
+    display: flex; flex-direction: column; gap: 3px; position: relative;
+  }
+  .dp-option:hover { border-color: var(--border-hi); }
+  .dp-option.selected {
+    border-color: var(--amber-dim); background: rgba(212,144,58,0.07);
+  }
+  .dp-opt-name {
+    font-family: 'Teko', sans-serif; font-size: 17px; letter-spacing: .08em;
+    color: var(--text-bright);
+  }
+  .dp-option.selected .dp-opt-name { color: var(--amber); }
+  .dp-opt-meta { font-size: 9px; color: var(--text-dim); letter-spacing: .1em; }
+  .dp-opt-badge {
+    position: absolute; top: 8px; right: 10px;
+    font-size: 8px; letter-spacing: .12em; color: var(--p1);
+    border: 1px solid var(--p1-dim); padding: 1px 6px;
+  }
+  .dp-actions { display: flex; gap: 8px; }
+  .dp-confirm {
+    flex: 1; padding: 12px 0; background: transparent;
+    border: 1px solid var(--amber-dim); color: var(--amber);
+    font-family: 'JetBrains Mono', monospace; font-size: 12px;
+    letter-spacing: .18em; text-transform: uppercase; cursor: pointer;
+    transition: all 0.15s;
+  }
+  .dp-confirm:hover { background: rgba(212,144,58,0.1); border-color: var(--amber); }
+  .dp-cancel {
+    padding: 12px 16px; background: transparent;
+    border: 1px solid var(--border); color: var(--text-dim);
+    font-family: 'JetBrains Mono', monospace; font-size: 11px;
+    letter-spacing: .14em; text-transform: uppercase; cursor: pointer;
+    transition: all 0.15s;
+  }
+  .dp-cancel:hover { border-color: var(--border-hi); color: var(--text); }
+
+  /* ── MP lobby deck options ───────────────────────────────────────── */
+  .mp-deck-options { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+  .mp-deck-opt {
+    padding: 10px 12px; background: var(--surface2);
+    border: 1px solid var(--border); cursor: pointer; transition: all 0.12s;
+    display: flex; align-items: center; gap: 12px;
+  }
+  .mp-deck-opt:hover { border-color: var(--border-hi); }
+  .mp-deck-opt.active { border-color: var(--amber-dim); background: rgba(212,144,58,0.07); }
+  .mp-deck-opt-name {
+    font-family: 'Teko', sans-serif; font-size: 16px; letter-spacing: .08em;
+    color: var(--text-bright); flex: 1;
+  }
+  .mp-deck-opt.active .mp-deck-opt-name { color: var(--amber); }
+  .mp-deck-opt-meta { font-size: 9px; color: var(--text-dim); letter-spacing: .1em; }
+
   /* ── Auth screen ────────────────────────────────────────────────── */
   .auth-overlay {
     position: fixed; inset: 0; background: var(--bg);
@@ -2120,13 +2188,13 @@ function isHumanSeat(pi) {
 }
 
 // ── createPlayer ────────────────────────────────────────────────────
-function createPlayer(index, championId, faction) {
+function createPlayer(index, championId, faction, deckCards) {
   const def = CHAMPIONS[championId];
   return {
     index,
     champion: { ...def },
     position: index === 0 ? {row:8, col:4} : {row:0, col:4},
-    deck: buildStarterDeck(faction),
+    deck: buildDeckForGame(championId, deckCards),
     hand: [],
     discard: [],
     wallsInPlay: 0,
@@ -2140,7 +2208,7 @@ function createPlayer(index, championId, faction) {
 }
 
 // ── initGame ────────────────────────────────────────────────────────
-function initGame(playerChampId, aiChampId) {
+function initGame(playerChampId, aiChampId, playerDeckCards) {
   // ── FULLY tear down any lingering MP state ──
   gameMode = 'sp';
   mp_isMultiplayer = false;
@@ -2155,7 +2223,7 @@ function initGame(playerChampId, aiChampId) {
   const aChamp  = CHAMPIONS[aiChampId];
   gameState = {
     players: [
-      createPlayer(0, playerChampId, pChamp.faction),
+      createPlayer(0, playerChampId, pChamp.faction, playerDeckCards),
       createPlayer(1, aiChampId,     aChamp.faction),
     ],
     walls: [],
@@ -3643,28 +3711,99 @@ function setDifficulty(level) {
 
 function confirmChampionSelect() {
   if (!selectedChampionId) return;
-  const playerFaction  = CHAMPIONS[selectedChampionId].faction;
+  // Show deck picker before starting — passes control to startSPGame()
+  showSPDeckPicker(selectedChampionId);
+}
+
+function showSPDeckPicker(championId) {
+  const champ = CHAMPIONS[championId];
+  const customDecks = (_userProfile?.decks ?? []).filter(d => d.championId === championId);
+  const factionColors = {
+    Architects:'var(--wall-arch)', Pathfinders:'var(--wall-path)',
+    Wardens:'var(--wall-ward)', Phantoms:'var(--wall-phan)', Adepts:'var(--wall-adept)',
+  };
+  const col = factionColors[champ.faction] || 'var(--amber)';
+
+  const deckOptions = [
+    { id: null, name: 'Starter Deck', meta: 'Default · Always available', isStarter: true },
+    ...customDecks.map(d => ({ id: d.id, name: d.name, meta: `${d.cards.length} cards · Custom`, isStarter: false, cards: d.cards })),
+  ];
+
+  const optionsHTML = deckOptions.map((d, i) => `
+    <div class="dp-option ${i===0?'selected':''}" id="dp-opt-${i}"
+         onclick="dpSelectOption(${i})" data-idx="${i}">
+      <div class="dp-opt-name">${d.name}</div>
+      <div class="dp-opt-meta">${d.meta}</div>
+      ${d.isStarter ? '' : '<div class="dp-opt-badge">CUSTOM</div>'}
+    </div>`).join('');
+
+  // Remove existing picker if any
+  document.getElementById('deck-picker-overlay')?.remove();
+  const overlay = document.createElement('div');
+  overlay.id = 'deck-picker-overlay';
+  overlay.style.cssText = `
+    position:fixed;inset:0;background:rgba(0,0,0,0.75);
+    display:flex;align-items:center;justify-content:center;z-index:600;
+  `;
+  overlay.innerHTML = `
+    <div class="dp-box">
+      <div class="dp-header" style="color:${col}">
+        ${champ.name.toUpperCase()} · SELECT DECK
+      </div>
+      <div class="dp-subhead">Choose a deck to play with</div>
+      <div class="dp-options" id="dp-options">${optionsHTML}</div>
+      <div class="dp-actions">
+        <button class="dp-confirm" id="dp-confirm"
+                onclick="startSPGame('${championId}')">
+          PLAY →
+        </button>
+        <button class="dp-cancel"
+                onclick="document.getElementById('deck-picker-overlay').remove()">
+          ← BACK
+        </button>
+      </div>
+    </div>
+  `;
+  // Store deck options on the overlay for retrieval
+  overlay._deckOptions = deckOptions;
+  overlay._selectedIdx = 0;
+  document.body.appendChild(overlay);
+}
+
+let _dpSelectedIdx = 0;
+function dpSelectOption(idx) {
+  _dpSelectedIdx = idx;
+  document.querySelectorAll('.dp-option').forEach((el, i) => {
+    el.classList.toggle('selected', i === idx);
+  });
+}
+
+function startSPGame(championId) {
+  const overlay = document.getElementById('deck-picker-overlay');
+  const deckOptions = overlay?._deckOptions ?? [{ id: null }];
+  const chosen = deckOptions[_dpSelectedIdx] ?? deckOptions[0];
+  const deckCards = chosen.isStarter ? null : (chosen.cards ?? null);
+
+  // Determine AI champion
+  const playerFaction  = CHAMPIONS[championId].faction;
   const counterFaction = FACTION_COUNTER[playerFaction];
   let aiChampId;
-
   if (aiDifficulty === 'hard' && counterFaction) {
-    // Hard: pick a random champion from the counter faction
     const counterChamps = Object.keys(CHAMPIONS).filter(id =>
-      CHAMPIONS[id].faction === counterFaction && id !== selectedChampionId
+      CHAMPIONS[id].faction === counterFaction && id !== championId
     );
     aiChampId = counterChamps.length
       ? counterChamps[Math.floor(Math.random() * counterChamps.length)]
-      : Object.keys(CHAMPIONS).filter(id => id !== selectedChampionId)[0];
-    // Show the counter pick to the player
+      : Object.keys(CHAMPIONS).filter(id => id !== championId)[0];
     setTimeout(() => showStatus('HARD: AI countered with a ' + counterFaction + ' champion!', 'error'), 800);
   } else {
-    const available = Object.keys(CHAMPIONS).filter(id => id !== selectedChampionId);
+    const available = Object.keys(CHAMPIONS).filter(id => id !== championId);
     aiChampId = available[Math.floor(Math.random() * available.length)];
   }
 
-  const overlay = document.getElementById('champion-select-overlay');
-  if (overlay) overlay.remove();
-  initGame(selectedChampionId, aiChampId);
+  document.getElementById('deck-picker-overlay')?.remove();
+  document.getElementById('champion-select-overlay')?.remove();
+  initGame(championId, aiChampId, deckCards);
 }
 
 // ── UI interactions ─────────────────────────────────────────────────
@@ -5681,6 +5820,13 @@ SUPABASE_SCHEMA = `
   drop trigger if exists mp_games_updated_at on mp_games;
   create trigger mp_games_updated_at before update on mp_games
     for each row execute function set_updated_at();
+
+  -- Deck selection columns (added for collection/deckbuilder feature)
+  -- Run these separately if the table already exists:
+  -- alter table mp_games add column if not exists host_deck_id text default 'starter';
+  -- alter table mp_games add column if not exists host_deck_cards jsonb;
+  -- alter table mp_games add column if not exists guest_deck_id text default 'starter';
+  -- alter table mp_games add column if not exists guest_deck_cards jsonb;
 `;
 */
 
@@ -5957,6 +6103,50 @@ function mpTimeAgo(d) {
 }
 
 // ── Create Tab ───────────────────────────────────────────────────────
+// ── Shared deck picker renderer for MP lobby ─────────────────────────
+// containerId: element to populate with options
+// sectionId:   wrapper to show/hide
+// championId:  which champion's decks to show
+// onSelect:    callback(deckCards, idx) when a deck is chosen
+function mpRenderDeckPicker(containerId, sectionId, championId, onSelect) {
+  const section = document.getElementById(sectionId);
+  const container = document.getElementById(containerId);
+  if (!section || !container) return;
+
+  const customDecks = (_userProfile?.decks ?? []).filter(d => d.championId === championId);
+  const options = [
+    { cards: null, name: 'Starter Deck', meta: 'Default · Always available', isStarter: true },
+    ...customDecks.map(d => ({ cards: d.cards, name: d.name, meta: `${d.cards.length} cards · Custom`, isStarter: false })),
+  ];
+
+  section.style.display = 'block';
+  container.innerHTML = options.map((opt, i) => `
+    <div class="mp-deck-opt ${i===0?'active':''}" id="${containerId}-opt-${i}"
+         onclick="mpDeckOptClick('${containerId}', ${i}, ${JSON.stringify(options.length)})">
+      <span class="mp-deck-opt-name">${opt.name}</span>
+      <span class="mp-deck-opt-meta">${opt.meta}</span>
+    </div>`).join('');
+
+  // Store options for retrieval on click
+  container._deckOptions = options;
+  container._onSelect = onSelect;
+  // Trigger default selection (starter)
+  onSelect(null, 0);
+}
+
+function mpDeckOptClick(containerId, idx, total) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+  // Update active state
+  for (let i = 0; i < total; i++) {
+    const el = document.getElementById(`${containerId}-opt-${i}`);
+    if (el) el.classList.toggle('active', i === idx);
+  }
+  const options = container._deckOptions;
+  const chosen = options?.[idx];
+  if (container._onSelect) container._onSelect(chosen?.cards ?? null, idx);
+}
+
 function mpRenderCreateTab(content) {
   const champCards = Object.values(CHAMPIONS).map(c => `
     <div class="cs-card" id="mpc-${c.id}" onclick="mpSelectChamp('${c.id}')" style="padding:12px 14px;">
@@ -5973,6 +6163,11 @@ function mpRenderCreateTab(content) {
     <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:20px;" id="mpc-grid">
       ${champCards}
     </div>
+    <div id="mpc-deck-section" style="display:none;">
+      <hr class="mp-divider">
+      <div class="mp-section-label">Choose Your Deck</div>
+      <div class="mp-deck-options" id="mpc-deck-options"></div>
+    </div>
     <button class="mp-btn" id="mp-create-btn" onclick="mpCreateGame()" disabled>
       SELECT A CHAMPION TO CREATE GAME →
     </button>
@@ -5981,8 +6176,13 @@ function mpRenderCreateTab(content) {
 }
 
 let mp_selectedChamp = null;
+let mp_selectedDeckCards = null; // null = starter deck
+let mp_selectedDeckIdx = 0;
+
 function mpSelectChamp(id) {
   mp_selectedChamp = id;
+  mp_selectedDeckCards = null;
+  mp_selectedDeckIdx = 0;
   document.querySelectorAll('[id^="mpc-"]').forEach(el => el.classList.remove('selected'));
   const card = document.getElementById('mpc-' + id);
   if (card) card.classList.add('selected');
@@ -5991,6 +6191,11 @@ function mpSelectChamp(id) {
     btn.textContent = `CREATE GAME AS ${CHAMPIONS[id].name.toUpperCase()} →`;
     btn.disabled = false;
   }
+  // Populate deck picker
+  mpRenderDeckPicker('mpc-deck-options', 'mpc-deck-section', id, (cards, idx) => {
+    mp_selectedDeckCards = cards;
+    mp_selectedDeckIdx = idx;
+  });
 }
 
 async function mpCreateGame() {
@@ -6008,10 +6213,12 @@ async function mpCreateGame() {
 
   try {
     const { data, error } = await sb.from('mp_games').insert({
-      host_id:    _userId,
-      host_name:  name,
-      host_champ: mp_selectedChamp,
-      status:     'waiting',
+      host_id:       _userId,
+      host_name:     name,
+      host_champ:    mp_selectedChamp,
+      host_deck_id:  mp_selectedDeckCards ? 'custom' : 'starter',
+      host_deck_cards: mp_selectedDeckCards ? JSON.stringify(mp_selectedDeckCards) : null,
+      status:        'waiting',
     }).select().single();
 
     if (error) throw error;
@@ -6083,6 +6290,11 @@ function mpRenderJoinTab(content) {
     <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:20px;" id="mpj-grid">
       ${champCards}
     </div>
+    <div id="mpj-deck-section" style="display:none;">
+      <hr class="mp-divider">
+      <div class="mp-section-label">Choose Your Deck</div>
+      <div class="mp-deck-options" id="mpj-deck-options"></div>
+    </div>
     <button class="mp-btn" id="mp-join-btn" onclick="mpJoinGame()" disabled>
       SELECT A CHAMPION TO JOIN →
     </button>
@@ -6091,8 +6303,13 @@ function mpRenderJoinTab(content) {
 }
 
 let mp_joinSelectedChamp = null;
+let mp_joinSelectedDeckCards = null;
+let mp_joinSelectedDeckIdx = 0;
+
 function mpSelectJoinChamp(id) {
   mp_joinSelectedChamp = id;
+  mp_joinSelectedDeckCards = null;
+  mp_joinSelectedDeckIdx = 0;
   document.querySelectorAll('[id^="mpj-"]').forEach(el => el.classList.remove('selected'));
   const card = document.getElementById('mpj-' + id);
   if (card) card.classList.add('selected');
@@ -6101,6 +6318,11 @@ function mpSelectJoinChamp(id) {
     btn.textContent = `JOIN AS ${CHAMPIONS[id].name.toUpperCase()} →`;
     btn.disabled = false;
   }
+  // Populate deck picker
+  mpRenderDeckPicker('mpj-deck-options', 'mpj-deck-section', id, (cards, idx) => {
+    mp_joinSelectedDeckCards = cards;
+    mp_joinSelectedDeckIdx = idx;
+  });
 }
 
 async function mpJoinGame() {
@@ -6136,7 +6358,10 @@ async function mpJoinGame() {
     // Build initial game state (server side — but we do it client-side for simplicity)
     const hostChamp = g.host_champ;
     const guestChamp = mp_joinSelectedChamp;
-    const initState = mpBuildInitialState(hostChamp, guestChamp, firstSeat);
+    // Retrieve host deck (stored when host created the game)
+    const hostDeckCards = g.host_deck_cards ? JSON.parse(g.host_deck_cards) : null;
+    const guestDeckCards = mp_joinSelectedDeckCards || null;
+    const initState = mpBuildInitialState(hostChamp, guestChamp, firstSeat, hostDeckCards, guestDeckCards);
 
     // Store hands separately (private to each player)
     const hostHand = initState.players[0].hand;
@@ -6178,14 +6403,14 @@ function mpSetStatus(id, msg, type) {
 }
 
 // ── Game initialisation helpers ──────────────────────────────────────
-function mpBuildInitialState(hostChampId, guestChampId, firstSeat) {
+function mpBuildInitialState(hostChampId, guestChampId, firstSeat, hostDeckCards, guestDeckCards) {
   // Mirrors initGame() but doesn't touch global gameState or UI yet
   const hChamp = CHAMPIONS[hostChampId];
   const gChamp = CHAMPIONS[guestChampId];
   const state = {
     players: [
-      createPlayer(0, hostChampId,  hChamp.faction),
-      createPlayer(1, guestChampId, gChamp.faction),
+      createPlayer(0, hostChampId,  hChamp.faction, hostDeckCards),
+      createPlayer(1, guestChampId, gChamp.faction, guestDeckCards),
     ],
     walls: [], decoyTokens: [], trapTokens: [],
     activePlayer: firstSeat, turnNumber: 1, phase: 'action',
