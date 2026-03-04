@@ -1552,8 +1552,8 @@ const CARDS = {
   // ── ARCHITECTS ───────────────────────────────────────────────────────
   AR1: { id:'AR1', name:'Reinforced Slab',  faction:'Architects', rarity:'Common',   type:'Wall',
          desc:'Place a 2-tile indestructible wall (H or V). Permanent. Cannot be destroyed or moved.', wallLen:2, reinforced:true },
-  AR2: { id:'AR2', name:'Reinforce Wall',   faction:'Architects', rarity:'Common',   type:'Disruption',
-         desc:'Choose one of your walls and reinforce it — it cannot be destroyed or moved by the opponent.' },
+  AR2: { id:'AR2', name:'Repossess',        faction:'Architects', rarity:'Common',   type:'Disruption',
+         desc:'Seize ownership of one of the opponent\'s walls. It becomes yours — you can move or remove it with your other cards. Cannot target reinforced or phantom walls.' },
   AR3: { id:'AR3', name:'Blueprint Shift',  faction:'Architects', rarity:'Uncommon', type:'Disruption',
          desc:'Move one of your non-reinforced walls to any legal location on the board.' },
   AR4: { id:'AR4', name:'Grand Bastion',    faction:'Architects', rarity:'Rare',     type:'Wall',
@@ -1644,7 +1644,7 @@ function buildStarterDeck(faction) {
 
 // ── State ───────────────────────────────────────────────────────────
 let gameState = null;
-let uiMode = 'idle';       // 'idle' | 'move' | 'wall' | 'wallPick' | 'wallRedirect' | 'wallSeal' | 'wallPunch' | 'wallReinforce' | 'wallReconstruct'
+let uiMode = 'idle';       // 'idle' | 'move' | 'wall' | 'wallPick' | 'wallRedirect' | 'wallSeal' | 'wallPunch' | 'wallReinforce' | 'wallReconstruct' | 'wallRepossess'
 let wallOrientation = 'H';
 let selectedCard = null;   // {id, idx, length, isPhantom, isDurable} or null
 let hasMoved = false;       // whether champion has moved this turn
@@ -2035,9 +2035,10 @@ function executeMove(to) {
   gameState.players[pi] = {...gameState.players[pi], position: to};
   // Clear stormpath after move (one-turn effect)
 
-  // Nyx (Illusory Trail) passive in MP: store previous position so the
+  // Nyx (Illusory Trail) passive: store previous position so the
   // opponent sees Nyx at the old tile for one full turn (delayed reveal).
-  if (gameMode === 'mp' && gameState.players[pi].champion.id === 'nyx') {
+  // Active in both SP and MP.
+  if (gameState.players[pi].champion.id === 'nyx') {
     if (!gameState._nyxTrail) gameState._nyxTrail = [null, null];
     gameState._nyxTrail[pi] = { pos: { row: from.row, col: from.col }, turnsRemaining: 1 };
     addLog(pi, 'passive', 'Illusory Trail: previous position lingers for one turn');
@@ -2065,7 +2066,7 @@ function executeMove(to) {
   });
   if (crossedPhantoms.length) {
     crossedPhantoms.forEach(w => {
-      addLog(pi, 'system', `Walked through a phantom wall — it dissolves!`);
+      addLog(pi, 'system', `Walked through a wall — it dissolves!`);
       gameState.players[w.owner] = {
         ...gameState.players[w.owner],
         wallsInPlay: Math.max(0, gameState.players[w.owner].wallsInPlay - 1)
@@ -2103,6 +2104,20 @@ function executeMove(to) {
 function executePlaceWall(anchor, orientation, length, isPhantom=false, isDurable=false, fromCardId='') {
   const pi = gameState.activePlayer;
   const p = gameState.players[pi];
+
+  // Safety guard: prevent placing walls that intersect with existing walls.
+  // This catches card-chain placements (e.g. Echo Strike, Corner Block secondary)
+  // and multiplayer edge cases where the client state may diverge.
+  if (!isPhantom) {
+    const proposed = {id:'__exec_test__',owner:pi,anchor,orientation,length,isPhantom:false,durable:false,durableHits:0,immune:false,reinforced:false,temporary:false,turnsRemaining:null,placedOnTurn:0};
+    for (const w of gameState.walls) {
+      if (!w.isPhantom && wallsConflict(proposed, w)) {
+        console.warn('[executePlaceWall] Blocked: wall intersects existing wall', {anchor, orientation, length});
+        return;
+      }
+    }
+  }
+
   // Redirect: wall belongs to opponent but placed by current player
   const ownerOverride = selectedCard?._redirectOwner;
   const wallOwner = (ownerOverride !== undefined) ? ownerOverride : pi;
@@ -2132,7 +2147,7 @@ function executePlaceWall(anchor, orientation, length, isPhantom=false, isDurabl
     gameState.players[wallOwner] = {...gameState.players[wallOwner],
       wallsInPlay: gameState.players[wallOwner].wallsInPlay + 1};
   }
-  addLog(pi, 'wall', `Placed ${isPhantom ? 'Phantom' : (isReinforced ? 'Reinforced ' : 'real')} wall at (${anchor.row},${anchor.col}) ${orientation}${length}`);
+  addLog(pi, 'wall', `Placed ${isReinforced ? 'Reinforced ' : 'a'} wall at (${anchor.row},${anchor.col}) ${orientation}${length}`);
   uiMode = 'idle';
   selectedCard = null;
   onWallPlaced(pi, fromCardId);
@@ -2181,6 +2196,7 @@ function endTurnHuman() {
     gameState._redeployCardIdx = null;
     gameState._redirectCardIdx = null;
     gameState._reconstructCardIdx = null;
+    gameState._repossessCardIdx = null;
     gameState._evictionInProgress = false;
     selectedCard = null;
     uiMode = 'idle';
@@ -2506,6 +2522,8 @@ function runAI() {
   // ══════════════════════════════════════════════════════════════════
   let bestCardScore = -Infinity;
   let bestCardAction = null;  // null = skip card, play base move only
+  let secondBestCardScore = -Infinity;
+  let secondBestCardAction = null;
 
   const st = snap();
 
@@ -2523,6 +2541,7 @@ function runAI() {
         const s = scoreAction({type:'wall', anchor, orientation, length:len},
                               st.walls, st.aiPos, st.oppPos);
         if (s > bestCardScore) {
+          secondBestCardScore = bestCardScore; secondBestCardAction = bestCardAction;
           bestCardScore = s;
           bestCardAction = {kind:'wall', card, anchor, orientation, len};
         }
@@ -2543,6 +2562,7 @@ function runAI() {
         const s = scoreAction({type:'phantom', anchor, orientation, length:len},
                               st.walls, st.aiPos, st.oppPos);
         if (s > bestCardScore) {
+          secondBestCardScore = bestCardScore; secondBestCardAction = bestCardAction;
           bestCardScore = s;
           bestCardAction = {kind:'phantom', card, anchor, orientation, len};
         }
@@ -2563,6 +2583,7 @@ function runAI() {
         const s = scoreAction({type:'wall', anchor, orientation, length:len},
                               st.walls, st.aiPos, st.oppPos) + 1; // slight bonus for special
         if (s > bestCardScore) {
+          secondBestCardScore = bestCardScore; secondBestCardAction = bestCardAction;
           bestCardScore = s;
           bestCardAction = {kind:'wall', card, anchor, orientation, len};
         }
@@ -2571,8 +2592,16 @@ function runAI() {
   }
 
   // ── E: Movement cards — score best move achievable with card boost ──
+  // Key improvement: compare the card's best destination against what the BASE move
+  // can reach. If the AI is blocked (dist=Infinity) or the card unlocks cells the
+  // base move cannot reach (tunnel/extra speed), treat that as a large bonus.
   {
     const moveCards = st.aiHand.filter(c => c.type === 'Movement');
+    // Compute base legal moves so we can detect what the card uniquely unlocks
+    const baseMoves = getLegalMoves({...gameState, walls: st.walls}, pi);
+    const baseMoveKeys = new Set(baseMoves.map(m => `${m.row},${m.col}`));
+    const aiDistReal = bfsDistanceFor(st.aiPos, BOARD_SIZE - 1, st.walls, pi);
+
     for (const card of moveCards) {
       const speed = card.overrideSpeed !== undefined ? card.overrideSpeed : 1;
       const tunnel = !!card.tunnelThrough;
@@ -2584,15 +2613,28 @@ function runAI() {
       let bestDest = null;
       for (const to of boostedMoves) {
         if (to.row === BOARD_SIZE - 1) { bestDest = to; bestMoveWithCard = 1e9; break; }
-        const s = scoreAction({type:'move', to}, st.walls, st.aiPos, st.oppPos) + 1;
+        // Cards that unlock cells the base move can't reach get a big situational bonus
+        const isNewCell = !baseMoveKeys.has(`${to.row},${to.col}`);
+        const unlockBonus = isNewCell ? 4 : 1;
+        const s = scoreAction({type:'move', to}, st.walls, st.aiPos, st.oppPos) + unlockBonus;
         if (s > bestMoveWithCard) { bestMoveWithCard = s; bestDest = to; }
       }
-      // A movement card is worthwhile if it scores significantly better than base move
-      const baseBestDist = bfsDistanceAI(st.aiPos, BOARD_SIZE - 1, st.walls);
-      const moveDist = bestDest ? Math.abs(bestDest.row - (BOARD_SIZE - 1)) : baseBestDist;
-      if (bestDest && bestMoveWithCard > bestCardScore && bestMoveWithCard > 2) {
-        bestCardScore = bestMoveWithCard;
-        bestCardAction = {kind:'movement', card, dest: bestDest};
+      if (!bestDest) continue;
+
+      // If AI is blocked (no path with real walls), any movement card that
+      // opens a route (via tunnel, ownPassthrough, or extra speed) is very valuable
+      const aiIsBlocked = (aiDistReal === Infinity);
+      const cardOpensPath = aiIsBlocked && boostedMoves.length > 0;
+
+      // Card is worthwhile if: it opens a previously blocked path, OR scores better
+      // than the current best (threshold 0 so even a neutral card beats doing nothing)
+      if (cardOpensPath || (bestMoveWithCard > bestCardScore && bestMoveWithCard > 0)) {
+        const effectiveScore = cardOpensPath ? 50 + bestMoveWithCard : bestMoveWithCard;
+        if (effectiveScore > bestCardScore) {
+          secondBestCardScore = bestCardScore; secondBestCardAction = bestCardAction;
+          bestCardScore = effectiveScore;
+          bestCardAction = {kind:'movement', card, dest: bestDest};
+        }
       }
     }
   }
@@ -2614,6 +2656,7 @@ function runAI() {
       const oppGain = (bfsDistanceFor(st.oppPos, 0, st.walls, 0) - oppDistAfter);
       const s = myGain * 8 - oppGain * 6 - 1;
       if (s > bestCardScore) {
+        secondBestCardScore = bestCardScore; secondBestCardAction = bestCardAction;
         bestCardScore = s;
         bestCardAction = {kind:'disruption', subkind:'reclaim', card};
       }
@@ -2639,6 +2682,7 @@ function runAI() {
           const s = scoreAction({type:'wall', anchor, orientation, length:len},
                                 wallsWithout, st.aiPos, st.oppPos) + 0.5;
           if (s > bestCardScore) {
+            secondBestCardScore = bestCardScore; secondBestCardAction = bestCardAction;
             bestCardScore = s;
             bestCardAction = {kind:'disruption', subkind:'redeploy', card, target, anchor, orientation, len};
           }
@@ -2646,20 +2690,19 @@ function runAI() {
       }
     }
 
-    // AR2 Reinforce Wall: reinforce most valuable own wall
-    if (card.id === 'A5' || card.id === 'AR2') {
-      const myWalls = gameState.walls.filter(w => w.owner===pi && !w.isPhantom && !w.reinforced);
-      if (!myWalls.length) continue;
-      const best = myWalls[myWalls.length - 1];
-      // Value: how much does this wall contribute to opponent's distance?
-      const withoutWall = st.walls.filter(w => w.id !== best.id);
-      const oppWithout  = bfsDistanceFor(st.oppPos, 0, withoutWall, 0);
-      const oppWith     = bfsDistanceFor(st.oppPos, 0, st.walls,    0);
-      const wallValue   = oppWithout - oppWith;
-      const s = wallValue * 6 - 1;
-      if (s > bestCardScore) {
-        bestCardScore = s;
-        bestCardAction = {kind:'disruption', subkind:'reinforce', card};
+    // AR2 Repossess: seize most blocking opponent wall
+    if (card.id === 'AR2') {
+      const targets = st.walls.filter(w => w.owner === 0 && !w.isPhantom && !w.reinforced && !w.immune);
+      for (const target of targets) {
+        const wallsWithout = st.walls.filter(w => w.id !== target.id);
+        const aiDistBefore = bfsDistanceFor(st.aiPos, BOARD_SIZE-1, st.walls,     pi);
+        const aiDistAfter  = bfsDistanceFor(st.aiPos, BOARD_SIZE-1, wallsWithout, pi);
+        const s = (aiDistBefore - aiDistAfter) * 5 + 2;
+        if (s > bestCardScore) {
+          secondBestCardScore = bestCardScore; secondBestCardAction = bestCardAction;
+          bestCardScore = s;
+          bestCardAction = {kind:'disruption', subkind:'repossess', card, target};
+        }
       }
     }
 
@@ -2676,6 +2719,7 @@ function runAI() {
           const s = scoreAction({type:'wall', anchor, orientation, length:len},
                                 wallsWithout, st.aiPos, st.oppPos) + 1;
           if (s > bestCardScore) {
+            secondBestCardScore = bestCardScore; secondBestCardAction = bestCardAction;
             bestCardScore = s;
             bestCardAction = {kind:'disruption', subkind:'redirect', card, target, anchor, orientation, len};
           }
@@ -2689,6 +2733,7 @@ function runAI() {
       if (oppHandSize > 0) {
         const s = 3;
         if (s > bestCardScore) {
+          secondBestCardScore = bestCardScore; secondBestCardAction = bestCardAction;
           bestCardScore = s;
           bestCardAction = {kind:'disruption', subkind:'scatter', card};
         }
@@ -2704,6 +2749,7 @@ function runAI() {
           : {type:'shrinkWall', wallId:target.id};
         const s = scoreAction(action, st.walls, st.aiPos, st.oppPos) + 0.5;
         if (s > bestCardScore) {
+          secondBestCardScore = bestCardScore; secondBestCardAction = bestCardAction;
           bestCardScore = s;
           bestCardAction = {kind:'disruption', subkind:'punchthrough', card, target};
         }
@@ -2724,10 +2770,20 @@ function runAI() {
       if (bestWall && bestVal > 1) {
         const s = bestVal * 5;
         if (s > bestCardScore) {
+          secondBestCardScore = bestCardScore; secondBestCardAction = bestCardAction;
           bestCardScore = s;
           bestCardAction = {kind:'disruption', subkind:'seal', card, target:bestWall};
         }
       }
+    }
+  }
+
+  // ── Difficulty: maybe downgrade card action to 2nd best ──────────
+  // hard: always picks best. medium: 75% best / 25% 2nd. easy: 50/50.
+  if (aiDifficulty !== 'hard' && secondBestCardAction !== null) {
+    const threshold = aiDifficulty === 'medium' ? 0.75 : 0.50;
+    if (Math.random() >= threshold) {
+      bestCardAction = secondBestCardAction;
     }
   }
 
@@ -2753,12 +2809,28 @@ function runAI() {
 
   let bestMoveScore = -Infinity;
   let bestMoveDest  = null;
+  let secondBestMoveScore = -Infinity;
+  let secondBestMoveDest  = null;
 
   for (const to of moves) {
     if (to.row === BOARD_SIZE - 1) { bestMoveDest = to; bestMoveScore = 1e9; break; }
     const s = scoreAction({type:'move', to}, simWallsForMove, st.aiPos, st.oppPos)
             + probeBonus(to, simWallsForMove);
-    if (s > bestMoveScore) { bestMoveScore = s; bestMoveDest = to; }
+    if (s > bestMoveScore) {
+      secondBestMoveScore = bestMoveScore; secondBestMoveDest = bestMoveDest;
+      bestMoveScore = s; bestMoveDest = to;
+    } else if (s > secondBestMoveScore) {
+      secondBestMoveScore = s; secondBestMoveDest = to;
+    }
+  }
+
+  // ── Difficulty: maybe downgrade move to 2nd best ──────────────────
+  // hard: always picks best. medium: 75% best / 25% 2nd. easy: 50/50.
+  if (aiDifficulty !== 'hard' && secondBestMoveDest !== null) {
+    const threshold = aiDifficulty === 'medium' ? 0.75 : 0.50;
+    if (Math.random() >= threshold) {
+      bestMoveDest = secondBestMoveDest;
+    }
   }
 
   // Fallback move if none scored positively
@@ -2766,6 +2838,60 @@ function runAI() {
     bestMoveDest = moves.reduce((a, b) =>
       Math.abs(b.row - (BOARD_SIZE - 1)) < Math.abs(a.row - (BOARD_SIZE - 1)) ? b : a
     );
+  }
+
+  // ── PHANTOM PROBE: blocked-in detection ────────────────────────────
+  // If the AI appears completely blocked (BFS with real walls returns Infinity),
+  // check whether any opponent-owned walls are adjacent. Those might be phantoms.
+  // Strategy: try moving INTO the wall edge — if it's phantom, executeMove will
+  // dissolve it. This is the only way for the AI to discover phantom walls it's
+  // directly enclosed by (since "moving adjacent" alone doesn't reveal them).
+  if (!bestMoveDest || bfsDistanceFor(st.aiPos, BOARD_SIZE - 1, st.walls, pi) === Infinity) {
+    // Only probe walls that have a phantom probability (opponent is Phantoms faction
+    // and wall hasn't been confirmed real). Never probe confirmed-real walls.
+    const suspectWalls = st.walls.filter(w =>
+      w.owner !== pi && !aiProbedWallIds.has(w.id) && phantomProbability(w) > 0
+    );
+
+    if (suspectWalls.length > 0) {
+      // Check if removing all suspect walls would open a path
+      const wallsWithoutSuspect = st.walls.filter(w => !suspectWalls.some(s => s.id === w.id));
+      const aiDistWithoutPhantoms = bfsDistanceFor(st.aiPos, BOARD_SIZE - 1, wallsWithoutSuspect, pi);
+
+      if (aiDistWithoutPhantoms < Infinity) {
+        // Find a suspect wall edge directly bordering the AI position to probe
+        const aiPos = st.aiPos;
+        let probeTarget = null;
+
+        for (const w of suspectWalls) {
+          for (const e of wallEdges(w)) {
+            // Wall edge separates e.a and e.b; if AI is at one side, probe goes to the other
+            let throughDest = null;
+            if (e.a.row === aiPos.row && e.a.col === aiPos.col) throughDest = e.b;
+            else if (e.b.row === aiPos.row && e.b.col === aiPos.col) throughDest = e.a;
+            if (!throughDest) continue;
+            // Validate destination is in bounds
+            if (throughDest.row < 0 || throughDest.row >= BOARD_SIZE ||
+                throughDest.col < 0 || throughDest.col >= BOARD_SIZE) continue;
+            // Would moving through this wall (if phantom) actually open a path?
+            const distAfterProbe = bfsDistanceFor(throughDest, BOARD_SIZE - 1,
+              st.walls.filter(x => x.id !== w.id), pi);
+            if (distAfterProbe < Infinity) {
+              probeTarget = throughDest;
+              break;
+            }
+          }
+          if (probeTarget) break;
+        }
+
+        if (probeTarget) {
+          addLog(pi, 'system', 'AI suspects a phantom wall — probing by moving through it');
+          // executeMove will detect and dissolve the phantom wall if it is one.
+          // If it turns out to be a real wall (somehow), the crossing will still be registered.
+          bestMoveDest = probeTarget;
+        }
+      }
+    }
   }
 
   // ══════════════════════════════════════════════════════════════════
@@ -2820,23 +2946,16 @@ function runAI() {
           addLog(pi, 'card', 'AI Blueprint Shift: repositioned wall');
         }
 
-      } else if (sub === 'reinforce') {
-        const myWalls = gameState.walls.filter(w => w.owner===pi && !w.isPhantom && !w.reinforced);
-        if (myWalls.length) {
-          // Pick most valuable wall
-          let bestWall = myWalls[myWalls.length-1];
-          let bestVal = -1;
-          for (const w of myWalls) {
-            const wo = gameState.walls.filter(x => x.id !== w.id);
-            const val = bfsDistanceFor(gameState.players[0].position, 0, wo, 0) - bfsDistanceFor(gameState.players[0].position, 0, gameState.walls, 0);
-            if (val > bestVal) { bestVal = val; bestWall = w; }
-          }
-          gameState.walls = gameState.walls.map(w =>
-            w.id === bestWall.id ? {...w, reinforced:true, immune:true, permanent:true} : w
-          );
-          discardCard(pi, cardIdx); countCardPlayed(pi);
-          addLog(pi, 'card', 'AI Reinforce: wall permanently reinforced');
+      } else if (sub === 'repossess') {
+        const t = bestCardAction.target;
+        const live = gameState.walls.find(w => w.id === t.id);
+        if (live && !live.reinforced && !live.immune && !live.isPhantom) {
+          gameState.walls = gameState.walls.map(w => w.id === live.id ? {...w, owner: pi} : w);
+          gameState.players[0]  = {...gameState.players[0],  wallsInPlay: Math.max(0, gameState.players[0].wallsInPlay - 1)};
+          gameState.players[pi] = {...gameState.players[pi], wallsInPlay: gameState.players[pi].wallsInPlay + 1};
+          addLog(pi, 'card', 'AI Repossess: seized an opponent wall');
         }
+        discardCard(pi, cardIdx); countCardPlayed(pi);
 
       } else if (sub === 'redirect') {
         const t = bestCardAction.target;
@@ -2900,7 +3019,12 @@ function runAI() {
   // ══════════════════════════════════════════════════════════════════
   const isAIBound = (gameState.players[AI_PLAYER].statusEffects || []).some(e => e.type === 'skip_move' && e.turnsRemaining > 0);
   if (bestMoveDest && !hasMoved && !isAIBound) {
-    executeMove(bestMoveDest);
+    // Phantom probe moves target a cell through a (suspected) phantom wall edge.
+    // executeMove's phantom-detection will dissolve the wall if it IS phantom.
+    // Guard with a bounds check as a safety net.
+    const inBounds = bestMoveDest.row >= 0 && bestMoveDest.row < BOARD_SIZE &&
+                     bestMoveDest.col >= 0 && bestMoveDest.col < BOARD_SIZE;
+    if (inBounds) executeMove(bestMoveDest);
   } else if (isAIBound) {
     hasMoved = true; // mark as "moved" so isTurnDone works correctly
     addLog(AI_PLAYER, 'system', 'AI bound by Binding Wall — move skipped');
@@ -3278,13 +3402,14 @@ function selectCard(cardId, idx) {
   }
   // Different card clicked while a wall/pick mode is pending: cancel (wall budget not yet counted).
   // Exception: Eviction locks out cancel once a wall has been picked (_evictionInProgress).
-  if (selectedCard && (uiMode === 'wall' || uiMode === 'wallPick' || uiMode === 'wallRedirect' || uiMode === 'wallSeal' || uiMode === 'wallPunch' || uiMode === 'wallReconstruct') && selectedCard.idx >= 0) {
+  if (selectedCard && (uiMode === 'wall' || uiMode === 'wallPick' || uiMode === 'wallRedirect' || uiMode === 'wallSeal' || uiMode === 'wallPunch' || uiMode === 'wallReconstruct' || uiMode === 'wallRepossess') && selectedCard.idx >= 0) {
     if (gameState._evictionInProgress || selectedCard._evictionPlacing) {
       showStatus('Eviction committed — place the wall to finish', 'error'); return;
     }
     gameState._redeployCardIdx = null;
     gameState._redirectCardIdx = null;
     gameState._reconstructCardIdx = null;
+    gameState._repossessCardIdx = null;
     gameState._evictionInProgress = false;
     selectedCard = null; uiMode = 'idle';
   }
@@ -3349,7 +3474,7 @@ function countCardPlayed(pi) {
 function hasPendingPickCard() {
   return selectedCard !== null && (
     uiMode === 'wallPick' || uiMode === 'wallReconstruct' ||
-    uiMode === 'wallRedirect' || uiMode === 'wallSeal'
+    uiMode === 'wallRedirect' || uiMode === 'wallSeal' || uiMode === 'wallRepossess'
   );
 }
 
@@ -3562,17 +3687,16 @@ function applyDisruptionCard(pi, card, idx) {
     return;
   }
 
-  // ── AR2: Reinforce Wall — click one of your walls to reinforce it ──
-  if (card.id === 'A5' || card.id === 'AR2') {
-    const myWalls = gameState.walls.filter(w => w.owner===pi && !w.isPhantom && !w.reinforced);
-    if (!myWalls.length) { showStatus('No walls to reinforce', 'error'); return; }
-    // Enter wallReinforce mode — player clicks which wall to reinforce
-    gameState._reinforceCardIdx = idx;
-    uiMode = 'wallReinforce';
-    selectedCard = { id: card.id, idx };
+  // ── AR2: Repossess — seize ownership of one opponent wall ──
+  if (card.id === 'AR2') {
+    const opp2 = 1 - pi;
+    const targets = gameState.walls.filter(w => w.owner === opp2 && !w.isPhantom && !w.reinforced && !w.immune);
+    if (!targets.length) { showStatus('No eligible opponent walls to repossess', 'error'); return; }
+    gameState._repossessCardIdx = idx;
+    uiMode = 'wallRepossess';
+    selectedCard = { id:'AR2', idx };
     renderAll();
-    showStatus('Reinforce — click one of your walls to make it immune to destruction and movement', 'active');
-    return;
+    showStatus('Repossess — click an opponent wall to seize ownership', 'active'); return;
   }
 
   // ── T5 / general: Punch Through — click any non-permanent, non-reinforced wall to remove 1 tile ──
@@ -4182,7 +4306,8 @@ function renderBoard() {
   const localViewer = (gameMode === 'mp') ? mp_localSeat : 0;
   for (const pi of [0,1]) {
     const champId = gameState.players[pi].champion.id;
-    const isOpponentPerspective = (gameMode === 'mp') && (pi !== localViewer);
+    // In MP: opponent is any seat that isn't ours. In SP: human is always seat 0, so seat 1 is always the opponent.
+    const isOpponentPerspective = (pi !== localViewer);
 
     // Veil of Shadows: hide the opponent piece entirely while veiled
     if (isOpponentPerspective) {
@@ -4239,7 +4364,7 @@ function renderWalls() {
   if (!layer) return;
   layer.innerHTML = '';
   // Toggle pick-mode class to enable/disable clicks
-  if (uiMode === 'wallPick' || uiMode === 'wallRedirect' || uiMode === 'wallSeal' || uiMode === 'wallPunch' || uiMode === 'wallReinforce' || uiMode === 'wallReconstruct') {
+  if (uiMode === 'wallPick' || uiMode === 'wallRedirect' || uiMode === 'wallSeal' || uiMode === 'wallPunch' || uiMode === 'wallReinforce' || uiMode === 'wallReconstruct' || uiMode === 'wallRepossess') {
     layer.classList.add('pick-mode');
   } else {
     layer.classList.remove('pick-mode');
@@ -4256,6 +4381,7 @@ function renderWalls() {
     const isPunchable   = uiMode === 'wallPunch'     && !wall.isPhantom && !wall.permanent && !wall.reinforced && !wall.immune;
     const isReinforceable = uiMode === 'wallReinforce' && wall.owner === gameState.activePlayer && !wall.isPhantom && !wall.reinforced;
     const isReconstructable = uiMode === 'wallReconstruct' && wall.owner === gameState.activePlayer && !wall.isPhantom;
+    const isRepossessable   = uiMode === 'wallRepossess'   && wall.owner !== gameState.activePlayer && !wall.isPhantom && !wall.reinforced && !wall.immune;
     // Owner of a phantom wall sees it with a distinct teal tint
     const localPlayer = (gameMode === 'mp') ? mp_localSeat : 0;
     const isOwnPhantom = wall.isPhantom && wall.owner === localPlayer;
@@ -4269,6 +4395,7 @@ function renderWalls() {
     if (isPunchable)      cls += ' wall-pickable wall-punchable';
     if (isReinforceable)  cls += ' wall-pickable wall-reinforceable';
     if (isReconstructable) cls += ' wall-pickable wall-reconstructable';
+    if (isRepossessable)   cls += ' wall-pickable wall-repossessable';
     el.className = cls;
     Object.assign(el.style, wallVisualPos(wall));
 
@@ -4291,6 +4418,10 @@ function renderWalls() {
     if (isReconstructable) {
       el.style.cursor = 'pointer';
       el.addEventListener('click', () => pickWallForReconstruct(wall));
+    }
+    if (isRepossessable) {
+      el.style.cursor = 'pointer';
+      el.addEventListener('click', () => pickWallForRepossess(wall));
     }
     if (isPunchable) {
       // Render each tile as a separate hoverable/clickable segment
@@ -4511,6 +4642,27 @@ function pickWallForReconstruct(wall) {
   showStatus('Reconstruction: wall removed, drew 1!', 'success');
 }
 
+function pickWallForRepossess(wall) {
+  if (uiMode !== 'wallRepossess') return;
+  const pi = gameState.activePlayer;
+  const opp = 1 - pi;
+  const cardIdx = gameState._repossessCardIdx;
+  gameState.walls = gameState.walls.map(w =>
+    w.id === wall.id ? { ...w, owner: pi } : w
+  );
+  gameState.players[opp] = { ...gameState.players[opp], wallsInPlay: Math.max(0, gameState.players[opp].wallsInPlay - 1) };
+  gameState.players[pi]  = { ...gameState.players[pi],  wallsInPlay: gameState.players[pi].wallsInPlay + 1 };
+  discardCard(pi, cardIdx);
+  gameState._repossessCardIdx = null;
+  selectedCard = null;
+  countCardPlayed(pi);
+  uiMode = 'idle';
+  addLog(pi, 'card', 'Repossess: seized an opponent wall — it is now yours');
+  if (isTurnDone()) gameState.phase = 'end_turn';
+  renderAll();
+  showStatus('Repossess: wall is now under your control!', 'success');
+}
+
 function pickWallForPunch(wall) {
   pickTileForPunch(wall, 0);
 }
@@ -4641,7 +4793,7 @@ function showWallPreview(anchor, orientation, length, isPhantom) {
   hideWallPreview();
   const layer = document.getElementById('wall-layer');
   if (!layer) return;
-  const legal = isPhantom || isWallLegal(anchor, orientation, length, gameState.walls,
+  const legal = isWallLegal(anchor, orientation, length, gameState.walls,
     gameState.players[0].position, gameState.players[1].position, isPhantom);
   previewEl = document.createElement('div');
   previewEl.className = `wall-preview-segment${legal ? '' : ' invalid'}`;
@@ -6068,6 +6220,7 @@ function mpGuardedEndTurnHuman() {
     gameState._redeployCardIdx = null;
     gameState._redirectCardIdx = null;
     gameState._reconstructCardIdx = null;
+    gameState._repossessCardIdx = null;
     gameState._evictionInProgress = false;
     selectedCard = null; uiMode = 'idle';
   }
