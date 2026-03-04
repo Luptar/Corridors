@@ -1128,6 +1128,319 @@
   .diff-btn:hover { border-color: var(--border-hi); color: var(--text-bright); }
   .diff-btn.active { border-color: var(--amber); color: var(--amber); background: rgba(212,144,58,0.08); }
 
+  /* ── Collection & Deck Builder ─────────────────────────────────── */
+  .coll-header {
+    display: flex; align-items: center; gap: 16px;
+    padding: 12px 20px; background: var(--surface);
+    border-bottom: 1px solid var(--border); flex-shrink: 0;
+  }
+  .coll-back {
+    padding: 5px 14px; background: transparent;
+    border: 1px solid var(--border); color: var(--text-dim);
+    font-family: 'JetBrains Mono', monospace; font-size: 10px;
+    letter-spacing: .14em; text-transform: uppercase; cursor: pointer;
+    transition: all 0.15s; white-space: nowrap;
+  }
+  .coll-back:hover { border-color: var(--amber-dim); color: var(--amber); }
+  .coll-title {
+    font-family: 'Teko', sans-serif; font-size: 22px; font-weight: 600;
+    letter-spacing: .25em; color: var(--amber); flex: 1;
+  }
+  .coll-shards {
+    font-family: 'JetBrains Mono', monospace; font-size: 11px;
+    color: var(--amber); letter-spacing: .12em; white-space: nowrap;
+  }
+  .coll-tabs {
+    display: flex; border-bottom: 1px solid var(--border); flex-shrink: 0;
+    background: var(--surface);
+  }
+  .coll-tab {
+    padding: 10px 28px; background: transparent; border: none;
+    border-bottom: 2px solid transparent; color: var(--text-dim);
+    font-family: 'JetBrains Mono', monospace; font-size: 11px;
+    letter-spacing: .16em; text-transform: uppercase;
+    cursor: pointer; margin-bottom: -1px; transition: all 0.15s;
+  }
+  .coll-tab.active { color: var(--amber); border-bottom-color: var(--amber); }
+  .coll-tab:hover:not(.active) { color: var(--text); }
+  .coll-content {
+    flex: 1; overflow-y: auto; padding: 20px;
+  }
+
+  /* Collection grid */
+  .coll-filters {
+    display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px;
+  }
+  .coll-filter-group { display: flex; gap: 6px; flex-wrap: wrap; }
+  .coll-filter-btn {
+    padding: 4px 12px; background: transparent;
+    border: 1px solid var(--border); color: var(--text-dim);
+    font-family: 'JetBrains Mono', monospace; font-size: 9px;
+    letter-spacing: .12em; text-transform: uppercase;
+    cursor: pointer; transition: all 0.12s;
+  }
+  .coll-filter-btn:hover { border-color: var(--border-hi); color: var(--text); }
+  .coll-filter-btn.active { border-color: var(--amber-dim); color: var(--amber); background: rgba(212,144,58,0.07); }
+
+  .coll-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+    gap: 8px;
+  }
+  .coll-card {
+    background: var(--surface); border: 1px solid var(--border);
+    padding: 10px; cursor: pointer; transition: all 0.12s;
+    display: flex; flex-direction: column; gap: 4px;
+  }
+  .coll-card:hover { border-color: var(--border-hi); background: var(--surface2); }
+  .coll-card-unowned { opacity: 0.4; }
+  .coll-card-unowned:hover { opacity: 0.7; }
+  .coll-card-faction {
+    font-size: 8px; letter-spacing: .14em; text-transform: uppercase;
+  }
+  .coll-card-name {
+    font-family: 'Teko', sans-serif; font-size: 16px; font-weight: 500;
+    letter-spacing: .06em; color: var(--text-bright); line-height: 1.1;
+  }
+  .coll-card-type {
+    font-size: 9px; color: var(--text-dim); letter-spacing: .08em;
+  }
+  .coll-card-bottom {
+    display: flex; justify-content: space-between; align-items: center;
+    margin-top: 4px;
+  }
+  .coll-card-rarity {
+    font-size: 8px; letter-spacing: .08em; color: var(--text-dim);
+    display: flex; align-items: center; gap: 4px;
+  }
+  .coll-card-owned {
+    font-family: 'JetBrains Mono', monospace; font-size: 10px;
+    color: var(--text-dim);
+  }
+  .coll-card-owned.has-copies { color: var(--amber); }
+
+  /* Rarity dots */
+  .rarity-dot-Common::before, .rarity-dot-Uncommon::before,
+  .rarity-dot-Rare::before, .rarity-dot-Legendary::before {
+    content: ''; display: inline-block;
+    width: 7px; height: 7px; border-radius: 50%;
+    margin-right: 4px; vertical-align: middle;
+  }
+  .rarity-dot-Common::before    { background: #505a60; }
+  .rarity-dot-Uncommon::before  { background: #50a060; }
+  .rarity-dot-Rare::before      { background: #4a80d0; }
+  .rarity-dot-Legendary::before { background: #c0a030; }
+
+  /* Card detail modal */
+  .card-detail-backdrop {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.7);
+    display: flex; align-items: center; justify-content: center;
+    z-index: 200;
+  }
+  .card-detail-box {
+    background: var(--surface); border: 1px solid var(--border-hi);
+    padding: 28px; width: 320px; display: flex; flex-direction: column; gap: 12px;
+  }
+  .card-detail-faction {
+    font-size: 10px; letter-spacing: .2em; text-transform: uppercase;
+  }
+  .card-detail-name {
+    font-family: 'Teko', sans-serif; font-size: 32px; font-weight: 600;
+    letter-spacing: .1em; color: var(--text-bright); line-height: 1;
+  }
+  .card-detail-rarity {
+    font-size: 11px; letter-spacing: .1em; color: var(--text-dim);
+  }
+  .card-detail-desc {
+    font-size: 12px; color: var(--text); line-height: 1.6;
+    border-left: 2px solid var(--amber-dim); padding-left: 10px;
+  }
+  .card-detail-stats {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
+  }
+  .card-detail-stat {
+    background: var(--surface2); border: 1px solid var(--border);
+    padding: 8px; text-align: center;
+  }
+  .card-detail-stat-label {
+    font-size: 8px; color: var(--text-dim); letter-spacing: .12em;
+    text-transform: uppercase; margin-bottom: 4px;
+  }
+  .card-detail-stat-val {
+    font-family: 'Teko', sans-serif; font-size: 22px; color: var(--text-bright);
+  }
+  .card-detail-actions { display: flex; gap: 8px; }
+  .card-detail-btn {
+    flex: 1; padding: 10px 0; background: transparent; cursor: pointer;
+    font-family: 'JetBrains Mono', monospace; font-size: 10px;
+    letter-spacing: .12em; text-transform: uppercase; transition: all 0.15s;
+  }
+  .card-detail-btn.disenchant {
+    border: 1px solid var(--amber-dim); color: var(--amber);
+  }
+  .card-detail-btn.disenchant:hover:not(.disabled) {
+    background: rgba(212,144,58,0.1); border-color: var(--amber);
+  }
+  .card-detail-btn.craft {
+    border: 1px solid var(--success); color: var(--success);
+  }
+  .card-detail-btn.craft:hover:not(.disabled) {
+    background: rgba(60,180,80,0.1);
+  }
+  .card-detail-btn.disabled { opacity: 0.3; cursor: not-allowed; }
+  .card-detail-close {
+    padding: 8px 0; background: transparent; border: 1px solid var(--border);
+    color: var(--text-dim); font-family: 'JetBrains Mono', monospace;
+    font-size: 10px; letter-spacing: .14em; cursor: pointer; transition: all 0.15s;
+  }
+  .card-detail-close:hover { border-color: var(--danger); color: var(--danger); }
+
+  /* Decks tab */
+  .decks-list { display: flex; flex-direction: column; gap: 28px; }
+  .decks-section { display: flex; flex-direction: column; gap: 10px; }
+  .decks-champion-header {
+    font-family: 'Teko', sans-serif; font-size: 20px; font-weight: 600;
+    letter-spacing: .2em; border-bottom: 1px solid var(--border);
+    padding-bottom: 6px;
+  }
+  .decks-row {
+    display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-start;
+  }
+  .deck-card {
+    background: var(--surface); border: 1px solid var(--border);
+    padding: 12px 14px; width: 160px; display: flex;
+    flex-direction: column; gap: 6px;
+  }
+  .deck-card.starter { border-style: dashed; opacity: 0.6; }
+  .deck-card-name {
+    font-family: 'Teko', sans-serif; font-size: 16px; letter-spacing: .08em;
+    color: var(--text-bright);
+  }
+  .deck-card-meta { font-size: 9px; color: var(--text-dim); letter-spacing: .08em; }
+  .deck-card-actions { display: flex; gap: 6px; margin-top: 4px; }
+  .deck-action-btn {
+    flex: 1; padding: 5px 0; background: transparent;
+    border: 1px solid var(--border); color: var(--text-dim);
+    font-family: 'JetBrains Mono', monospace; font-size: 9px;
+    letter-spacing: .1em; text-transform: uppercase; cursor: pointer;
+    transition: all 0.12s;
+  }
+  .deck-action-btn:hover:not(.disabled):not([disabled]) {
+    border-color: var(--amber-dim); color: var(--amber);
+  }
+  .deck-action-btn.danger:hover { border-color: var(--danger) !important; color: var(--danger) !important; }
+  .deck-action-btn.disabled, .deck-action-btn[disabled] { opacity: 0.3; cursor: not-allowed; }
+  .deck-new-btn {
+    width: 160px; min-height: 80px; background: transparent;
+    border: 1px dashed var(--border-hi); color: var(--text-dim);
+    font-family: 'JetBrains Mono', monospace; font-size: 11px;
+    letter-spacing: .14em; cursor: pointer; transition: all 0.15s;
+  }
+  .deck-new-btn:hover { border-color: var(--amber-dim); color: var(--amber); }
+
+  /* Deck Builder layout */
+  .db-layout {
+    display: flex; flex: 1; overflow: hidden; gap: 0;
+  }
+  .db-pool-panel {
+    flex: 1; display: flex; flex-direction: column;
+    border-right: 1px solid var(--border); overflow: hidden;
+    padding: 16px;
+  }
+  .db-deck-panel {
+    width: 280px; flex-shrink: 0; display: flex; flex-direction: column;
+    padding: 16px; gap: 10px; overflow-y: auto;
+  }
+  .db-panel-label {
+    font-family: 'JetBrains Mono', monospace; font-size: 10px;
+    letter-spacing: .2em; color: var(--text-dim); text-transform: uppercase;
+    margin-bottom: 10px; display: flex; align-items: center; gap: 10px;
+  }
+  .db-count {
+    font-size: 12px; color: var(--text-dim);
+  }
+  .db-pool-filters { display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; }
+  .db-pool-grid {
+    flex: 1; overflow-y: auto;
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+    gap: 7px; align-content: start;
+  }
+  .db-pool-card {
+    background: var(--surface); border: 1px solid var(--border);
+    padding: 9px; cursor: pointer; transition: all 0.12s;
+    display: flex; flex-direction: column; gap: 3px; position: relative;
+  }
+  .db-pool-card:hover:not(.db-card-blocked) {
+    border-color: var(--amber-dim); background: var(--surface2);
+  }
+  .db-card-blocked { opacity: 0.35; cursor: not-allowed; }
+  .db-pool-card-faction { font-size: 8px; letter-spacing: .12em; text-transform: uppercase; }
+  .db-pool-card-name {
+    font-family: 'Teko', sans-serif; font-size: 15px; font-weight: 500;
+    color: var(--text-bright); line-height: 1.1;
+  }
+  .db-pool-card-type { font-size: 9px; color: var(--text-dim); }
+  .db-pool-card-bottom {
+    display: flex; justify-content: space-between; align-items: center;
+    margin-top: 2px;
+  }
+  .db-pool-card-counts { font-size: 9px; color: var(--text-dim); font-family: 'JetBrains Mono', monospace; }
+  .db-pool-card-counts.at-limit { color: var(--danger); }
+  .db-block-reason {
+    position: absolute; inset: 0; display: flex; align-items: center;
+    justify-content: center; font-size: 8px; letter-spacing: .12em;
+    color: var(--text-dim); background: rgba(10,10,12,0.5);
+  }
+  .db-name-input {
+    padding: 8px 10px; background: var(--surface2);
+    border: 1px solid var(--border); color: var(--text-bright);
+    font-family: 'JetBrains Mono', monospace; font-size: 12px;
+    outline: none; transition: border-color 0.15s;
+  }
+  .db-name-input:focus { border-color: var(--amber-dim); }
+  .db-deck-slots { display: flex; flex-direction: column; gap: 4px; flex: 1; }
+  .db-deck-slot {
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 8px; background: var(--surface);
+    border: 1px solid var(--border);
+  }
+  .db-slot-count {
+    font-family: 'JetBrains Mono', monospace; font-size: 10px;
+    color: var(--text-dim); width: 20px;
+  }
+  .db-slot-name { flex: 1; font-size: 12px; }
+  .db-slot-rarity { width: 10px; }
+  .db-slot-remove {
+    padding: 1px 7px; background: transparent;
+    border: 1px solid var(--border); color: var(--text-dim);
+    font-size: 14px; cursor: pointer; line-height: 1;
+    transition: all 0.12s;
+  }
+  .db-slot-remove:hover { border-color: var(--danger); color: var(--danger); }
+  .db-validation {
+    font-size: 10px; letter-spacing: .08em; padding: 6px 8px;
+    border: 1px solid var(--border); min-height: 28px;
+  }
+  .db-validation.valid { color: var(--success); border-color: var(--success); background: rgba(60,180,80,0.06); }
+  .db-validation.invalid { color: var(--danger); border-color: var(--danger); background: rgba(192,64,64,0.06); }
+  .db-actions { display: flex; gap: 8px; }
+  .db-save-btn {
+    flex: 1; padding: 12px 0; background: transparent;
+    border: 1px solid var(--amber-dim); color: var(--amber);
+    font-family: 'JetBrains Mono', monospace; font-size: 11px;
+    letter-spacing: .16em; text-transform: uppercase; cursor: pointer;
+    transition: all 0.15s;
+  }
+  .db-save-btn:hover:not([disabled]) { background: rgba(212,144,58,0.1); border-color: var(--amber); }
+  .db-cancel-btn {
+    padding: 12px 16px; background: transparent;
+    border: 1px solid var(--border); color: var(--text-dim);
+    font-family: 'JetBrains Mono', monospace; font-size: 11px;
+    letter-spacing: .14em; text-transform: uppercase; cursor: pointer;
+    transition: all 0.15s;
+  }
+  .db-cancel-btn:hover { border-color: var(--border-hi); color: var(--text); }
+
   /* ── Auth screen ────────────────────────────────────────────────── */
   .auth-overlay {
     position: fixed; inset: 0; background: var(--bg);
@@ -6395,8 +6708,11 @@ let _userProfile = null;   // user_profiles row (shards, collection, decks)
 
 // Supabase requires email — we synthesize one internally, never shown to user
 function authEmailFromUsername(username) {
+  // Supabase requires a valid-looking email. We synthesize one using gmail.com
+  // so it passes domain validation. Users never see this — they only enter a username.
   const clean = username.toLowerCase().replace(/[^a-z0-9_-]/g, '');
-  return `${clean}@corridors.game`;
+  const hash  = Array.from(clean).reduce((a,c) => (a * 31 + c.charCodeAt(0)) >>> 0, 0x4352).toString(16);
+  return `corridors_${clean}_${hash}@gmail.com`;
 }
 
 // ── Register ─────────────────────────────────────────────────────────
@@ -6419,8 +6735,13 @@ async function authRegister(username, password) {
   const { data, error } = await sb.auth.signUp({ email, password });
   if (error) throw new Error(error.message);
 
+  // If email confirmation is enabled in Supabase, data.user may be null
+  // until confirmed. We require it to be disabled for this auth flow.
   const userId = data.user?.id;
-  if (!userId) throw new Error('Registration failed — no user ID returned');
+  if (!userId) throw new Error(
+    'Registration failed — please ensure "Email Confirmations" is disabled ' +
+    'in your Supabase dashboard under Authentication → Settings.'
+  );
 
   const { error: profileError } = await sb.from('user_profiles').insert({
     id: userId, username: trimmed, shards: 0, collection: {}, decks: [],
@@ -6760,28 +7081,492 @@ async function authSubmitRegister() {
 }
 
 // ── Collection screen stub (full UI in next phase) ────────────────────
-function showCollectionScreen() {
-  ['landing-overlay','auth-overlay'].forEach(id => document.getElementById(id)?.remove());
+// ════════════════════════════════════════════════════════════════════
+// ── COLLECTION & DECK BUILDER UI ─────────────────────────────────────
+// ════════════════════════════════════════════════════════════════════
+
+// ── State for deck builder ────────────────────────────────────────────
+let _deckBuilderState = null;
+// { championId, cards: [cardId x0-10], deckId: null|string, name: string }
+
+function showCollectionScreen(tab = 'collection') {
+  ['landing-overlay', 'auth-overlay', 'collection-overlay'].forEach(id =>
+    document.getElementById(id)?.remove());
+
   const overlay = document.createElement('div');
   overlay.id = 'collection-overlay';
   overlay.style.cssText = `
-    position:fixed;inset:0;background:var(--bg);
-    display:flex;flex-direction:column;align-items:center;justify-content:center;
-    z-index:100;gap:20px;
+    position:fixed;inset:0;background:var(--bg);z-index:100;
+    display:flex;flex-direction:column;overflow:hidden;
   `;
+
+  const shards = _userProfile?.shards ?? 0;
+
   overlay.innerHTML = `
-    <div style="font-family:'Teko',sans-serif;font-size:36px;letter-spacing:.3em;color:var(--amber);">
-      COLLECTION &amp; DECKS
+    <div class="coll-header">
+      <button class="coll-back" onclick="document.getElementById('collection-overlay').remove();showLandingScreen();">
+        ← BACK
+      </button>
+      <div class="coll-title">COLLECTION &amp; DECKS</div>
+      <div class="coll-shards">◆ ${shards.toLocaleString()} SHARDS</div>
     </div>
-    <div style="color:var(--text-dim);font-size:11px;letter-spacing:.15em;">
-      Coming in next implementation phase
+
+    <div class="coll-tabs">
+      <button class="coll-tab ${tab==='collection'?'active':''}"
+              onclick="collSwitchTab('collection')">COLLECTION</button>
+      <button class="coll-tab ${tab==='decks'?'active':''}"
+              onclick="collSwitchTab('decks')">MY DECKS</button>
     </div>
-    <button onclick="document.getElementById('collection-overlay').remove();showLandingScreen();"
-            class="landing-btn muted" style="width:220px;">
-      ← BACK
-    </button>
+
+    <div id="coll-content" class="coll-content"></div>
   `;
+
   document.body.appendChild(overlay);
+  collSwitchTab(tab);
+}
+
+function collSwitchTab(tab) {
+  document.querySelectorAll('.coll-tab').forEach(b => {
+    b.classList.toggle('active',
+      (tab === 'collection' && b.textContent.trim() === 'COLLECTION') ||
+      (tab === 'decks'      && b.textContent.trim() === 'MY DECKS'));
+  });
+  const content = document.getElementById('coll-content');
+  if (!content) return;
+  if (tab === 'collection') renderCollectionTab(content);
+  else                      renderDecksTab(content);
+}
+
+// ── COLLECTION TAB ────────────────────────────────────────────────────
+function renderCollectionTab(container, filterFaction = 'All', filterType = 'All', ownedOnly = false) {
+  const factions = ['All', 'Basic', 'Architects', 'Pathfinders', 'Wardens', 'Phantoms', 'Adepts'];
+  const types    = ['All', 'Wall', 'Movement', 'Disruption'];
+
+  const factionColors = {
+    Basic:'var(--text-dim)', Architects:'var(--wall-arch)', Pathfinders:'var(--wall-path)',
+    Wardens:'var(--wall-ward)', Phantoms:'var(--wall-phan)', Adepts:'var(--wall-adept)',
+  };
+
+  let cards = Object.values(CARDS);
+  if (filterFaction !== 'All') cards = cards.filter(c => c.faction === filterFaction);
+  if (filterType    !== 'All') cards = cards.filter(c => c.type    === filterType);
+  if (ownedOnly)               cards = cards.filter(c => getOwnedCount(c.id) > 0);
+
+  const rarityOrder = { Common:0, Uncommon:1, Rare:2, Legendary:3 };
+  cards.sort((a,b) => {
+    if (a.faction !== b.faction) return a.faction.localeCompare(b.faction);
+    return (rarityOrder[a.rarity]??0) - (rarityOrder[b.rarity]??0);
+  });
+
+  container.innerHTML = `
+    <div class="coll-filters">
+      <div class="coll-filter-group">
+        ${factions.map(f => `
+          <button class="coll-filter-btn ${filterFaction===f?'active':''}"
+                  onclick="renderCollectionTab(document.getElementById('coll-content'),'${f}','${filterType}',${ownedOnly})"
+                  style="${f!=='All'&&f!=='Basic'?`color:${factionColors[f]};`:''}">
+            ${f}
+          </button>`).join('')}
+      </div>
+      <div class="coll-filter-group">
+        ${types.map(t => `
+          <button class="coll-filter-btn ${filterType===t?'active':''}"
+                  onclick="renderCollectionTab(document.getElementById('coll-content'),'${filterFaction}','${t}',${ownedOnly})">
+            ${t}
+          </button>`).join('')}
+        <button class="coll-filter-btn ${ownedOnly?'active':''}"
+                onclick="renderCollectionTab(document.getElementById('coll-content'),'${filterFaction}','${filterType}',${!ownedOnly})">
+          OWNED
+        </button>
+      </div>
+    </div>
+
+    <div class="coll-grid">
+      ${cards.map(card => {
+        const owned   = getOwnedCount(card.id);
+        const limit   = getCardCopyLimit(card.id);
+        const col     = factionColors[card.faction] || 'var(--text-dim)';
+        const craftCost = CRAFT_COST[card.rarity] ?? 20;
+        const canCraft  = (_userProfile?.shards ?? 0) >= craftCost;
+        return `
+          <div class="coll-card ${owned===0?'coll-card-unowned':''}"
+               onclick="showCardDetail('${card.id}')">
+            <div class="coll-card-faction" style="color:${col}">${card.faction}</div>
+            <div class="coll-card-name">${card.name}</div>
+            <div class="coll-card-type">${card.type}</div>
+            <div class="coll-card-bottom">
+              <span class="coll-card-rarity rarity-dot-${card.rarity}">${card.rarity}</span>
+              <span class="coll-card-owned ${owned>0?'has-copies':''}">${owned}/${limit}</span>
+            </div>
+          </div>`;
+      }).join('')}
+    </div>
+  `;
+}
+
+// ── Card detail modal ─────────────────────────────────────────────────
+function showCardDetail(cardId) {
+  document.getElementById('card-detail-modal')?.remove();
+  const card    = CARDS[cardId];
+  if (!card) return;
+  const owned   = getOwnedCount(cardId);
+  const shards  = _userProfile?.shards ?? 0;
+  const dVal    = DISENCHANT_VALUE[card.rarity] ?? 5;
+  const cCost   = CRAFT_COST[card.rarity] ?? 20;
+  const canCraft = shards >= cCost;
+  const factionColors = {
+    Basic:'var(--text-dim)', Architects:'var(--wall-arch)', Pathfinders:'var(--wall-path)',
+    Wardens:'var(--wall-ward)', Phantoms:'var(--wall-phan)', Adepts:'var(--wall-adept)',
+  };
+  const col = factionColors[card.faction] || 'var(--text-dim)';
+
+  const modal = document.createElement('div');
+  modal.id = 'card-detail-modal';
+  modal.className = 'card-detail-backdrop';
+  modal.onclick = e => { if (e.target === modal) modal.remove(); };
+
+  modal.innerHTML = `
+    <div class="card-detail-box">
+      <div class="card-detail-faction" style="color:${col}">${card.faction} · ${card.type}</div>
+      <div class="card-detail-name">${card.name}</div>
+      <div class="card-detail-rarity rarity-dot-${card.rarity}">${card.rarity}</div>
+      <div class="card-detail-desc">${card.desc}</div>
+      <div class="card-detail-stats">
+        <div class="card-detail-stat">
+          <div class="card-detail-stat-label">OWNED</div>
+          <div class="card-detail-stat-val">${owned}</div>
+        </div>
+        <div class="card-detail-stat">
+          <div class="card-detail-stat-label">COPY LIMIT</div>
+          <div class="card-detail-stat-val">${getCardCopyLimit(cardId)}</div>
+        </div>
+        <div class="card-detail-stat">
+          <div class="card-detail-stat-label">DISENCHANT</div>
+          <div class="card-detail-stat-val" style="color:var(--amber)">+${dVal} ◆</div>
+        </div>
+        <div class="card-detail-stat">
+          <div class="card-detail-stat-label">CRAFT COST</div>
+          <div class="card-detail-stat-val" style="color:${canCraft?'var(--success)':'var(--danger)'}">${cCost} ◆</div>
+        </div>
+      </div>
+      <div class="card-detail-actions">
+        <button class="card-detail-btn disenchant ${owned<1?'disabled':''}"
+                onclick="collDisenchant('${cardId}')"
+                ${owned<1?'disabled':''}>
+          DISENCHANT (+${dVal} ◆)
+        </button>
+        <button class="card-detail-btn craft ${!canCraft?'disabled':''}"
+                onclick="collCraft('${cardId}')"
+                ${!canCraft?'disabled':''}>
+          CRAFT (${cCost} ◆)
+        </button>
+      </div>
+      <button class="card-detail-close" onclick="document.getElementById('card-detail-modal').remove()">
+        ✕ CLOSE
+      </button>
+    </div>
+  `;
+  document.body.appendChild(modal);
+}
+
+async function collDisenchant(cardId) {
+  const result = await disenchantCard(cardId);
+  if (!result.ok) { alert(result.error); return; }
+  document.getElementById('card-detail-modal')?.remove();
+  // Refresh shard display and collection
+  document.querySelector('.coll-shards').textContent = `◆ ${(_userProfile?.shards??0).toLocaleString()} SHARDS`;
+  renderCollectionTab(document.getElementById('coll-content'));
+}
+
+async function collCraft(cardId) {
+  const result = await craftCard(cardId);
+  if (!result.ok) { alert(result.error); return; }
+  document.getElementById('card-detail-modal')?.remove();
+  document.querySelector('.coll-shards').textContent = `◆ ${(_userProfile?.shards??0).toLocaleString()} SHARDS`;
+  renderCollectionTab(document.getElementById('coll-content'));
+}
+
+// ── DECKS TAB ─────────────────────────────────────────────────────────
+function renderDecksTab(container) {
+  const championOrder = ['magnus','soren','thorne','nyx','elara'];
+  const factionColors = {
+    Architects:'var(--wall-arch)', Pathfinders:'var(--wall-path)',
+    Wardens:'var(--wall-ward)', Phantoms:'var(--wall-phan)', Adepts:'var(--wall-adept)',
+  };
+
+  const customDecks = _userProfile?.decks ?? [];
+
+  const sections = championOrder.map(cid => {
+    const champ = CHAMPIONS[cid];
+    if (!champ) return '';
+    const col   = factionColors[champ.faction] || 'var(--text-dim)';
+    const myDecks = customDecks.filter(d => d.championId === cid);
+
+    const deckCards = myDecks.map(deck => `
+      <div class="deck-card">
+        <div class="deck-card-name">${deck.name}</div>
+        <div class="deck-card-meta">${deck.cards.length} cards</div>
+        <div class="deck-card-actions">
+          <button class="deck-action-btn" onclick="openDeckBuilder('${cid}','${deck.id}')">EDIT</button>
+          <button class="deck-action-btn danger" onclick="collDeleteDeck('${deck.id}')">DELETE</button>
+        </div>
+      </div>`).join('');
+
+    return `
+      <div class="decks-section">
+        <div class="decks-champion-header" style="color:${col}">
+          ${champ.name} <span style="color:var(--text-dim);font-size:11px;">· ${champ.faction}</span>
+        </div>
+        <div class="decks-row">
+          <div class="deck-card starter">
+            <div class="deck-card-name">Starter Deck</div>
+            <div class="deck-card-meta">Default · Always available</div>
+            <div class="deck-card-actions">
+              <button class="deck-action-btn disabled" disabled>READ ONLY</button>
+            </div>
+          </div>
+          ${deckCards}
+          <button class="deck-new-btn" onclick="openDeckBuilder('${cid}')">+ NEW DECK</button>
+        </div>
+      </div>`;
+  }).join('');
+
+  container.innerHTML = `<div class="decks-list">${sections}</div>`;
+}
+
+async function collDeleteDeck(deckId) {
+  if (!confirm('Delete this deck?')) return;
+  await deleteDeck(deckId);
+  renderDecksTab(document.getElementById('coll-content'));
+}
+
+// ── DECK BUILDER ──────────────────────────────────────────────────────
+function openDeckBuilder(championId, existingDeckId = null) {
+  const champ = CHAMPIONS[championId];
+  if (!champ) return;
+
+  const existing = existingDeckId
+    ? (_userProfile?.decks ?? []).find(d => d.id === existingDeckId)
+    : null;
+
+  _deckBuilderState = {
+    championId,
+    deckId: existingDeckId || null,
+    name:   existing?.name || '',
+    cards:  existing?.cards ? [...existing.cards] : [],
+  };
+
+  document.getElementById('deck-builder-overlay')?.remove();
+  const overlay = document.createElement('div');
+  overlay.id = 'deck-builder-overlay';
+  overlay.style.cssText = `
+    position:fixed;inset:0;background:var(--bg);z-index:110;
+    display:flex;flex-direction:column;overflow:hidden;
+  `;
+
+  const factionColors = {
+    Architects:'var(--wall-arch)', Pathfinders:'var(--wall-path)',
+    Wardens:'var(--wall-ward)', Phantoms:'var(--wall-phan)', Adepts:'var(--wall-adept)',
+  };
+  const col = factionColors[champ.faction] || 'var(--text-dim)';
+
+  overlay.innerHTML = `
+    <div class="coll-header">
+      <button class="coll-back" onclick="closeDeckBuilder()">← DECKS</button>
+      <div class="coll-title" style="color:${col}">
+        DECK BUILDER · ${champ.name.toUpperCase()}
+      </div>
+      <div class="coll-shards">◆ ${(_userProfile?.shards??0).toLocaleString()} SHARDS</div>
+    </div>
+
+    <div class="db-layout">
+      <!-- Left: card pool -->
+      <div class="db-pool-panel">
+        <div class="db-panel-label">AVAILABLE CARDS</div>
+        <div class="db-pool-filters" id="db-pool-filters"></div>
+        <div class="db-pool-grid" id="db-pool-grid"></div>
+      </div>
+
+      <!-- Right: current deck -->
+      <div class="db-deck-panel">
+        <div class="db-panel-label">DECK
+          <span id="db-count" class="db-count">0/10</span>
+        </div>
+        <input id="db-deck-name" class="db-name-input"
+               type="text" placeholder="Deck name…" maxlength="30"
+               value="${existing?.name || ''}"
+               oninput="_deckBuilderState.name=this.value">
+        <div class="db-deck-slots" id="db-deck-slots"></div>
+        <div id="db-validation" class="db-validation"></div>
+        <div class="db-actions">
+          <button class="db-save-btn" id="db-save-btn" onclick="dbSaveDeck()">SAVE DECK</button>
+          <button class="db-cancel-btn" onclick="closeDeckBuilder()">CANCEL</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  document.body.appendChild(overlay);
+  dbRenderPool();
+  dbRenderDeck();
+}
+
+function closeDeckBuilder() {
+  document.getElementById('deck-builder-overlay')?.remove();
+  _deckBuilderState = null;
+  showCollectionScreen('decks');
+}
+
+function dbGetValidPool(championId, typeFilter = 'All') {
+  const champ = CHAMPIONS[championId];
+  return Object.values(CARDS).filter(card => {
+    // Faction filter
+    if (champ.faction !== 'Adepts') {
+      if (card.faction !== 'Basic' && card.faction !== champ.faction) return false;
+    }
+    // Type filter
+    if (typeFilter !== 'All' && card.type !== typeFilter) return false;
+    return true;
+  });
+}
+
+function dbRenderPool(typeFilter = 'All') {
+  const { championId, cards } = _deckBuilderState;
+  const pool = dbGetValidPool(championId, typeFilter);
+  const types = ['All', 'Wall', 'Movement', 'Disruption'];
+
+  const filtersEl = document.getElementById('db-pool-filters');
+  if (filtersEl) {
+    filtersEl.innerHTML = types.map(t => `
+      <button class="coll-filter-btn ${typeFilter===t?'active':''}"
+              onclick="dbRenderPool('${t}')">${t}</button>`).join('');
+  }
+
+  // Count current copies in deck
+  const deckCounts = {};
+  for (const id of cards) deckCounts[id] = (deckCounts[id]??0) + 1;
+
+  const factionColors = {
+    Basic:'var(--text-dim)', Architects:'var(--wall-arch)', Pathfinders:'var(--wall-path)',
+    Wardens:'var(--wall-ward)', Phantoms:'var(--wall-phan)', Adepts:'var(--wall-adept)',
+  };
+
+  const grid = document.getElementById('db-pool-grid');
+  if (!grid) return;
+
+  grid.innerHTML = pool.map(card => {
+    const owned      = getOwnedCount(card.id);
+    const inDeck     = deckCounts[card.id] ?? 0;
+    const limit      = getCardCopyLimit(card.id);
+    const atLimit    = inDeck >= limit;
+    const notOwned   = owned === 0;
+    const blocked    = atLimit || notOwned;
+    const col        = factionColors[card.faction] || 'var(--text-dim)';
+
+    return `
+      <div class="db-pool-card ${blocked?'db-card-blocked':''}"
+           onclick="dbPoolCardClick('${card.id}', ${blocked})">
+        <div class="db-pool-card-faction" style="color:${col}">${card.faction}</div>
+        <div class="db-pool-card-name">${card.name}</div>
+        <div class="db-pool-card-type">${card.type}</div>
+        <div class="db-pool-card-bottom">
+          <span class="coll-card-rarity rarity-dot-${card.rarity}">${card.rarity}</span>
+          <span class="db-pool-card-counts ${atLimit?'at-limit':''}">
+            ${inDeck}/${limit} &nbsp;·&nbsp; own ${owned}
+          </span>
+        </div>
+        ${blocked ? `<div class="db-block-reason">${notOwned?'NOT OWNED':atLimit?'LIMIT REACHED':''}</div>` : ''}
+      </div>`;
+  }).join('');
+}
+
+function dbRenderDeck() {
+  const { cards } = _deckBuilderState;
+  const countEl = document.getElementById('db-count');
+  if (countEl) {
+    countEl.textContent = `${cards.length}/10`;
+    countEl.style.color = cards.length === 10 ? 'var(--success)' : cards.length > 10 ? 'var(--danger)' : 'var(--text-dim)';
+  }
+
+  const slots = document.getElementById('db-deck-slots');
+  if (!slots) return;
+
+  // Group by card ID for display
+  const grouped = {};
+  for (const id of cards) {
+    if (!grouped[id]) grouped[id] = { card: CARDS[id], count: 0 };
+    grouped[id].count++;
+  }
+
+  slots.innerHTML = Object.entries(grouped).map(([id, { card, count }]) => {
+    const factionColors = {
+      Basic:'var(--text-dim)', Architects:'var(--wall-arch)', Pathfinders:'var(--wall-path)',
+      Wardens:'var(--wall-ward)', Phantoms:'var(--wall-phan)', Adepts:'var(--wall-adept)',
+    };
+    const col = factionColors[card?.faction] || 'var(--text-dim)';
+    return `
+      <div class="db-deck-slot">
+        <span class="db-slot-count">${count}×</span>
+        <span class="db-slot-name" style="color:${col}">${card?.name || id}</span>
+        <span class="db-slot-rarity rarity-dot-${card?.rarity}"></span>
+        <button class="db-slot-remove" onclick="dbRemoveCard('${id}')">−</button>
+      </div>`;
+  }).join('') || `<div style="color:var(--text-dim);font-size:11px;text-align:center;padding:20px 0;">
+    Click cards on the left to add them
+  </div>`;
+
+  // Validation
+  const { valid, errors } = validateDeck(_deckBuilderState.championId, cards);
+  const valEl = document.getElementById('db-validation');
+  if (valEl) {
+    valEl.textContent = valid ? '✓ Deck is valid' : errors[0];
+    valEl.className   = 'db-validation ' + (valid ? 'valid' : 'invalid');
+  }
+  const saveBtn = document.getElementById('db-save-btn');
+  if (saveBtn) {
+    saveBtn.disabled = !valid;
+    saveBtn.style.opacity = valid ? '1' : '0.3';
+    saveBtn.style.cursor  = valid ? 'pointer' : 'not-allowed';
+  }
+}
+
+function dbPoolCardClick(cardId, blocked) {
+  if (!blocked) dbAddCard(cardId);
+}
+
+function dbAddCard(cardId) {
+  if (!_deckBuilderState) return;
+  const { cards } = _deckBuilderState;
+  if (cards.length >= 10) return;
+  const inDeck = cards.filter(id => id === cardId).length;
+  if (inDeck >= getCardCopyLimit(cardId)) return;
+  if (getOwnedCount(cardId) < 1) return;
+  _deckBuilderState.cards.push(cardId);
+  dbRenderPool();
+  dbRenderDeck();
+}
+
+function dbRemoveCard(cardId) {
+  if (!_deckBuilderState) return;
+  const idx = _deckBuilderState.cards.lastIndexOf(cardId);
+  if (idx >= 0) _deckBuilderState.cards.splice(idx, 1);
+  dbRenderPool();
+  dbRenderDeck();
+}
+
+async function dbSaveDeck() {
+  if (!_deckBuilderState) return;
+  const { championId, deckId, name, cards } = _deckBuilderState;
+  const saveBtn = document.getElementById('db-save-btn');
+  if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = 'SAVING…'; }
+
+  const result = await saveDeck({ id: deckId, name: name || 'Unnamed Deck', championId, cards });
+  if (!result.ok) {
+    alert('Save failed: ' + result.error);
+    if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = 'SAVE DECK'; }
+    return;
+  }
+  closeDeckBuilder();
 }
 
 // ── Init ─────────────────────────────────────────────────────────────
