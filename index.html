@@ -3223,6 +3223,11 @@ function enterMoveMode() {
       gameState._sorenSecondMove = false;
       hasMoved = true;
     }
+    // If a movement card was pending (already counted against budget), restore the budget
+    if (selectedCard && selectedCard._pendingMove) {
+      cardsPlayedThisTurn = Math.max(0, cardsPlayedThisTurn - 1);
+      hasPlayedCard = cardsPlayedThisTurn > 0;
+    }
     uiMode = 'idle';
     selectedCard = null;
     renderBoard();
