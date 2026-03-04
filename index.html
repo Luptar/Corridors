@@ -1441,6 +1441,97 @@
   }
   .db-cancel-btn:hover { border-color: var(--border-hi); color: var(--text); }
 
+  /* ── Victory rewards ────────────────────────────────────────────── */
+  .reward-banner {
+    margin-top: 16px; padding: 14px 20px;
+    border: 1px solid var(--amber-dim); background: rgba(212,144,58,0.06);
+    text-align: center; animation: rewardFadeIn 0.4s ease;
+  }
+  @keyframes rewardFadeIn {
+    from { opacity: 0; transform: translateY(8px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+  .reward-banner-label {
+    font-size: 9px; letter-spacing: .22em; color: var(--text-dim);
+    text-transform: uppercase; margin-bottom: 6px;
+  }
+  .reward-banner-value {
+    font-family: 'Teko', sans-serif; font-size: 32px; font-weight: 600;
+    letter-spacing: .1em; color: var(--amber);
+  }
+  .reward-shard-icon { color: var(--amber); }
+  .reward-banner-sub {
+    font-size: 9px; letter-spacing: .14em; color: var(--text-dim);
+    margin-top: 4px; text-transform: uppercase;
+  }
+
+  /* MP card reward section */
+  .mp-reward-section {
+    margin-top: 20px; padding-top: 16px;
+    border-top: 1px solid var(--border); text-align: center; width: 100%;
+  }
+  .mp-reward-cards {
+    display: flex; gap: 10px; justify-content: center;
+    flex-wrap: wrap; margin-top: 8px;
+  }
+  .reward-loading {
+    display: flex; align-items: center; gap: 8px;
+    color: var(--text-dim); font-size: 11px; letter-spacing: .12em;
+    padding: 12px 0;
+  }
+
+  /* Card flip animation */
+  .reward-card-flip {
+    width: 90px; height: 120px;
+    perspective: 600px;
+    animation: cardFlipIn 0.5s ease forwards;
+    animation-delay: var(--delay, 0s);
+    opacity: 0;
+  }
+  @keyframes cardFlipIn {
+    0%   { opacity: 1; transform: rotateY(180deg); }
+    100% { opacity: 1; transform: rotateY(0deg); }
+  }
+  .reward-card-inner {
+    width: 100%; height: 100%;
+    position: relative; transform-style: preserve-3d;
+    animation: cardReveal 0.5s ease forwards;
+  }
+  @keyframes cardReveal {
+    0%   { transform: rotateY(180deg); }
+    100% { transform: rotateY(0deg); }
+  }
+  .reward-card-back, .reward-card-front {
+    position: absolute; inset: 0;
+    backface-visibility: hidden;
+    border: 1px solid var(--border);
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    padding: 8px;
+  }
+  .reward-card-back {
+    background: var(--surface2);
+    background-image: repeating-linear-gradient(
+      45deg, var(--border), var(--border) 1px,
+      transparent 1px, transparent 8px
+    );
+    transform: rotateY(180deg);
+  }
+  .reward-card-front {
+    background: var(--surface); border-width: 1px;
+    flex-direction: column; gap: 4px; text-align: center;
+  }
+  .reward-card-faction {
+    font-size: 7px; letter-spacing: .14em; text-transform: uppercase;
+  }
+  .reward-card-name {
+    font-family: 'Teko', sans-serif; font-size: 15px; font-weight: 500;
+    letter-spacing: .06em; color: var(--text-bright); line-height: 1.1;
+  }
+  .reward-card-rarity {
+    font-size: 9px; letter-spacing: .08em; margin-top: 2px;
+  }
+
   /* ── SP Deck Picker modal ───────────────────────────────────────── */
   .dp-box {
     background: var(--surface); border: 1px solid var(--border-hi);
@@ -5684,6 +5775,26 @@ function showVictory(winner) {
 
   const victoryBox = overlay.querySelector('.victory-box') || overlay;
   victoryBox.insertAdjacentHTML('beforeend', summaryHTML);
+
+  // ── Issue shard reward if logged in and player won ──
+  if (winner !== AI_PLAYER && _userProfile) {
+    issueSPWinReward(aiDifficulty).then(amount => {
+      // Remove any previous reward banner
+      document.getElementById('sp-reward-banner')?.remove();
+      const rarityColor = { easy: 'var(--text-dim)', medium: 'var(--amber)', hard: 'var(--wall-arch)' };
+      const banner = document.createElement('div');
+      banner.id = 'sp-reward-banner';
+      banner.className = 'reward-banner';
+      banner.innerHTML = `
+        <div class="reward-banner-label">VICTORY REWARD</div>
+        <div class="reward-banner-value">
+          +${amount} <span class="reward-shard-icon">◆</span> SHARDS
+        </div>
+        <div class="reward-banner-sub">${aiDifficulty.toUpperCase()} difficulty bonus</div>
+      `;
+      victoryBox.appendChild(banner);
+    });
+  }
 }
 
 function statBox(label, value) {
@@ -6883,10 +6994,64 @@ function mpShowVictory(winner) {
   const subtitle = document.getElementById('victory-subtitle');
   const iWon = winner === mp_localSeat;
   const champName = gameState?.players[winner]?.champion?.name || '';
-  if (title) { title.textContent = iWon ? 'YOU WIN!' : (mp_opponentName || 'OPPONENT') + ' WINS'; title.style.color = iWon ? 'var(--p0)' : 'var(--p1)'; }
+  if (title) {
+    title.textContent = iWon ? 'YOU WIN!' : (mp_opponentName || 'OPPONENT') + ' WINS';
+    title.style.color = iWon ? 'var(--p0)' : 'var(--p1)';
+  }
   if (subtitle) subtitle.textContent = champName + ' reached the goal line — Turn ' + (gameState?.turnNumber || '?');
   const vt = document.getElementById('v-turns'); if (vt) vt.textContent = gameState?.turnNumber || '?';
   const vw = document.getElementById('v-walls'); if (vw) vw.textContent = (gameState?.walls?.filter(w => !w.isPhantom).length || 0);
+
+  // ── Issue and display card rewards if logged in ──
+  if (_userProfile) {
+    const victoryCard = overlay.querySelector('.victory-card') || overlay;
+    // Remove any stale reward section from a previous game
+    victoryCard.querySelector('.mp-reward-section')?.remove();
+
+    const placeholder = document.createElement('div');
+    placeholder.className = 'mp-reward-section';
+    placeholder.innerHTML = `
+      <div class="reward-banner-label" style="margin-bottom:8px;">
+        ${iWon ? 'VICTORY REWARDS' : 'CONSOLATION REWARD'}
+      </div>
+      <div class="mp-reward-cards" id="mp-reward-cards">
+        <div class="reward-loading">
+          <div class="auth-spinner"></div> Issuing rewards…
+        </div>
+      </div>
+    `;
+    victoryCard.appendChild(placeholder);
+
+    issueMatchRewards(iWon).then(cardIds => {
+      const container = document.getElementById('mp-reward-cards');
+      if (!container) return;
+      if (!cardIds.length) { container.innerHTML = '<div style="color:var(--text-dim);font-size:11px;">No rewards issued.</div>'; return; }
+
+      const factionColors = {
+        Basic:'var(--text-dim)', Architects:'var(--wall-arch)', Pathfinders:'var(--wall-path)',
+        Wardens:'var(--wall-ward)', Phantoms:'var(--wall-phan)', Adepts:'var(--wall-adept)',
+      };
+      const rarityColors = { Common:'#505a60', Uncommon:'#50a060', Rare:'#4a80d0', Legendary:'#c0a030' };
+
+      container.innerHTML = cardIds.map((id, i) => {
+        const card = CARDS[id];
+        if (!card) return '';
+        const col = factionColors[card.faction] || 'var(--text-dim)';
+        const rarCol = rarityColors[card.rarity] || '#505a60';
+        return `
+          <div class="reward-card-flip" style="animation-delay:${i * 0.18}s">
+            <div class="reward-card-inner">
+              <div class="reward-card-back"></div>
+              <div class="reward-card-front" style="border-color:${rarCol}">
+                <div class="reward-card-faction" style="color:${col}">${card.faction}</div>
+                <div class="reward-card-name">${card.name}</div>
+                <div class="reward-card-rarity" style="color:${rarCol}">◆ ${card.rarity}</div>
+              </div>
+            </div>
+          </div>`;
+      }).join('');
+    });
+  }
 }
 
 // Guard functions called from onclick
@@ -7063,15 +7228,16 @@ async function grantCards(cardIds) {
 }
 
 // ── Grant shards (SP win) ─────────────────────────────────────────────
-const SP_WIN_SHARDS = 15;
+const SP_WIN_SHARDS_BY_DIFFICULTY = { easy: 10, medium: 25, hard: 50 };
 async function grantShards(amount) {
   if (!_userProfile) return false;
   return saveUserProfile({ shards: (_userProfile.shards ?? 0) + amount });
 }
-async function issueSPWinReward() {
+async function issueSPWinReward(difficulty) {
   if (!_userProfile) return 0;
-  await grantShards(SP_WIN_SHARDS);
-  return SP_WIN_SHARDS;
+  const amount = SP_WIN_SHARDS_BY_DIFFICULTY[difficulty] ?? 25;
+  await grantShards(amount);
+  return amount;
 }
 
 // ── Disenchant & Craft ────────────────────────────────────────────────
@@ -7150,17 +7316,38 @@ async function deleteDeck(deckId) {
 }
 
 // ── Post-match card rewards (MP) ──────────────────────────────────────
+// Win:  2-3 cards, boosted rarity (Rare/Legendary more likely)
+// Loss: 1 card, capped at Uncommon
 function rollRewardCards(won) {
-  const pool = [];
-  for (const id of Object.keys(CARDS)) {
-    const r = CARDS[id]?.rarity;
-    const w = won
-      ? { Common: 50, Uncommon: 30, Rare: 15, Legendary: 5 }[r]  ?? 50
-      : { Common: 75, Uncommon: 20, Rare: 4,  Legendary: 1 }[r]  ?? 75;
-    for (let i = 0; i < w; i++) pool.push(id);
+  const allCards = Object.keys(CARDS);
+
+  if (!won) {
+    // Loss: 1 card, max rarity = Uncommon
+    const pool = allCards.filter(id => {
+      const r = CARDS[id]?.rarity;
+      return r === 'Common' || r === 'Uncommon';
+    });
+    const weights = { Common: 70, Uncommon: 30 };
+    const weightedPool = [];
+    for (const id of pool) {
+      const w = weights[CARDS[id]?.rarity] ?? 70;
+      for (let i = 0; i < w; i++) weightedPool.push(id);
+    }
+    const pick = weightedPool[Math.floor(Math.random() * weightedPool.length)];
+    return pick ? [pick] : [];
   }
-  const count = won ? (Math.random() < 0.5 ? 3 : 2) : 1;
-  return Array.from({ length: count }, () => pool[Math.floor(Math.random() * pool.length)]);
+
+  // Win: 2-3 cards, rarity boosted
+  const winWeights = { Common: 35, Uncommon: 35, Rare: 20, Legendary: 10 };
+  const winPool = [];
+  for (const id of allCards) {
+    const w = winWeights[CARDS[id]?.rarity] ?? 35;
+    for (let i = 0; i < w; i++) winPool.push(id);
+  }
+  const count = Math.random() < 0.5 ? 3 : 2;
+  return Array.from({ length: count }, () =>
+    winPool[Math.floor(Math.random() * winPool.length)]
+  );
 }
 
 async function issueMatchRewards(won) {
