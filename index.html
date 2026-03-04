@@ -1338,7 +1338,19 @@
   }
   .deck-new-btn:hover { border-color: var(--amber-dim); color: var(--amber); }
 
-  /* Deck Builder layout */
+  /* Starter Deck Viewer */
+  .sdv-card-row {
+    background: var(--surface2); border: 1px solid var(--border);
+    padding: 10px 12px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+  }
+  .sdv-card-left { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; }
+  .sdv-card-name { font-size: 12px; color: var(--text-bright); letter-spacing: .06em; font-family: 'JetBrains Mono', monospace; }
+  .sdv-count { font-size: 10px; color: var(--amber); letter-spacing: .08em; font-weight: 700; }
+  .sdv-card-right { display: flex; align-items: center; gap: 6px; }
+  .sdv-rarity { font-size: 9px; color: var(--text-dim); letter-spacing: .1em; text-transform: uppercase; }
+  .sdv-card-desc { width: 100%; font-size: 10px; color: var(--text-dim); line-height: 1.5; margin-top: 2px; }
+
+
   .db-layout {
     display: flex; flex: 1; overflow: hidden; gap: 0;
   }
@@ -7829,7 +7841,8 @@ function renderDecksTab(container) {
             <div class="deck-card-name">Starter Deck</div>
             <div class="deck-card-meta">Default · Always available</div>
             <div class="deck-card-actions">
-              <button class="deck-action-btn disabled" disabled>READ ONLY</button>
+              <button class="deck-action-btn" onclick="viewStarterDeck('${cid}')">VIEW</button>
+              <button class="deck-action-btn" onclick="useStarterAsTemplate('${cid}')">USE AS TEMPLATE</button>
             </div>
           </div>
           ${deckCards}
@@ -7847,8 +7860,117 @@ async function collDeleteDeck(deckId) {
   renderDecksTab(document.getElementById('coll-content'));
 }
 
+// ── STARTER DECK VIEWER ───────────────────────────────────────────────
+function viewStarterDeck(championId) {
+  const champ = CHAMPIONS[championId];
+  if (!champ) return;
+
+  const deckDefs = {
+    Architects:  ['BB','BB','BB','AR1','AR1','AR2','AR3','AR4','RC','RC'],
+    Pathfinders: ['BB','BB','BB','RC','RC','QS','QS','SW','SW','WS'],
+    Wardens:     ['BB','BB','RC','WD1','WD1','WD2','WD3','WD3','WD4','WD6'],
+    Phantoms:    ['BB','BB','BB','PH1','PH1','PH1','RC','PH2','PH2','PH4'],
+    Adepts:      ['AD1','AD1','AD2','AD2','AD3','AD4','BB','PF1','WD3','PH1'],
+  };
+  const ids = deckDefs[champ.faction] || [];
+
+  // Deduplicate for display: group by card id with count
+  const counts = {};
+  ids.forEach(id => { counts[id] = (counts[id] || 0) + 1; });
+
+  const factionColors = {
+    Architects:'var(--wall-arch)', Pathfinders:'var(--wall-path)',
+    Wardens:'var(--wall-ward)', Phantoms:'var(--wall-phan)', Adepts:'var(--wall-adept)',
+  };
+  const col = factionColors[champ.faction] || 'var(--text-dim)';
+
+  const cardRows = Object.entries(counts).map(([id, count]) => {
+    const card = CARDS[id];
+    if (!card) return '';
+    return `
+      <div class="sdv-card-row">
+        <div class="sdv-card-left">
+          <span class="rarity-dot rarity-${card.rarity}"></span>
+          <span class="sdv-card-name">${card.name}</span>
+          ${count > 1 ? `<span class="sdv-count">×${count}</span>` : ''}
+        </div>
+        <div class="sdv-card-right">
+          <span class="card-type-badge type-${card.type}">${card.type}</span>
+          <span class="sdv-rarity">${card.rarity}</span>
+        </div>
+        <div class="sdv-card-desc">${card.desc}</div>
+      </div>`;
+  }).join('');
+
+  document.getElementById('starter-deck-viewer')?.remove();
+  const overlay = document.createElement('div');
+  overlay.id = 'starter-deck-viewer';
+  overlay.style.cssText = `
+    position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:200;
+    display:flex;align-items:center;justify-content:center;
+  `;
+  overlay.innerHTML = `
+    <div style="
+      background:var(--surface);border:1px solid ${col};
+      width:min(520px,94vw);max-height:85vh;display:flex;flex-direction:column;
+      overflow:hidden;
+    ">
+      <div style="
+        padding:16px 20px;border-bottom:1px solid var(--border);
+        display:flex;align-items:center;justify-content:space-between;
+      ">
+        <div>
+          <div style="font-family:'Teko',sans-serif;font-size:22px;letter-spacing:.15em;color:${col}">
+            ${champ.name.toUpperCase()} · STARTER DECK
+          </div>
+          <div style="font-size:10px;color:var(--text-dim);letter-spacing:.12em;margin-top:2px;">
+            ${champ.faction} · ${ids.length} cards · Read only
+          </div>
+        </div>
+        <button onclick="document.getElementById('starter-deck-viewer').remove()" style="
+          background:transparent;border:1px solid var(--border);color:var(--text-dim);
+          font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.1em;
+          padding:6px 12px;cursor:pointer;
+        ">✕ CLOSE</button>
+      </div>
+      <div style="overflow-y:auto;padding:16px 20px;flex:1;">
+        <div style="display:flex;flex-direction:column;gap:8px;">
+          ${cardRows}
+        </div>
+      </div>
+      <div style="padding:12px 20px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end;">
+        <button onclick="document.getElementById('starter-deck-viewer').remove();useStarterAsTemplate('${championId}')" style="
+          background:transparent;border:1px solid ${col};color:${col};
+          font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.12em;
+          padding:8px 16px;cursor:pointer;
+        ">USE AS TEMPLATE →</button>
+      </div>
+    </div>
+  `;
+  overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+  document.body.appendChild(overlay);
+}
+
+function useStarterAsTemplate(championId) {
+  const champ = CHAMPIONS[championId];
+  if (!champ) return;
+
+  const deckDefs = {
+    Architects:  ['BB','BB','BB','AR1','AR1','AR2','AR3','AR4','RC','RC'],
+    Pathfinders: ['BB','BB','BB','RC','RC','QS','QS','SW','SW','WS'],
+    Wardens:     ['BB','BB','RC','WD1','WD1','WD2','WD3','WD3','WD4','WD6'],
+    Phantoms:    ['BB','BB','BB','PH1','PH1','PH1','RC','PH2','PH2','PH4'],
+    Adepts:      ['AD1','AD1','AD2','AD2','AD3','AD4','BB','PF1','WD3','PH1'],
+  };
+  const ids = deckDefs[champ.faction] || [];
+
+  // Pre-populate the deck builder with the starter deck cards
+  document.getElementById('starter-deck-viewer')?.remove();
+  openDeckBuilder(championId, null, ids);
+}
+
 // ── DECK BUILDER ──────────────────────────────────────────────────────
-function openDeckBuilder(championId, existingDeckId = null) {
+function openDeckBuilder(championId, existingDeckId = null, templateCards = null) {
   const champ = CHAMPIONS[championId];
   if (!champ) return;
 
@@ -7859,8 +7981,8 @@ function openDeckBuilder(championId, existingDeckId = null) {
   _deckBuilderState = {
     championId,
     deckId: existingDeckId || null,
-    name:   existing?.name || '',
-    cards:  existing?.cards ? [...existing.cards] : [],
+    name:   existing?.name || (templateCards ? `${champ.name} Custom` : ''),
+    cards:  existing?.cards ? [...existing.cards] : (templateCards ? [...templateCards] : []),
   };
 
   document.getElementById('deck-builder-overlay')?.remove();
