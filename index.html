@@ -5308,428 +5308,6 @@ function updateDebug() {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// CORRIDORS — AUTH, PROFILE & COLLECTION MODULE
-// Branch: feature/collection-deckbuilder
-// ═══════════════════════════════════════════════════════════════════
-
-// ── Auth state ───────────────────────────────────────────────────────
-let _authUser    = null;   // Supabase auth.user object
-let _userProfile = null;   // user_profiles row (shards, collection, decks)
-
-// Supabase requires email — we synthesize one internally, never shown to user
-function authEmailFromUsername(username) {
-  const clean = username.toLowerCase().replace(/[^a-z0-9_-]/g, '');
-  return `${clean}@corridors.game`;
-}
-
-// ── Register ─────────────────────────────────────────────────────────
-async function authRegister(username, password) {
-  const sb = mpInit();
-  if (!sb) throw new Error('Supabase not configured');
-  const trimmed = username.trim();
-  if (trimmed.length < 3 || trimmed.length > 20)
-    throw new Error('Username must be 3–20 characters');
-  if (!/^[a-zA-Z0-9_-]+$/.test(trimmed))
-    throw new Error('Username may only contain letters, numbers, _ and -');
-  if (password.length < 6)
-    throw new Error('Password must be at least 6 characters');
-
-  const { data: existing } = await sb
-    .from('user_profiles').select('id').eq('username', trimmed).maybeSingle();
-  if (existing) throw new Error('Username already taken');
-
-  const email = authEmailFromUsername(trimmed);
-  const { data, error } = await sb.auth.signUp({ email, password });
-  if (error) throw new Error(error.message);
-
-  const userId = data.user?.id;
-  if (!userId) throw new Error('Registration failed — no user ID returned');
-
-  const { error: profileError } = await sb.from('user_profiles').insert({
-    id: userId, username: trimmed, shards: 0, collection: {}, decks: [],
-  });
-  if (profileError) throw new Error('Profile creation failed: ' + profileError.message);
-
-  _authUser    = data.user;
-  _userProfile = { id: userId, username: trimmed, shards: 0, collection: {}, decks: [] };
-  _userName    = trimmed;
-  localStorage.setItem('corridors:userName', trimmed);
-  return _userProfile;
-}
-
-// ── Login ─────────────────────────────────────────────────────────────
-async function authLogin(username, password) {
-  const sb = mpInit();
-  if (!sb) throw new Error('Supabase not configured');
-  const trimmed = username.trim();
-  const email   = authEmailFromUsername(trimmed);
-  const { data, error } = await sb.auth.signInWithPassword({ email, password });
-  if (error) throw new Error('Invalid username or password');
-  _authUser = data.user;
-  await loadUserProfile();
-  _userName = _userProfile?.username || trimmed;
-  localStorage.setItem('corridors:userName', _userName);
-  return _userProfile;
-}
-
-// ── Logout ────────────────────────────────────────────────────────────
-async function authLogout() {
-  const sb = mpInit();
-  if (sb) await sb.auth.signOut();
-  _authUser    = null;
-  _userProfile = null;
-  _userName    = null;
-  localStorage.removeItem('corridors:userName');
-  showAuthScreen();
-}
-
-// ── Restore session on page load ─────────────────────────────────────
-async function authRestoreSession() {
-  const sb = mpInit();
-  if (!sb) return false;
-  const { data } = await sb.auth.getSession();
-  if (!data?.session?.user) return false;
-  _authUser = data.session.user;
-  await loadUserProfile();
-  _userName = _userProfile?.username || '';
-  localStorage.setItem('corridors:userName', _userName);
-  return true;
-}
-
-// ── Profile load / save ───────────────────────────────────────────────
-async function loadUserProfile() {
-  const sb = mpInit();
-  if (!sb || !_authUser) return null;
-  const { data, error } = await sb
-    .from('user_profiles').select('*').eq('id', _authUser.id).single();
-  if (error) { console.error('[Profile] load error:', error); return null; }
-  _userProfile = data;
-  return data;
-}
-
-async function saveUserProfile(updates) {
-  const sb = mpInit();
-  if (!sb || !_authUser) return false;
-  const { error } = await sb
-    .from('user_profiles')
-    .update({ ...updates, updated_at: new Date().toISOString() })
-    .eq('id', _authUser.id);
-  if (error) { console.error('[Profile] save error:', error); return false; }
-  _userProfile = { ..._userProfile, ...updates };
-  return true;
-}
-
-// ── Rarity limits & helpers ───────────────────────────────────────────
-const RARITY_COPY_LIMITS = { Common: 4, Uncommon: 3, Rare: 2, Legendary: 1 };
-function getCardCopyLimit(cardId) {
-  return RARITY_COPY_LIMITS[CARDS[cardId]?.rarity] ?? 4;
-}
-function getOwnedCount(cardId) {
-  return _userProfile?.collection?.[cardId] ?? 0;
-}
-
-// ── Grant cards (MP post-match) ───────────────────────────────────────
-async function grantCards(cardIds) {
-  if (!_userProfile) return false;
-  const updated = { ..._userProfile.collection };
-  for (const id of cardIds) {
-    if (!CARDS[id]) continue;
-    updated[id] = (updated[id] ?? 0) + 1;
-  }
-  return saveUserProfile({ collection: updated });
-}
-
-// ── Grant shards (SP win) ─────────────────────────────────────────────
-const SP_WIN_SHARDS = 15;
-async function grantShards(amount) {
-  if (!_userProfile) return false;
-  return saveUserProfile({ shards: (_userProfile.shards ?? 0) + amount });
-}
-async function issueSPWinReward() {
-  if (!_userProfile) return 0;
-  await grantShards(SP_WIN_SHARDS);
-  return SP_WIN_SHARDS;
-}
-
-// ── Disenchant & Craft ────────────────────────────────────────────────
-const DISENCHANT_VALUE = { Common: 5, Uncommon: 10, Rare: 25, Legendary: 75 };
-const CRAFT_COST       = { Common: 20, Uncommon: 50, Rare: 120, Legendary: 400 };
-
-async function disenchantCard(cardId) {
-  if (!_userProfile) return { ok: false, error: 'Not logged in' };
-  const owned = getOwnedCount(cardId);
-  if (owned < 1) return { ok: false, error: 'No copies owned' };
-  const shards = DISENCHANT_VALUE[CARDS[cardId]?.rarity] ?? 5;
-  const updatedCol = { ..._userProfile.collection };
-  updatedCol[cardId] = owned - 1;
-  if (updatedCol[cardId] === 0) delete updatedCol[cardId];
-  const ok = await saveUserProfile({ collection: updatedCol, shards: (_userProfile.shards ?? 0) + shards });
-  return ok ? { ok: true, shardsGained: shards } : { ok: false, error: 'Save failed' };
-}
-
-async function craftCard(cardId) {
-  if (!_userProfile) return { ok: false, error: 'Not logged in' };
-  const card = CARDS[cardId];
-  if (!card) return { ok: false, error: 'Unknown card' };
-  const cost = CRAFT_COST[card.rarity] ?? 20;
-  if ((_userProfile.shards ?? 0) < cost)
-    return { ok: false, error: `Not enough shards (need ${cost})` };
-  const updatedCol = { ..._userProfile.collection };
-  updatedCol[cardId] = (updatedCol[cardId] ?? 0) + 1;
-  const ok = await saveUserProfile({ collection: updatedCol, shards: _userProfile.shards - cost });
-  return ok ? { ok: true, costPaid: cost } : { ok: false, error: 'Save failed' };
-}
-
-// ── Deck validation ───────────────────────────────────────────────────
-function validateDeck(championId, cardIds) {
-  const errors  = [];
-  const champion = CHAMPIONS[championId];
-  if (!champion) return { valid: false, errors: ['Unknown champion'] };
-  if (cardIds.length !== 10)
-    errors.push(`Deck must be exactly 10 cards (currently ${cardIds.length})`);
-  if (champion.faction !== 'Adepts') {
-    const bad = cardIds.filter(id => {
-      const c = CARDS[id];
-      return c && c.faction !== 'Basic' && c.faction !== champion.faction;
-    });
-    if (bad.length)
-      errors.push(`Faction violation: only ${champion.faction} + Basic cards allowed`);
-  }
-  const counts = {};
-  for (const id of cardIds) counts[id] = (counts[id] ?? 0) + 1;
-  for (const [id, n] of Object.entries(counts)) {
-    const limit = getCardCopyLimit(id);
-    if (n > limit)
-      errors.push(`Too many copies of ${CARDS[id]?.name || id} (${n}/${limit} max)`);
-  }
-  const unknown = cardIds.filter(id => !CARDS[id]);
-  if (unknown.length) errors.push(`Unknown cards: ${unknown.join(', ')}`);
-  return { valid: errors.length === 0, errors };
-}
-
-// ── Save / delete custom deck ─────────────────────────────────────────
-async function saveDeck(deck) {
-  if (!_userProfile) return { ok: false, error: 'Not logged in' };
-  const { valid, errors } = validateDeck(deck.championId, deck.cards);
-  if (!valid) return { ok: false, error: errors[0] };
-  const decks  = [...(_userProfile.decks ?? [])];
-  const deckId = deck.id || ('deck_' + Date.now().toString(36));
-  const idx    = decks.findIndex(d => d.id === deckId);
-  const entry  = { id: deckId, name: deck.name?.trim() || 'Unnamed Deck', championId: deck.championId, cards: deck.cards };
-  if (idx >= 0) decks[idx] = entry; else decks.push(entry);
-  const ok = await saveUserProfile({ decks });
-  return ok ? { ok: true, deckId } : { ok: false, error: 'Save failed' };
-}
-
-async function deleteDeck(deckId) {
-  if (!_userProfile) return false;
-  return saveUserProfile({ decks: (_userProfile.decks ?? []).filter(d => d.id !== deckId) });
-}
-
-// ── Post-match card rewards (MP) ──────────────────────────────────────
-function rollRewardCards(won) {
-  const pool = [];
-  for (const id of Object.keys(CARDS)) {
-    const r = CARDS[id]?.rarity;
-    const w = won
-      ? { Common: 50, Uncommon: 30, Rare: 15, Legendary: 5 }[r]  ?? 50
-      : { Common: 75, Uncommon: 20, Rare: 4,  Legendary: 1 }[r]  ?? 75;
-    for (let i = 0; i < w; i++) pool.push(id);
-  }
-  const count = won ? (Math.random() < 0.5 ? 3 : 2) : 1;
-  return Array.from({ length: count }, () => pool[Math.floor(Math.random() * pool.length)]);
-}
-
-async function issueMatchRewards(won) {
-  if (!_userProfile) return [];
-  const cards = rollRewardCards(won);
-  await grantCards(cards);
-  return cards;
-}
-
-// ── Deck builder helper ───────────────────────────────────────────────
-function buildDeckForGame(championId, savedDeckCards) {
-  if (savedDeckCards?.length === 10) {
-    return shuffle(savedDeckCards.map(id => ({ ...CARDS[id] })).filter(Boolean));
-  }
-  return buildStarterDeck(CHAMPIONS[championId]?.faction);
-}
-
-// ════════════════════════════════════════════════════════════════════
-// ── AUTH SCREEN ───────────────────────────────────────────────────────
-// ════════════════════════════════════════════════════════════════════
-
-function showAuthScreen(defaultTab = 'login') {
-  ['landing-overlay','mp-overlay','auth-overlay'].forEach(id => {
-    document.getElementById(id)?.remove();
-  });
-
-  const overlay = document.createElement('div');
-  overlay.id = 'auth-overlay';
-  overlay.className = 'auth-overlay';
-  overlay.innerHTML = `
-    <div class="auth-container">
-      <div class="auth-logo">CORR<span>.</span>IDORS</div>
-      <div class="auth-tagline">Deckbuilding · Champions · Strategy</div>
-      <div class="auth-tabs">
-        <button class="auth-tab ${defaultTab==='login'?'active':''}"
-                onclick="authSwitchTab('login')">SIGN IN</button>
-        <button class="auth-tab ${defaultTab==='register'?'active':''}"
-                onclick="authSwitchTab('register')">REGISTER</button>
-      </div>
-      <div id="auth-panel"></div>
-      <div id="auth-error" class="auth-error" style="display:none;"></div>
-      <div id="auth-loading" class="auth-loading" style="display:none;">
-        <div class="auth-spinner"></div><span>Authenticating…</span>
-      </div>
-    </div>
-  `;
-  document.body.appendChild(overlay);
-  authSwitchTab(defaultTab);
-}
-
-function authSwitchTab(tab) {
-  document.querySelectorAll('.auth-tab').forEach(b => {
-    b.classList.toggle('active',
-      (tab === 'login' && b.textContent.trim() === 'SIGN IN') ||
-      (tab === 'register' && b.textContent.trim() === 'REGISTER'));
-  });
-  document.getElementById('auth-error').style.display = 'none';
-  const panel = document.getElementById('auth-panel');
-  if (!panel) return;
-  if (tab === 'login') {
-    panel.innerHTML = `
-      <div class="auth-field">
-        <label class="auth-label">USERNAME</label>
-        <input id="auth-username" class="auth-input" type="text"
-               placeholder="your_handle" autocomplete="username"
-               onkeydown="if(event.key==='Enter') authSubmitLogin()">
-      </div>
-      <div class="auth-field">
-        <label class="auth-label">PASSWORD</label>
-        <input id="auth-password" class="auth-input" type="password"
-               placeholder="••••••••" autocomplete="current-password"
-               onkeydown="if(event.key==='Enter') authSubmitLogin()">
-      </div>
-      <button class="auth-submit" onclick="authSubmitLogin()">ENTER THE CORRIDORS</button>
-    `;
-  } else {
-    panel.innerHTML = `
-      <div class="auth-field">
-        <label class="auth-label">CHOOSE A USERNAME</label>
-        <input id="auth-username" class="auth-input" type="text"
-               placeholder="your_handle" maxlength="20" autocomplete="username"
-               onkeydown="if(event.key==='Enter') document.getElementById('auth-password').focus()">
-        <div class="auth-hint">3–20 chars · letters, numbers, _ and - only</div>
-      </div>
-      <div class="auth-field">
-        <label class="auth-label">PASSWORD</label>
-        <input id="auth-password" class="auth-input" type="password"
-               placeholder="Min 6 characters" autocomplete="new-password"
-               onkeydown="if(event.key==='Enter') authSubmitRegister()">
-      </div>
-      <button class="auth-submit" onclick="authSubmitRegister()">CREATE ACCOUNT</button>
-    `;
-  }
-  setTimeout(() => document.getElementById('auth-username')?.focus(), 50);
-}
-
-function authShowError(msg) {
-  const el = document.getElementById('auth-error');
-  if (!el) return;
-  el.textContent = msg;
-  el.style.display = 'block';
-}
-
-function authSetLoading(on) {
-  const loading = document.getElementById('auth-loading');
-  const panel   = document.getElementById('auth-panel');
-  if (loading) loading.style.display = on ? 'flex' : 'none';
-  if (panel)   { panel.style.opacity = on ? '0.4' : '1'; panel.style.pointerEvents = on ? 'none' : ''; }
-}
-
-async function authSubmitLogin() {
-  const username = document.getElementById('auth-username')?.value?.trim();
-  const password = document.getElementById('auth-password')?.value;
-  if (!username || !password) { authShowError('Please fill in all fields.'); return; }
-  authSetLoading(true);
-  document.getElementById('auth-error').style.display = 'none';
-  try {
-    await authLogin(username, password);
-    document.getElementById('auth-overlay')?.remove();
-    showLandingScreen();
-  } catch(e) {
-    authShowError(e.message);
-  } finally {
-    authSetLoading(false);
-  }
-}
-
-async function authSubmitRegister() {
-  const username = document.getElementById('auth-username')?.value?.trim();
-  const password = document.getElementById('auth-password')?.value;
-  if (!username || !password) { authShowError('Please fill in all fields.'); return; }
-  authSetLoading(true);
-  document.getElementById('auth-error').style.display = 'none';
-  try {
-    await authRegister(username, password);
-    document.getElementById('auth-overlay')?.remove();
-    showLandingScreen();
-  } catch(e) {
-    authShowError(e.message);
-  } finally {
-    authSetLoading(false);
-  }
-}
-
-// ── Collection screen stub (full UI in next phase) ────────────────────
-function showCollectionScreen() {
-  ['landing-overlay','auth-overlay'].forEach(id => document.getElementById(id)?.remove());
-  const overlay = document.createElement('div');
-  overlay.id = 'collection-overlay';
-  overlay.style.cssText = `
-    position:fixed;inset:0;background:var(--bg);
-    display:flex;flex-direction:column;align-items:center;justify-content:center;
-    z-index:100;gap:20px;
-  `;
-  overlay.innerHTML = `
-    <div style="font-family:'Teko',sans-serif;font-size:36px;letter-spacing:.3em;color:var(--amber);">
-      COLLECTION &amp; DECKS
-    </div>
-    <div style="color:var(--text-dim);font-size:11px;letter-spacing:.15em;">
-      Coming in next implementation phase
-    </div>
-    <button onclick="document.getElementById('collection-overlay').remove();showLandingScreen();"
-            class="landing-btn muted" style="width:220px;">
-      ← BACK
-    </button>
-  `;
-  document.body.appendChild(overlay);
-}
-
-// ── Init ─────────────────────────────────────────────────────────────
-document.addEventListener('DOMContentLoaded', async () => {
-  const urlParams  = new URLSearchParams(window.location.search);
-  const inviteCode = urlParams.get('join');
-  if (inviteCode) {
-    window.history.replaceState({}, '', window.location.pathname);
-  }
-
-  const restored = await authRestoreSession();
-
-  if (restored) {
-    if (inviteCode) {
-      showMultiplayerLobby('join', inviteCode);
-    } else {
-      showLandingScreen();
-    }
-  } else {
-    if (inviteCode) mp_pendingJoin = inviteCode;
-    showAuthScreen('login');
-  }
-});
-
-// ═══════════════════════════════════════════════════════════════════
 // CORRIDORS — ASYNC MULTIPLAYER MODULE
 // ─────────────────────────────────────────────────────────────────
 // Architecture:
@@ -6805,6 +6383,428 @@ function mpGuardedEnterMoveMode() {
 }
 
 // Monkey-patching removed — all functions are now natively mode-aware via gameMode checks.
+
+// ═══════════════════════════════════════════════════════════════════
+// CORRIDORS — AUTH, PROFILE & COLLECTION MODULE
+// Branch: feature/collection-deckbuilder
+// ═══════════════════════════════════════════════════════════════════
+
+// ── Auth state ───────────────────────────────────────────────────────
+let _authUser    = null;   // Supabase auth.user object
+let _userProfile = null;   // user_profiles row (shards, collection, decks)
+
+// Supabase requires email — we synthesize one internally, never shown to user
+function authEmailFromUsername(username) {
+  const clean = username.toLowerCase().replace(/[^a-z0-9_-]/g, '');
+  return `${clean}@corridors.game`;
+}
+
+// ── Register ─────────────────────────────────────────────────────────
+async function authRegister(username, password) {
+  const sb = mpInit();
+  if (!sb) throw new Error('Supabase not configured');
+  const trimmed = username.trim();
+  if (trimmed.length < 3 || trimmed.length > 20)
+    throw new Error('Username must be 3–20 characters');
+  if (!/^[a-zA-Z0-9_-]+$/.test(trimmed))
+    throw new Error('Username may only contain letters, numbers, _ and -');
+  if (password.length < 6)
+    throw new Error('Password must be at least 6 characters');
+
+  const { data: existing } = await sb
+    .from('user_profiles').select('id').eq('username', trimmed).maybeSingle();
+  if (existing) throw new Error('Username already taken');
+
+  const email = authEmailFromUsername(trimmed);
+  const { data, error } = await sb.auth.signUp({ email, password });
+  if (error) throw new Error(error.message);
+
+  const userId = data.user?.id;
+  if (!userId) throw new Error('Registration failed — no user ID returned');
+
+  const { error: profileError } = await sb.from('user_profiles').insert({
+    id: userId, username: trimmed, shards: 0, collection: {}, decks: [],
+  });
+  if (profileError) throw new Error('Profile creation failed: ' + profileError.message);
+
+  _authUser    = data.user;
+  _userProfile = { id: userId, username: trimmed, shards: 0, collection: {}, decks: [] };
+  _userName    = trimmed;
+  localStorage.setItem('corridors:userName', trimmed);
+  return _userProfile;
+}
+
+// ── Login ─────────────────────────────────────────────────────────────
+async function authLogin(username, password) {
+  const sb = mpInit();
+  if (!sb) throw new Error('Supabase not configured');
+  const trimmed = username.trim();
+  const email   = authEmailFromUsername(trimmed);
+  const { data, error } = await sb.auth.signInWithPassword({ email, password });
+  if (error) throw new Error('Invalid username or password');
+  _authUser = data.user;
+  await loadUserProfile();
+  _userName = _userProfile?.username || trimmed;
+  localStorage.setItem('corridors:userName', _userName);
+  return _userProfile;
+}
+
+// ── Logout ────────────────────────────────────────────────────────────
+async function authLogout() {
+  const sb = mpInit();
+  if (sb) await sb.auth.signOut();
+  _authUser    = null;
+  _userProfile = null;
+  _userName    = null;
+  localStorage.removeItem('corridors:userName');
+  showAuthScreen();
+}
+
+// ── Restore session on page load ─────────────────────────────────────
+async function authRestoreSession() {
+  const sb = mpInit();
+  if (!sb) return false;
+  const { data } = await sb.auth.getSession();
+  if (!data?.session?.user) return false;
+  _authUser = data.session.user;
+  await loadUserProfile();
+  _userName = _userProfile?.username || '';
+  localStorage.setItem('corridors:userName', _userName);
+  return true;
+}
+
+// ── Profile load / save ───────────────────────────────────────────────
+async function loadUserProfile() {
+  const sb = mpInit();
+  if (!sb || !_authUser) return null;
+  const { data, error } = await sb
+    .from('user_profiles').select('*').eq('id', _authUser.id).single();
+  if (error) { console.error('[Profile] load error:', error); return null; }
+  _userProfile = data;
+  return data;
+}
+
+async function saveUserProfile(updates) {
+  const sb = mpInit();
+  if (!sb || !_authUser) return false;
+  const { error } = await sb
+    .from('user_profiles')
+    .update({ ...updates, updated_at: new Date().toISOString() })
+    .eq('id', _authUser.id);
+  if (error) { console.error('[Profile] save error:', error); return false; }
+  _userProfile = { ..._userProfile, ...updates };
+  return true;
+}
+
+// ── Rarity limits & helpers ───────────────────────────────────────────
+const RARITY_COPY_LIMITS = { Common: 4, Uncommon: 3, Rare: 2, Legendary: 1 };
+function getCardCopyLimit(cardId) {
+  return RARITY_COPY_LIMITS[CARDS[cardId]?.rarity] ?? 4;
+}
+function getOwnedCount(cardId) {
+  return _userProfile?.collection?.[cardId] ?? 0;
+}
+
+// ── Grant cards (MP post-match) ───────────────────────────────────────
+async function grantCards(cardIds) {
+  if (!_userProfile) return false;
+  const updated = { ..._userProfile.collection };
+  for (const id of cardIds) {
+    if (!CARDS[id]) continue;
+    updated[id] = (updated[id] ?? 0) + 1;
+  }
+  return saveUserProfile({ collection: updated });
+}
+
+// ── Grant shards (SP win) ─────────────────────────────────────────────
+const SP_WIN_SHARDS = 15;
+async function grantShards(amount) {
+  if (!_userProfile) return false;
+  return saveUserProfile({ shards: (_userProfile.shards ?? 0) + amount });
+}
+async function issueSPWinReward() {
+  if (!_userProfile) return 0;
+  await grantShards(SP_WIN_SHARDS);
+  return SP_WIN_SHARDS;
+}
+
+// ── Disenchant & Craft ────────────────────────────────────────────────
+const DISENCHANT_VALUE = { Common: 5, Uncommon: 10, Rare: 25, Legendary: 75 };
+const CRAFT_COST       = { Common: 20, Uncommon: 50, Rare: 120, Legendary: 400 };
+
+async function disenchantCard(cardId) {
+  if (!_userProfile) return { ok: false, error: 'Not logged in' };
+  const owned = getOwnedCount(cardId);
+  if (owned < 1) return { ok: false, error: 'No copies owned' };
+  const shards = DISENCHANT_VALUE[CARDS[cardId]?.rarity] ?? 5;
+  const updatedCol = { ..._userProfile.collection };
+  updatedCol[cardId] = owned - 1;
+  if (updatedCol[cardId] === 0) delete updatedCol[cardId];
+  const ok = await saveUserProfile({ collection: updatedCol, shards: (_userProfile.shards ?? 0) + shards });
+  return ok ? { ok: true, shardsGained: shards } : { ok: false, error: 'Save failed' };
+}
+
+async function craftCard(cardId) {
+  if (!_userProfile) return { ok: false, error: 'Not logged in' };
+  const card = CARDS[cardId];
+  if (!card) return { ok: false, error: 'Unknown card' };
+  const cost = CRAFT_COST[card.rarity] ?? 20;
+  if ((_userProfile.shards ?? 0) < cost)
+    return { ok: false, error: `Not enough shards (need ${cost})` };
+  const updatedCol = { ..._userProfile.collection };
+  updatedCol[cardId] = (updatedCol[cardId] ?? 0) + 1;
+  const ok = await saveUserProfile({ collection: updatedCol, shards: _userProfile.shards - cost });
+  return ok ? { ok: true, costPaid: cost } : { ok: false, error: 'Save failed' };
+}
+
+// ── Deck validation ───────────────────────────────────────────────────
+function validateDeck(championId, cardIds) {
+  const errors  = [];
+  const champion = CHAMPIONS[championId];
+  if (!champion) return { valid: false, errors: ['Unknown champion'] };
+  if (cardIds.length !== 10)
+    errors.push(`Deck must be exactly 10 cards (currently ${cardIds.length})`);
+  if (champion.faction !== 'Adepts') {
+    const bad = cardIds.filter(id => {
+      const c = CARDS[id];
+      return c && c.faction !== 'Basic' && c.faction !== champion.faction;
+    });
+    if (bad.length)
+      errors.push(`Faction violation: only ${champion.faction} + Basic cards allowed`);
+  }
+  const counts = {};
+  for (const id of cardIds) counts[id] = (counts[id] ?? 0) + 1;
+  for (const [id, n] of Object.entries(counts)) {
+    const limit = getCardCopyLimit(id);
+    if (n > limit)
+      errors.push(`Too many copies of ${CARDS[id]?.name || id} (${n}/${limit} max)`);
+  }
+  const unknown = cardIds.filter(id => !CARDS[id]);
+  if (unknown.length) errors.push(`Unknown cards: ${unknown.join(', ')}`);
+  return { valid: errors.length === 0, errors };
+}
+
+// ── Save / delete custom deck ─────────────────────────────────────────
+async function saveDeck(deck) {
+  if (!_userProfile) return { ok: false, error: 'Not logged in' };
+  const { valid, errors } = validateDeck(deck.championId, deck.cards);
+  if (!valid) return { ok: false, error: errors[0] };
+  const decks  = [...(_userProfile.decks ?? [])];
+  const deckId = deck.id || ('deck_' + Date.now().toString(36));
+  const idx    = decks.findIndex(d => d.id === deckId);
+  const entry  = { id: deckId, name: deck.name?.trim() || 'Unnamed Deck', championId: deck.championId, cards: deck.cards };
+  if (idx >= 0) decks[idx] = entry; else decks.push(entry);
+  const ok = await saveUserProfile({ decks });
+  return ok ? { ok: true, deckId } : { ok: false, error: 'Save failed' };
+}
+
+async function deleteDeck(deckId) {
+  if (!_userProfile) return false;
+  return saveUserProfile({ decks: (_userProfile.decks ?? []).filter(d => d.id !== deckId) });
+}
+
+// ── Post-match card rewards (MP) ──────────────────────────────────────
+function rollRewardCards(won) {
+  const pool = [];
+  for (const id of Object.keys(CARDS)) {
+    const r = CARDS[id]?.rarity;
+    const w = won
+      ? { Common: 50, Uncommon: 30, Rare: 15, Legendary: 5 }[r]  ?? 50
+      : { Common: 75, Uncommon: 20, Rare: 4,  Legendary: 1 }[r]  ?? 75;
+    for (let i = 0; i < w; i++) pool.push(id);
+  }
+  const count = won ? (Math.random() < 0.5 ? 3 : 2) : 1;
+  return Array.from({ length: count }, () => pool[Math.floor(Math.random() * pool.length)]);
+}
+
+async function issueMatchRewards(won) {
+  if (!_userProfile) return [];
+  const cards = rollRewardCards(won);
+  await grantCards(cards);
+  return cards;
+}
+
+// ── Deck builder helper ───────────────────────────────────────────────
+function buildDeckForGame(championId, savedDeckCards) {
+  if (savedDeckCards?.length === 10) {
+    return shuffle(savedDeckCards.map(id => ({ ...CARDS[id] })).filter(Boolean));
+  }
+  return buildStarterDeck(CHAMPIONS[championId]?.faction);
+}
+
+// ════════════════════════════════════════════════════════════════════
+// ── AUTH SCREEN ───────────────────────────────────────────────────────
+// ════════════════════════════════════════════════════════════════════
+
+function showAuthScreen(defaultTab = 'login') {
+  ['landing-overlay','mp-overlay','auth-overlay'].forEach(id => {
+    document.getElementById(id)?.remove();
+  });
+
+  const overlay = document.createElement('div');
+  overlay.id = 'auth-overlay';
+  overlay.className = 'auth-overlay';
+  overlay.innerHTML = `
+    <div class="auth-container">
+      <div class="auth-logo">CORR<span>.</span>IDORS</div>
+      <div class="auth-tagline">Deckbuilding · Champions · Strategy</div>
+      <div class="auth-tabs">
+        <button class="auth-tab ${defaultTab==='login'?'active':''}"
+                onclick="authSwitchTab('login')">SIGN IN</button>
+        <button class="auth-tab ${defaultTab==='register'?'active':''}"
+                onclick="authSwitchTab('register')">REGISTER</button>
+      </div>
+      <div id="auth-panel"></div>
+      <div id="auth-error" class="auth-error" style="display:none;"></div>
+      <div id="auth-loading" class="auth-loading" style="display:none;">
+        <div class="auth-spinner"></div><span>Authenticating…</span>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+  authSwitchTab(defaultTab);
+}
+
+function authSwitchTab(tab) {
+  document.querySelectorAll('.auth-tab').forEach(b => {
+    b.classList.toggle('active',
+      (tab === 'login' && b.textContent.trim() === 'SIGN IN') ||
+      (tab === 'register' && b.textContent.trim() === 'REGISTER'));
+  });
+  document.getElementById('auth-error').style.display = 'none';
+  const panel = document.getElementById('auth-panel');
+  if (!panel) return;
+  if (tab === 'login') {
+    panel.innerHTML = `
+      <div class="auth-field">
+        <label class="auth-label">USERNAME</label>
+        <input id="auth-username" class="auth-input" type="text"
+               placeholder="your_handle" autocomplete="username"
+               onkeydown="if(event.key==='Enter') authSubmitLogin()">
+      </div>
+      <div class="auth-field">
+        <label class="auth-label">PASSWORD</label>
+        <input id="auth-password" class="auth-input" type="password"
+               placeholder="••••••••" autocomplete="current-password"
+               onkeydown="if(event.key==='Enter') authSubmitLogin()">
+      </div>
+      <button class="auth-submit" onclick="authSubmitLogin()">ENTER THE CORRIDORS</button>
+    `;
+  } else {
+    panel.innerHTML = `
+      <div class="auth-field">
+        <label class="auth-label">CHOOSE A USERNAME</label>
+        <input id="auth-username" class="auth-input" type="text"
+               placeholder="your_handle" maxlength="20" autocomplete="username"
+               onkeydown="if(event.key==='Enter') document.getElementById('auth-password').focus()">
+        <div class="auth-hint">3–20 chars · letters, numbers, _ and - only</div>
+      </div>
+      <div class="auth-field">
+        <label class="auth-label">PASSWORD</label>
+        <input id="auth-password" class="auth-input" type="password"
+               placeholder="Min 6 characters" autocomplete="new-password"
+               onkeydown="if(event.key==='Enter') authSubmitRegister()">
+      </div>
+      <button class="auth-submit" onclick="authSubmitRegister()">CREATE ACCOUNT</button>
+    `;
+  }
+  setTimeout(() => document.getElementById('auth-username')?.focus(), 50);
+}
+
+function authShowError(msg) {
+  const el = document.getElementById('auth-error');
+  if (!el) return;
+  el.textContent = msg;
+  el.style.display = 'block';
+}
+
+function authSetLoading(on) {
+  const loading = document.getElementById('auth-loading');
+  const panel   = document.getElementById('auth-panel');
+  if (loading) loading.style.display = on ? 'flex' : 'none';
+  if (panel)   { panel.style.opacity = on ? '0.4' : '1'; panel.style.pointerEvents = on ? 'none' : ''; }
+}
+
+async function authSubmitLogin() {
+  const username = document.getElementById('auth-username')?.value?.trim();
+  const password = document.getElementById('auth-password')?.value;
+  if (!username || !password) { authShowError('Please fill in all fields.'); return; }
+  authSetLoading(true);
+  document.getElementById('auth-error').style.display = 'none';
+  try {
+    await authLogin(username, password);
+    document.getElementById('auth-overlay')?.remove();
+    showLandingScreen();
+  } catch(e) {
+    authShowError(e.message);
+  } finally {
+    authSetLoading(false);
+  }
+}
+
+async function authSubmitRegister() {
+  const username = document.getElementById('auth-username')?.value?.trim();
+  const password = document.getElementById('auth-password')?.value;
+  if (!username || !password) { authShowError('Please fill in all fields.'); return; }
+  authSetLoading(true);
+  document.getElementById('auth-error').style.display = 'none';
+  try {
+    await authRegister(username, password);
+    document.getElementById('auth-overlay')?.remove();
+    showLandingScreen();
+  } catch(e) {
+    authShowError(e.message);
+  } finally {
+    authSetLoading(false);
+  }
+}
+
+// ── Collection screen stub (full UI in next phase) ────────────────────
+function showCollectionScreen() {
+  ['landing-overlay','auth-overlay'].forEach(id => document.getElementById(id)?.remove());
+  const overlay = document.createElement('div');
+  overlay.id = 'collection-overlay';
+  overlay.style.cssText = `
+    position:fixed;inset:0;background:var(--bg);
+    display:flex;flex-direction:column;align-items:center;justify-content:center;
+    z-index:100;gap:20px;
+  `;
+  overlay.innerHTML = `
+    <div style="font-family:'Teko',sans-serif;font-size:36px;letter-spacing:.3em;color:var(--amber);">
+      COLLECTION &amp; DECKS
+    </div>
+    <div style="color:var(--text-dim);font-size:11px;letter-spacing:.15em;">
+      Coming in next implementation phase
+    </div>
+    <button onclick="document.getElementById('collection-overlay').remove();showLandingScreen();"
+            class="landing-btn muted" style="width:220px;">
+      ← BACK
+    </button>
+  `;
+  document.body.appendChild(overlay);
+}
+
+// ── Init ─────────────────────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', async () => {
+  const urlParams  = new URLSearchParams(window.location.search);
+  const inviteCode = urlParams.get('join');
+  if (inviteCode) {
+    window.history.replaceState({}, '', window.location.pathname);
+  }
+
+  const restored = await authRestoreSession();
+
+  if (restored) {
+    if (inviteCode) {
+      showMultiplayerLobby('join', inviteCode);
+    } else {
+      showLandingScreen();
+    }
+  } else {
+    if (inviteCode) mp_pendingJoin = inviteCode;
+    showAuthScreen('login');
+  }
+});
 
 console.log('[CORRIDORS] Async Multiplayer module loaded. Configure SUPABASE_URL and SUPABASE_ANON to activate.');
 
