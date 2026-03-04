@@ -1532,6 +1532,28 @@
     font-size: 9px; letter-spacing: .08em; margin-top: 2px;
   }
 
+  /* ── Disenchant extras bar ──────────────────────────────────────── */
+  .coll-disenchant-bar {
+    display: flex; align-items: center; gap: 12px;
+    min-height: 36px; margin-bottom: 12px;
+    padding: 8px 12px;
+    background: var(--surface); border: 1px solid var(--border);
+    flex-wrap: wrap;
+  }
+  .coll-disenchant-bar:empty { display: none; }
+  .coll-de-summary {
+    font-family: 'JetBrains Mono', monospace; font-size: 10px;
+    letter-spacing: .1em; color: var(--amber); flex: 1;
+  }
+  .coll-de-btn {
+    padding: 5px 14px; background: transparent;
+    border: 1px solid var(--amber-dim); color: var(--amber);
+    font-family: 'JetBrains Mono', monospace; font-size: 9px;
+    letter-spacing: .14em; text-transform: uppercase;
+    cursor: pointer; transition: all 0.15s; white-space: nowrap;
+  }
+  .coll-de-btn:hover { background: rgba(212,144,58,0.1); border-color: var(--amber); }
+
   /* ── SP Deck Picker modal ───────────────────────────────────────── */
   .dp-box {
     background: var(--surface); border: 1px solid var(--border-hi);
@@ -7597,6 +7619,30 @@ function renderCollectionTab(container, filterFaction = 'All', filterType = 'All
       </div>
     </div>
 
+    <div class="coll-disenchant-bar" id="coll-disenchant-bar">
+      ${(()=>{
+        // Calculate extras across the FULL collection (not filtered view)
+        let totalExtra = 0, totalShards = 0;
+        for (const [id, owned] of Object.entries(_userProfile?.collection ?? {})) {
+          const card = CARDS[id];
+          if (!card) continue;
+          const extra = Math.max(0, owned - getCardCopyLimit(id));
+          if (extra > 0) {
+            totalExtra += extra;
+            totalShards += extra * (DISENCHANT_VALUE[card.rarity] ?? 5);
+          }
+        }
+        if (totalExtra === 0) return '';
+        return `<span class="coll-de-summary">
+                  ${totalExtra} extra card${totalExtra!==1?'s':''} &nbsp;·&nbsp;
+                  +${totalShards} ◆ shards
+                </span>
+                <button class="coll-de-btn" onclick="collDisenchantAllExtras()">
+                  DISENCHANT ALL EXTRAS
+                </button>`;
+      })()}
+    </div>
+
     <div class="coll-grid">
       ${cards.map(card => {
         const owned   = getOwnedCount(card.id);
@@ -7699,6 +7745,51 @@ async function collCraft(cardId) {
   if (!result.ok) { alert(result.error); return; }
   document.getElementById('card-detail-modal')?.remove();
   document.querySelector('.coll-shards').textContent = `◆ ${(_userProfile?.shards??0).toLocaleString()} SHARDS`;
+  renderCollectionTab(document.getElementById('coll-content'));
+}
+
+async function collDisenchantAllExtras() {
+  if (!_userProfile) return;
+
+  // Build the full list of extras
+  const extras = [];
+  for (const [id, owned] of Object.entries(_userProfile.collection ?? {})) {
+    const card = CARDS[id];
+    if (!card) continue;
+    const limit = getCardCopyLimit(id);
+    const extra = Math.max(0, owned - limit);
+    for (let i = 0; i < extra; i++) extras.push(id);
+  }
+
+  if (!extras.length) { alert('No extra cards to disenchant.'); return; }
+
+  const totalShards = extras.reduce((sum, id) =>
+    sum + (DISENCHANT_VALUE[CARDS[id]?.rarity] ?? 5), 0);
+
+  if (!confirm(
+    `Disenchant ${extras.length} extra card${extras.length!==1?'s':''} for +${totalShards} ◆ shards?
+
+` +
+    `Only copies above the per-card limit will be removed.`
+  )) return;
+
+  // Build updated collection in one pass
+  const updatedCol = { ..._userProfile.collection };
+  for (const id of extras) {
+    updatedCol[id] = (updatedCol[id] ?? 1) - 1;
+    if (updatedCol[id] <= 0) delete updatedCol[id];
+  }
+
+  const ok = await saveUserProfile({
+    collection: updatedCol,
+    shards: (_userProfile.shards ?? 0) + totalShards,
+  });
+
+  if (!ok) { alert('Save failed — please try again.'); return; }
+
+  // Refresh UI
+  document.querySelector('.coll-shards').textContent =
+    `◆ ${(_userProfile.shards ?? 0).toLocaleString()} SHARDS`;
   renderCollectionTab(document.getElementById('coll-content'));
 }
 
@@ -7881,7 +7972,9 @@ function dbRenderPool(typeFilter = 'All') {
 
     return `
       <div class="db-pool-card ${blocked?'db-card-blocked':''}"
-           onclick="dbPoolCardClick('${card.id}', ${blocked})">
+           onclick="dbPoolCardClick('${card.id}', ${blocked})"
+           onmouseenter="dbShowTooltip(event, '${card.id}')"
+           onmouseleave="dbHideTooltip()">
         <div class="db-pool-card-faction" style="color:${col}">${card.faction}</div>
         <div class="db-pool-card-name">${card.name}</div>
         <div class="db-pool-card-type">${card.type}</div>
@@ -7944,6 +8037,54 @@ function dbRenderDeck() {
     saveBtn.style.opacity = valid ? '1' : '0.3';
     saveBtn.style.cursor  = valid ? 'pointer' : 'not-allowed';
   }
+}
+
+function dbShowTooltip(event, cardId) {
+  const card = CARDS[cardId];
+  if (!card) return;
+  const tt = document.getElementById('db-tooltip');
+  if (!tt) return;
+
+  const factionColors = {
+    Basic:'var(--text-dim)', Architects:'var(--wall-arch)', Pathfinders:'var(--wall-path)',
+    Wardens:'var(--wall-ward)', Phantoms:'var(--wall-phan)', Adepts:'var(--wall-adept)',
+  };
+
+  tt.querySelector('#db-tt-faction').textContent = card.faction;
+  tt.querySelector('#db-tt-faction').style.color = factionColors[card.faction] || 'var(--text-dim)';
+  tt.querySelector('#db-tt-name').textContent = card.name;
+  tt.querySelector('#db-tt-type').textContent = card.type;
+  const rarEl = tt.querySelector('#db-tt-rarity');
+  rarEl.textContent = card.rarity;
+  rarEl.className = 'db-tt-rarity ' + card.rarity;
+  tt.querySelector('#db-tt-desc').textContent = card.desc || '';
+  tt.querySelector('#db-tt-owned').textContent = 'Owned: ' + getOwnedCount(cardId);
+  tt.querySelector('#db-tt-limit').textContent = 'Limit: ' + getCardCopyLimit(cardId) + '/deck';
+
+  dbPositionTooltip(event, tt);
+  tt.classList.add('visible');
+}
+
+function dbPositionTooltip(event, tt) {
+  const margin = 12;
+  const ttW = 220;
+  const ttH = 180;
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+
+  let x = event.clientX + margin;
+  let y = event.clientY + margin;
+
+  if (x + ttW > vw - margin) x = event.clientX - ttW - margin;
+  if (y + ttH > vh - margin) y = event.clientY - ttH - margin;
+
+  tt.style.left = x + 'px';
+  tt.style.top  = y + 'px';
+}
+
+function dbHideTooltip() {
+  const tt = document.getElementById('db-tooltip');
+  if (tt) tt.classList.remove('visible');
 }
 
 function dbPoolCardClick(cardId, blocked) {
