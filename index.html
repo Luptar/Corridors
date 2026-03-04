@@ -7965,9 +7965,16 @@ function dbRenderPool(typeFilter = 'All') {
     const owned      = getOwnedCount(card.id);
     const inDeck     = deckCounts[card.id] ?? 0;
     const limit      = getCardCopyLimit(card.id);
-    const atLimit    = inDeck >= limit;
     const notOwned   = owned === 0;
-    const blocked    = atLimit || notOwned;
+    const atDeckLimit = inDeck >= limit;          // hit per-card deck copy limit
+    const atOwnedCap  = inDeck >= owned;          // can't add more than you own
+    const deckFull    = _deckBuilderState.cards.length >= 10;
+    const blocked     = notOwned || atDeckLimit || atOwnedCap || deckFull;
+    const blockReason = notOwned    ? 'NOT OWNED'
+                      : atDeckLimit ? 'LIMIT REACHED'
+                      : atOwnedCap  ? 'NO MORE COPIES'
+                      : deckFull    ? 'DECK FULL'
+                      : '';
     const col        = factionColors[card.faction] || 'var(--text-dim)';
 
     return `
@@ -7980,11 +7987,11 @@ function dbRenderPool(typeFilter = 'All') {
         <div class="db-pool-card-type">${card.type}</div>
         <div class="db-pool-card-bottom">
           <span class="coll-card-rarity rarity-dot-${card.rarity}">${card.rarity}</span>
-          <span class="db-pool-card-counts ${atLimit?'at-limit':''}">
-            ${inDeck}/${limit} &nbsp;·&nbsp; own ${owned}
+          <span class="db-pool-card-counts ${(atDeckLimit||atOwnedCap)?'at-limit':''}">
+            ${inDeck}/${Math.min(limit, owned||0)} &nbsp;·&nbsp; own ${owned}
           </span>
         </div>
-        ${blocked ? `<div class="db-block-reason">${notOwned?'NOT OWNED':atLimit?'LIMIT REACHED':''}</div>` : ''}
+        ${blocked ? `<div class="db-block-reason">${blockReason}</div>` : ''}
       </div>`;
   }).join('');
 }
@@ -8094,10 +8101,13 @@ function dbPoolCardClick(cardId, blocked) {
 function dbAddCard(cardId) {
   if (!_deckBuilderState) return;
   const { cards } = _deckBuilderState;
-  if (cards.length >= 10) return;
+  // Hard stops — these mirror the visual blocked state exactly
+  if (cards.length >= 10) return;                          // deck full
+  const owned  = getOwnedCount(cardId);
+  if (owned < 1) return;                                   // not owned
   const inDeck = cards.filter(id => id === cardId).length;
-  if (inDeck >= getCardCopyLimit(cardId)) return;
-  if (getOwnedCount(cardId) < 1) return;
+  if (inDeck >= getCardCopyLimit(cardId)) return;          // at deck copy limit
+  if (inDeck >= owned) return;                             // can't exceed owned copies
   _deckBuilderState.cards.push(cardId);
   dbRenderPool();
   dbRenderDeck();
