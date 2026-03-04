@@ -2793,8 +2793,11 @@ function executePlaceWall(anchor, orientation, length, isPhantom=false, isDurabl
   }
   addLog(pi, 'wall', `Placed ${isReinforced ? 'Reinforced ' : 'a'} wall at (${anchor.row},${anchor.col}) ${orientation}${length}`);
   uiMode = 'idle';
+  const _pendingOnPlaced = selectedCard?._onPlaced || null;
   selectedCard = null;
   onWallPlaced(pi, fromCardId);
+  // WD5 Total Seizure chain: fire after onWallPlaced so state is stable
+  if (_pendingOnPlaced) { _pendingOnPlaced(); return; }
 }
 
 function discardCard(pi, idx) {
@@ -4418,14 +4421,8 @@ function onWallPlaced(pi, fromCardId) {
 
   opponentLastPlayedWall = (pi !== 0);
 
-  // WD5 Total Seizure chain: fire next wall placement callback if one is queued
-  const onPlacedCb = selectedCard?._onPlaced;
-  if (onPlacedCb) {
-    selectedCard = null;
-    onPlacedCb();
-    return; // callback handles renderAll / phase transition
-  }
-
+  // During WD5 seizure chain, skip phase/render — the callback handles it after all walls are placed
+  if (gameState._seizureWalls !== null && gameState._seizureWalls !== undefined) return;
   if (isTurnDone()) gameState.phase = 'end_turn';
   renderAll(); updateActionBar();
 }
