@@ -648,6 +648,16 @@
     opacity: 0.5;
   }
 
+  /* ── Trap placement highlighting ─────────────────────────────── */
+  .trap-place-target {
+    background: rgba(192,64,64,0.15) !important;
+    cursor: crosshair !important;
+  }
+  .trap-place-target:hover {
+    background: rgba(192,64,64,0.35) !important;
+    box-shadow: inset 0 0 8px rgba(192,64,64,0.5);
+  }
+
   /* ── Trap tokens ───────────────────────────────────────────────── */
   .trap-token {
     position: absolute;
@@ -2463,16 +2473,16 @@ function shuffle(arr) {
 // GDD-accurate starter decks per faction
 function buildStarterDeck(faction) {
   const deckDefs = {
-    Architects:  ['BB','BB','BB','AR1','AR1','AR2','AR3','AR4','RC','RC'],
-    Pathfinders: ['BB','BB','RC','QS','QS','WS','PF1','PF3','PF7','PF12'],
-    Wardens:     ['BB','BB','RC','WD1','WD1','WD2','WD3','WD8','WD12','WD3'],
-    Phantoms:    ['BB','PH1','PH1','PH3','PH3','PH4','RC','PH2','PH10','PH16'],
-    Pushers:     ['BB','BB','RC','PU2','PU3','PU4','PU4','PU9','AV','PH2'],
-    Trappers:    ['BB','BB','RC','TR1','TR1','TR2','TR3','TR5','TR7','AV'],
-    Chronists:   ['BB','BB','RC','CH1','CH1','CH3','CH3','CH12','CH6','AV'],
+    Architects:  ['BB','BB','BB','BB','AR1','AR1','AR1','AR2','AR2','AR3','AR3','AR4','AR4','AR5','RC','RC','RC','CB','CB','AV'],
+    Pathfinders: ['BB','BB','BB','RC','RC','QS','QS','WS','AV','AV','PF1','PF1','PF3','PF3','PF7','PF7','PF12','CB','B01','B10'],
+    Wardens:     ['BB','BB','BB','RC','RC','WD1','WD1','WD2','WD2','WD3','WD3','WD4','WD6','WD8','WD12','AV','CB','B07','B09','B12'],
+    Phantoms:    ['BB','BB','PH1','PH1','PH1','PH2','PH2','PH3','PH3','PH4','PH10','PH16','RC','RC','CB','AV','QS','B01','B07','B12'],
+    Pushers:     ['BB','BB','BB','RC','RC','PU2','PU2','PU3','PU3','PU4','PU4','PU7','PU9','PU9','PU11','AV','AV','CB','B07','B10'],
+    Trappers:    ['BB','BB','BB','RC','RC','TR1','TR1','TR2','TR2','TR3','TR3','TR5','TR5','TR7','TR7','TR10','AV','AV','CB','B07'],
+    Chronists:   ['BB','BB','BB','RC','RC','CH1','CH1','CH3','CH3','CH6','CH6','CH8','CH10','CH12','CH13','AV','AV','CB','B07','B12'],
   };
   const ids = deckDefs[faction] || deckDefs['Architects'];
-  // 10-card deck — no doubling
+  // 20-card deck
   const base = ids.map(id => ({...CARDS[id]}));
   return shuffle([...base]);
 }
@@ -2792,7 +2802,11 @@ function performDraw() {
   // Resolve delayed cards before drawing
   if (gameState._delayedCards && gameState._delayedCards[drawPi]?.length) {
     resolveDelayedCards(drawPi);
-    if (uiMode === 'wall' || uiMode === 'move') return; // delayed card needs UI interaction
+    if (uiMode === 'wall' || uiMode === 'move') {
+      // If AI has a pending delayed movement card, fall through to schedule runAI.
+      // If it's human, stop here and wait for UI interaction.
+      if (isHumanSeat(drawPi)) return;
+    }
   }
 
   // ── MP mode: drawing is handled by mpDrawForLocalPlayer, skip SP draw ──
@@ -3672,7 +3686,28 @@ function resolveDelayedCards(pi) {
     addLog(pi, 'card', `Delayed ${card.name} activates!`);
     // Resolve the card as if played — route through type handlers
     if (card.type === 'Wall') {
-      // Enter wall placement mode with the delayed card
+      if (!isHumanSeat(pi)) {
+        // AI: auto-place the wall near opponent using best available candidate
+        const isPhantom = !!card.phantom;
+        const isDurable = !!card.durable;
+        const length = card.wallLen || 2;
+        const oppPos = gameState.players[1 - pi].position;
+        const cands = generateWallCandidates(oppPos, length);
+        let placed = false;
+        for (const {anchor, orientation} of cands) {
+          if (isWallLegal(anchor, orientation, length, gameState.walls,
+              gameState.players[0].position, gameState.players[1].position, isPhantom)) {
+            selectedCard = { id: card.id, idx: -1, length, isPhantom, isDurable, _delayed: true };
+            executePlaceWall(anchor, orientation, length, isPhantom, isDurable, card.id);
+            selectedCard = null;
+            placed = true;
+            break;
+          }
+        }
+        if (!placed) addLog(pi, 'card', `Delayed ${card.name}: no legal placement found, card lost`);
+        continue; // process remaining delayed cards
+      }
+      // Human: Enter wall placement mode with the delayed card
       const isPhantom = !!card.phantom;
       const isDurable = !!card.durable;
       const length = card.wallLen || 2;
@@ -3682,7 +3717,16 @@ function resolveDelayedCards(pi) {
       showStatus(`Delayed ${card.name} — place your wall now`, 'active');
       return; // Only resolve one delayed card at a time (wall needs UI interaction)
     } else if (card.type === 'Movement') {
-      // Auto-apply movement boost
+      if (!isHumanSeat(pi)) {
+        // AI: boost will be applied when runAI calls executeMove; store as pending
+        const speed = card.overrideSpeed || 1;
+        selectedCard = { id: card.id, idx: -1, overrideSpeed: speed,
+          tunnelThrough: !!card.tunnelThrough, diagonal: !!card.diagonal,
+          ownWallsPassthrough: !!card.ownWallsPassthrough, _pendingMove: true, _delayed: true };
+        uiMode = 'move'; // runAI will call executeMove, which will resolve this
+        continue;
+      }
+      // Human: Auto-apply movement boost
       const speed = card.overrideSpeed || 1;
       selectedCard = { id: card.id, idx: -1, overrideSpeed: speed,
         tunnelThrough: !!card.tunnelThrough, diagonal: !!card.diagonal,
@@ -3765,6 +3809,83 @@ function resolveEchoChamber(cardIdx) {
   showStatus(`Echo Chamber: swapped ${discarded.name} for a new card`, 'success');
 }
 
+
+// ── Trap Placement Picker — interactive tile selection for human trap cards ──
+let _trapPlaceState = null; // {pi, idx, card, trapType, duration, opts, range, maxTraps, placed, callback}
+
+function enterTrapPlaceMode(pi, idx, card, trapType, duration, opts, range, maxTraps, callback) {
+  _trapPlaceState = { pi, idx, card, trapType, duration, opts, range, maxTraps: maxTraps || 1, placed: 0, callback };
+  uiMode = 'trapPlace';
+  renderAll();
+  showStatus(`${card.name} — click a tile to place trap (${maxTraps > 1 ? `0/${maxTraps} placed` : 'choose location'})`, 'active');
+}
+
+function getTrapPlaceTargets() {
+  if (!_trapPlaceState) return [];
+  const { pi, range } = _trapPlaceState;
+  const myPos = gameState.players[pi].position;
+  const targets = [];
+  for (let r = 0; r < BOARD_SIZE; r++) {
+    for (let c = 0; c < BOARD_SIZE; c++) {
+      const dist = Math.abs(r - myPos.row) + Math.abs(c - myPos.col);
+      if (dist < 1 || dist > range) continue;
+      // Skip occupied tiles
+      if (gameState.players.some(p => p.position.row === r && p.position.col === c)) continue;
+      // Skip tiles that already have traps
+      if ((gameState.trapTokens || []).some(t => t.tile.row === r && t.tile.col === c)) continue;
+      targets.push({row: r, col: c});
+    }
+  }
+  return targets;
+}
+
+function handleTrapPlaceClick(row, col) {
+  if (!_trapPlaceState || uiMode !== 'trapPlace') return;
+  const { pi, idx, card, trapType, duration, opts, maxTraps } = _trapPlaceState;
+  const tile = {row, col};
+
+  const result = placeTrap(pi, tile, trapType, duration, opts);
+  if (!result.success) {
+    showStatus(`Cannot place trap here: ${result.reason}`, 'error');
+    return;
+  }
+
+  _trapPlaceState.placed++;
+  addLog(pi, 'card', `${card.name}: trap placed at (${row},${col})`);
+
+  if (_trapPlaceState.placed >= maxTraps) {
+    // All traps placed — finalize
+    const totalPlaced = _trapPlaceState.placed;
+    const cb = _trapPlaceState.callback;
+    discardCard(pi, idx); selectedCard = null; countCardPlayed(pi);
+    _trapPlaceState = null;
+    uiMode = 'idle';
+    if (isTurnDone()) gameState.phase = 'end_turn';
+    renderAll();
+    if (cb) cb(totalPlaced);
+    else showStatus(`${card.name}: ${totalPlaced} trap(s) placed!`, 'success');
+    return;
+  }
+
+  // More traps to place
+  renderAll();
+  showStatus(`${card.name} — ${_trapPlaceState.placed}/${maxTraps} placed, click another tile`, 'active');
+}
+
+function cancelTrapPlace() {
+  if (!_trapPlaceState) return;
+  const { pi, idx, card, placed } = _trapPlaceState;
+  if (placed > 0) {
+    // Some traps were placed — still consume the card
+    discardCard(pi, idx); selectedCard = null; countCardPlayed(pi);
+    addLog(pi, 'card', `${card.name}: placed ${placed} trap(s) (cancelled remaining)`);
+  }
+  _trapPlaceState = null;
+  uiMode = 'idle';
+  if (placed > 0 && isTurnDone()) gameState.phase = 'end_turn';
+  renderAll();
+  showStatus(placed > 0 ? `${card.name}: ${placed} trap(s) placed` : `${card.name} cancelled`, placed > 0 ? 'success' : '');
+}
 
 // Place a 1-tile wall at a position (used by Seismic Slam wall trail)
 function placeTrapWallBehind(pos, pushDir, ownerPi) {
@@ -3914,6 +4035,10 @@ function endTurnHuman() {
     gameState._evictionInProgress = false;
     selectedCard = null;
     uiMode = 'idle';
+  }
+  // If in trap placement mode, cancel it gracefully
+  if (uiMode === 'trapPlace' && _trapPlaceState) {
+    cancelTrapPlace();
   }
   endTurn();
 }
@@ -4247,6 +4372,18 @@ async function runAI() {
   if (gameState.phase !== 'action' || gameState.activePlayer !== AI_PLAYER) {
     aiThinking = false; return;
   }
+  // Global AI turn timeout: if AI hasn't finished in 8 seconds, force-end
+  const _aiTurnTimeout = setTimeout(() => {
+    if (aiThinking && gameState?.activePlayer === AI_PLAYER) {
+      console.error('[AI] Turn timeout — forcing end');
+      aiThinking = false;
+      uiMode = 'idle'; selectedCard = null; _trapPlaceState = null;
+      if (gameState.phase === 'action') gameState.phase = 'end_turn';
+      renderAll();
+      setTimeout(endTurn, 100);
+    }
+  }, 8000);
+  try {
 
   maybeAIUltimate(AI_PLAYER);
 
@@ -5119,6 +5256,22 @@ async function runAI() {
     addLog(AI_PLAYER, 'system', 'AI bound by Binding Wall — move skipped');
   }
 
+  // ── Comprehensive safety reset: clear any lingering interactive state ──
+  if (!isHumanSeat(AI_PLAYER)) {
+    if (uiMode !== 'idle') {
+      console.warn('[AI] Resetting stale uiMode:', uiMode);
+      uiMode = 'idle';
+      selectedCard = null;
+    }
+    if (_trapPlaceState) {
+      console.warn('[AI] Clearing orphaned trap placement state');
+      _trapPlaceState = null;
+    }
+    if (gameState._vexEchoPending) {
+      gameState._vexEchoPending = false;
+    }
+  }
+
   // ── If turn still not done, force-end (safety net) ─────────────────
   if (gameState.phase === 'action' && gameState.activePlayer === AI_PLAYER) {
     gameState.phase = 'end_turn';
@@ -5128,6 +5281,19 @@ async function runAI() {
 
   if (gameState.phase === 'end_turn' && gameState.activePlayer === AI_PLAYER) {
     setTimeout(endTurn, 700);
+  }
+  clearTimeout(_aiTurnTimeout);
+  } catch(e) {
+    clearTimeout(_aiTurnTimeout);
+    // Safety net: any uncaught exception in AI logic must not freeze the game.
+    // Clear aiThinking, force-end the AI turn, and recover gracefully.
+    console.error('[AI] runAI exception:', e);
+    aiThinking = false;
+    if (gameState && gameState.activePlayer === AI_PLAYER) {
+      gameState.phase = 'end_turn';
+      renderAll();
+      setTimeout(endTurn, 700);
+    }
   }
 }
 
@@ -5575,6 +5741,12 @@ function resetTurnState() {
 function selectCard(cardId, idx) {
   if (!isHumanSeat(gameState.activePlayer)) return;
   if (gameState.phase !== 'action') { showStatus('Not your action phase', 'error'); return; }
+
+  // ── Vex Echo Chamber intercept: if pending, route click to resolve ──
+  if (gameState._vexEchoPending) {
+    resolveEchoChamber(idx);
+    return;
+  }
 
   const pi     = gameState.activePlayer;
   const rule   = getFactionRule(pi);
@@ -6549,10 +6721,15 @@ async function applyDisruptionCard(pi, card, idx) {
 
   // ── TR1: Snare — place snare trap within 3 spaces ──
   if (card.id === 'TR1') {
-    const myPos = gameState.players[pi].position;
-    const goalRow = (1-pi) === 0 ? 0 : BOARD_SIZE - 1;
+    if (isHumanSeat(pi)) {
+      enterTrapPlaceMode(pi, idx, card, 'snare', 3, {}, 3, 1, (n) => {
+        showStatus(`Snare trap placed!`, 'success');
+      });
+      return;
+    }
     // AI: place between opponent and their goal
     const oppPos = gameState.players[opp].position;
+    const goalRow = (1-pi) === 0 ? 0 : BOARD_SIZE - 1;
     const dir = goalRow < oppPos.row ? -1 : 1;
     const tile = {row: oppPos.row + dir, col: oppPos.col};
     if (tile.row >= 0 && tile.row < BOARD_SIZE) {
@@ -6566,6 +6743,12 @@ async function applyDisruptionCard(pi, card, idx) {
 
   // ── TR3: Pit Trap — card-denial trap ──
   if (card.id === 'TR3') {
+    if (isHumanSeat(pi)) {
+      enterTrapPlaceMode(pi, idx, card, 'pit', 2, {}, 3, 1, (n) => {
+        showStatus('Pit trap placed!', 'success');
+      });
+      return;
+    }
     const oppPos = gameState.players[opp].position;
     const goalRow = opp === 0 ? 0 : BOARD_SIZE - 1;
     const dir = goalRow < oppPos.row ? -1 : 1;
@@ -6581,11 +6764,16 @@ async function applyDisruptionCard(pi, card, idx) {
 
   // ── TR4: Proximity Mine — wall-shrink trap near any wall ──
   if (card.id === 'TR4') {
-    // Find best wall to mine (opponent's most valuable)
+    if (isHumanSeat(pi)) {
+      enterTrapPlaceMode(pi, idx, card, 'mine', 3, {}, BOARD_SIZE, 1, (n) => {
+        showStatus('Proximity Mine placed!', 'success');
+      });
+      return;
+    }
+    // AI: Find best wall to mine (opponent's most valuable)
     const walls = gameState.walls.filter(w => !w.isPhantom && !w.reinforced && !w.immune);
     if (walls.length) {
       const target = walls[walls.length - 1];
-      // Place mine on a tile adjacent to the wall
       const adj = target.orientation === 'H'
         ? {row: target.anchor.row, col: target.anchor.col}
         : {row: target.anchor.row, col: target.anchor.col};
@@ -6599,6 +6787,12 @@ async function applyDisruptionCard(pi, card, idx) {
 
   // ── TR6: Spring Trap — displacement trap ──
   if (card.id === 'TR6') {
+    if (isHumanSeat(pi)) {
+      enterTrapPlaceMode(pi, idx, card, 'spring', 3, {pushSpaces: 2}, 3, 1, (n) => {
+        showStatus('Spring Trap placed!', 'success');
+      });
+      return;
+    }
     const oppPos = gameState.players[opp].position;
     const goalRow = opp === 0 ? 0 : BOARD_SIZE - 1;
     const dir = goalRow < oppPos.row ? -1 : 1;
@@ -6614,10 +6808,14 @@ async function applyDisruptionCard(pi, card, idx) {
 
   // ── TR7: Tangleroot — place 2 root traps ──
   if (card.id === 'TR7') {
-    const myPos = gameState.players[pi].position;
+    if (isHumanSeat(pi)) {
+      enterTrapPlaceMode(pi, idx, card, 'root', 2, {}, 3, 2, (n) => {
+        showStatus(`Tangleroot: ${n} root traps placed!`, 'success');
+      });
+      return;
+    }
     const oppPos = gameState.players[opp].position;
     let placed = 0;
-    // Place on tiles between opponent and their goal
     for (let d = -1; d <= 1 && placed < 2; d += 2) {
       const tile = {row: oppPos.row + d, col: oppPos.col};
       if (tile.row >= 0 && tile.row < BOARD_SIZE) {
@@ -6633,10 +6831,14 @@ async function applyDisruptionCard(pi, card, idx) {
 
   // ── TR10: Minefield — 4 snare traps anywhere ──
   if (card.id === 'TR10') {
+    if (isHumanSeat(pi)) {
+      enterTrapPlaceMode(pi, idx, card, 'snare', 3, {}, BOARD_SIZE, 4, (n) => {
+        showStatus(`Minefield: ${n} traps deployed!`, 'success');
+      });
+      return;
+    }
     const oppPos = gameState.players[opp].position;
-    const goalRow = opp === 0 ? 0 : BOARD_SIZE - 1;
     let placed = 0;
-    // Place in a diamond pattern around opponent's path
     const offsets = [{r:-1,c:0},{r:1,c:0},{r:0,c:-1},{r:0,c:1}];
     for (const off of offsets) {
       if (placed >= 4) break;
@@ -6654,6 +6856,12 @@ async function applyDisruptionCard(pi, card, idx) {
 
   // ── TR12: Web of Deceit — 6 custom traps ──
   if (card.id === 'TR12') {
+    if (isHumanSeat(pi)) {
+      enterTrapPlaceMode(pi, idx, card, 'snare', 4, {}, BOARD_SIZE, 6, (n) => {
+        showStatus(`Web of Deceit: ${n} traps deployed!`, 'success');
+      });
+      return;
+    }
     const oppPos = gameState.players[opp].position;
     const types = ['snare','root','spring','mine','snare','root'];
     let placed = 0;
@@ -7418,7 +7626,7 @@ function updateActionBar() {
     // Soren can take a second move if no card played yet and hasn't used second move
     const sorenCanMoveAgain = champId === 'soren' && hasMoved && cardsPlayedThisTurn === 0 && !gameState._sorenSecondMove;
     const isBound = isHuman && (gameState.players[pi]?.statusEffects || []).some(e => e.type === 'skip_move' && e.turnsRemaining > 0);
-    btnMove.disabled = !isAction || (hasMoved && !sorenCanMoveAgain) || !isHuman || aiThinking || isBound;
+    btnMove.disabled = !isAction || (hasMoved && !sorenCanMoveAgain) || isBound || (gameMode === 'mp' ? gameState.activePlayer !== mp_localSeat : (!isHuman || aiThinking));
     const moveBtnColour = (gameMode === 'mp' && gameState.activePlayer === 1) ? 'primary-p1' : 'primary';
     btnMove.className = `action-btn ${moveBtnColour}${uiMode==='move' ? ' active' : ''}`;
     if (isBound) btnMove.textContent = 'BOUND';
@@ -7427,7 +7635,11 @@ function updateActionBar() {
   }
   if (btnEnd) {
     // Allow ending turn any time during the action phase — player can always pass.
-    btnEnd.disabled = phase==='draw' || phase==='ended' || aiThinking || !isHuman;
+    if (gameMode === 'mp') {
+      btnEnd.disabled = phase==='draw' || phase==='ended' || gameState.activePlayer !== mp_localSeat;
+    } else {
+      btnEnd.disabled = phase==='draw' || phase==='ended' || aiThinking || !isHuman;
+    }
   }
 
   // ── Vex "Echo Chamber" passive button ──────────────────────────────
@@ -7620,13 +7832,19 @@ function renderBoard() {
   }
   const legalSet = new Set(legalMoves.map(m=>`${m.row},${m.col}`));
 
+  // Trap placement targets
+  const trapTargets = (uiMode === 'trapPlace' && _trapPlaceState) ? getTrapPlaceTargets() : [];
+  const trapTargetSet = new Set(trapTargets.map(t=>`${t.row},${t.col}`));
+
   for (let r=0; r<BOARD_SIZE; r++) {
     for (let c=0; c<BOARD_SIZE; c++) {
       const isLegal = legalSet.has(`${r},${c}`);
+      const isTrapTarget = trapTargetSet.has(`${r},${c}`);
       const cell = document.createElement('div');
-      cell.className = `cell${isLegal?' legal-move':''}${r===0?' goal-row-p0':''}${r===BOARD_SIZE-1?' goal-row-p1':''}`;
+      cell.className = `cell${isLegal?' legal-move':''}${isTrapTarget?' legal-move trap-place-target':''}${r===0?' goal-row-p0':''}${r===BOARD_SIZE-1?' goal-row-p1':''}`;
       cell.dataset.row = r; cell.dataset.col = c;
       if (isLegal) cell.onclick = () => handleCellClick(r, c);
+      else if (isTrapTarget) cell.onclick = () => handleTrapPlaceClick(r, c);
       grid.appendChild(cell);
     }
   }
@@ -9963,6 +10181,10 @@ function mpGuardedEndTurnHuman() {
     gameState._evictionInProgress = false;
     selectedCard = null; uiMode = 'idle';
   }
+  // If in trap placement mode, cancel it gracefully
+  if (uiMode === 'trapPlace' && _trapPlaceState) {
+    cancelTrapPlace();
+  }
   mpEndTurnLocal();
 }
 
@@ -10160,8 +10382,8 @@ function validateDeck(championId, cardIds) {
   const errors  = [];
   const champion = CHAMPIONS[championId];
   if (!champion) return { valid: false, errors: ['Unknown champion'] };
-  if (cardIds.length !== 10)
-    errors.push(`Deck must be exactly 10 cards (currently ${cardIds.length})`);
+  if (cardIds.length !== 20)
+    errors.push(`Deck must be exactly 20 cards (currently ${cardIds.length})`);
   {
     const bad = cardIds.filter(id => {
       const c = CARDS[id];
@@ -10179,11 +10401,11 @@ function validateDeck(championId, cardIds) {
     if (!c) continue;
     rarityCounts[c.rarity] = (rarityCounts[c.rarity] || 0) + 1;
   }
-  for (const [rarity, limit] of Object.entries(RARITY_LIMITS)) {
-    if ((rarityCounts[rarity] || 0) > limit * 2) { // limit is per-card, not total; check unique card copies
-      // Actually check per-card-id limits
-    }
-  }
+  // Deck-wide rarity caps: max 1 Legendary, max 5 Rares per 20-card deck
+  if ((rarityCounts['Legendary'] || 0) > 1)
+    errors.push(`Max 1 Legendary card per deck (have ${rarityCounts['Legendary']})`);
+  if ((rarityCounts['Rare'] || 0) > 5)
+    errors.push(`Max 5 Rare cards per deck (have ${rarityCounts['Rare']})`);
   // Per-card copy limits based on rarity
   const cardCopies = {};
   for (const id of cardIds) cardCopies[id] = (cardCopies[id] || 0) + 1;
@@ -10269,7 +10491,7 @@ async function issueMatchRewards(won) {
 
 // ── Deck builder helper ───────────────────────────────────────────────
 function buildDeckForGame(championId, savedDeckCards) {
-  if (savedDeckCards?.length === 10) {
+  if (savedDeckCards?.length === 20) {
     return shuffle(savedDeckCards.map(id => ({ ...CARDS[id] })).filter(Boolean));
   }
   return buildStarterDeck(CHAMPIONS[championId]?.faction);
@@ -10745,13 +10967,13 @@ function viewStarterDeck(championId) {
   if (!champ) return;
 
   const deckDefs = {
-    Architects:  ['BB','BB','BB','AR1','AR1','AR2','AR3','AR4','RC','RC'],
-    Pathfinders: ['BB','BB','RC','QS','QS','WS','PF1','PF3','PF7','PF12'],
-    Wardens:     ['BB','BB','RC','WD1','WD1','WD2','WD3','WD8','WD12','WD3'],
-    Phantoms:    ['BB','PH1','PH1','PH3','PH3','PH4','RC','PH2','PH10','PH16'],
-    Pushers:     ['BB','BB','RC','PU2','PU3','PU4','PU4','PU9','AV','PH2'],
-    Trappers:    ['BB','BB','RC','TR1','TR1','TR2','TR3','TR5','TR7','AV'],
-    Chronists:   ['BB','BB','RC','CH1','CH1','CH3','CH3','CH12','CH6','AV'],
+    Architects:  ['BB','BB','BB','BB','AR1','AR1','AR1','AR2','AR2','AR3','AR3','AR4','AR4','AR5','RC','RC','RC','CB','CB','AV'],
+    Pathfinders: ['BB','BB','BB','RC','RC','QS','QS','WS','AV','AV','PF1','PF1','PF3','PF3','PF7','PF7','PF12','CB','B01','B10'],
+    Wardens:     ['BB','BB','BB','RC','RC','WD1','WD1','WD2','WD2','WD3','WD3','WD4','WD6','WD8','WD12','AV','CB','B07','B09','B12'],
+    Phantoms:    ['BB','BB','PH1','PH1','PH1','PH2','PH2','PH3','PH3','PH4','PH10','PH16','RC','RC','CB','AV','QS','B01','B07','B12'],
+    Pushers:     ['BB','BB','BB','RC','RC','PU2','PU2','PU3','PU3','PU4','PU4','PU7','PU9','PU9','PU11','AV','AV','CB','B07','B10'],
+    Trappers:    ['BB','BB','BB','RC','RC','TR1','TR1','TR2','TR2','TR3','TR3','TR5','TR5','TR7','TR7','TR10','AV','AV','CB','B07'],
+    Chronists:   ['BB','BB','BB','RC','RC','CH1','CH1','CH3','CH3','CH6','CH6','CH8','CH10','CH12','CH13','AV','AV','CB','B07','B12'],
   };
   const ids = deckDefs[champ.faction] || [];
 
@@ -10838,13 +11060,13 @@ function useStarterAsTemplate(championId) {
   if (!champ) return;
 
   const deckDefs = {
-    Architects:  ['BB','BB','BB','AR1','AR1','AR2','AR3','AR4','RC','RC'],
-    Pathfinders: ['BB','BB','RC','QS','QS','WS','PF1','PF3','PF7','PF12'],
-    Wardens:     ['BB','BB','RC','WD1','WD1','WD2','WD3','WD8','WD12','WD3'],
-    Phantoms:    ['BB','PH1','PH1','PH3','PH3','PH4','RC','PH2','PH10','PH16'],
-    Pushers:     ['BB','BB','RC','PU2','PU3','PU4','PU4','PU9','AV','PH2'],
-    Trappers:    ['BB','BB','RC','TR1','TR1','TR2','TR3','TR5','TR7','AV'],
-    Chronists:   ['BB','BB','RC','CH1','CH1','CH3','CH3','CH12','CH6','AV'],
+    Architects:  ['BB','BB','BB','BB','AR1','AR1','AR1','AR2','AR2','AR3','AR3','AR4','AR4','AR5','RC','RC','RC','CB','CB','AV'],
+    Pathfinders: ['BB','BB','BB','RC','RC','QS','QS','WS','AV','AV','PF1','PF1','PF3','PF3','PF7','PF7','PF12','CB','B01','B10'],
+    Wardens:     ['BB','BB','BB','RC','RC','WD1','WD1','WD2','WD2','WD3','WD3','WD4','WD6','WD8','WD12','AV','CB','B07','B09','B12'],
+    Phantoms:    ['BB','BB','PH1','PH1','PH1','PH2','PH2','PH3','PH3','PH4','PH10','PH16','RC','RC','CB','AV','QS','B01','B07','B12'],
+    Pushers:     ['BB','BB','BB','RC','RC','PU2','PU2','PU3','PU3','PU4','PU4','PU7','PU9','PU9','PU11','AV','AV','CB','B07','B10'],
+    Trappers:    ['BB','BB','BB','RC','RC','TR1','TR1','TR2','TR2','TR3','TR3','TR5','TR5','TR7','TR7','TR10','AV','AV','CB','B07'],
+    Chronists:   ['BB','BB','BB','RC','RC','CH1','CH1','CH3','CH3','CH6','CH6','CH8','CH10','CH12','CH13','AV','AV','CB','B07','B12'],
   };
   const ids = deckDefs[champ.faction] || [];
 
@@ -10904,7 +11126,7 @@ function openDeckBuilder(championId, existingDeckId = null, templateCards = null
       <!-- Right: current deck -->
       <div class="db-deck-panel">
         <div class="db-panel-label">DECK
-          <span id="db-count" class="db-count">0/10</span>
+          <span id="db-count" class="db-count">0/20</span>
         </div>
         <input id="db-deck-name" class="db-name-input"
                type="text" placeholder="Deck name…" maxlength="30"
@@ -11006,8 +11228,8 @@ function dbRenderDeck() {
   const { cards } = _deckBuilderState;
   const countEl = document.getElementById('db-count');
   if (countEl) {
-    countEl.textContent = `${cards.length}/10`;
-    countEl.style.color = cards.length === 10 ? 'var(--success)' : cards.length > 10 ? 'var(--danger)' : 'var(--text-dim)';
+    countEl.textContent = `${cards.length}/20`;
+    countEl.style.color = cards.length === 20 ? 'var(--success)' : cards.length > 20 ? 'var(--danger)' : 'var(--text-dim)';
   }
 
   const slots = document.getElementById('db-deck-slots');
@@ -11109,7 +11331,7 @@ function dbAddCard(cardId) {
   if (!_deckBuilderState) return;
   const { cards } = _deckBuilderState;
   // Hard stops — these mirror the visual blocked state exactly
-  if (cards.length >= 10) return;                          // deck full
+  if (cards.length >= 20) return;                          // deck full
   const owned  = getOwnedCount(cardId);
   if (owned < 1) return;                                   // not owned
   const inDeck = cards.filter(id => id === cardId).length;
