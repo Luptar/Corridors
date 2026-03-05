@@ -2870,15 +2870,8 @@ function performDraw() {
   // Resolve turn-start effects (Temporal Maze, Paradox Wall, etc.)
   resolveTurnStartEffects(drawPi);
 
-  // Resolve delayed cards before drawing
-  if (gameState._delayedCards && gameState._delayedCards[drawPi]?.length) {
-    resolveDelayedCards(drawPi);
-    if (uiMode === 'wall' || uiMode === 'move') {
-      // If AI has a pending delayed movement card, fall through to schedule runAI.
-      // If it's human, stop here and wait for UI interaction.
-      if (isHumanSeat(drawPi)) return;
-    }
-  }
+  // Resolve delayed cards AFTER drawing so the phase is 'action' and buttons work
+  const hasDelayed = gameState._delayedCards && gameState._delayedCards[drawPi]?.length;
 
   // ── MP mode: drawing is handled by mpDrawForLocalPlayer, skip SP draw ──
   if (gameMode === 'mp') {
@@ -2934,6 +2927,20 @@ function performDraw() {
   gameState.phase = 'action';
   hasMoved = false;
   hasPlayedCard = false;
+
+  // Resolve delayed cards NOW (after draw, during action phase)
+  if (hasDelayed) {
+    resolveDelayedCards(pi);
+    if (uiMode === 'wall' || uiMode === 'move') {
+      if (isHumanSeat(pi)) {
+        // Human: waiting for UI interaction with delayed card — render and stop
+        renderAll();
+        return;
+      }
+      // AI: fall through to runAI which will handle the pending card
+    }
+  }
+
   renderAll();
   showStatus(pi===AI_PLAYER ? 'AI is thinking...' : 'Your turn — MOVE or play a card', pi===AI_PLAYER ? '' : 'active');
 
@@ -3308,8 +3315,9 @@ function executePlaceWall(anchor, orientation, length, isPhantom=false, isDurabl
   addLog(pi, 'wall', `Placed ${isReinforced ? 'Reinforced ' : 'a'} wall at (${anchor.row},${anchor.col}) ${orientation}${length}`);
   uiMode = 'idle';
   const _pendingOnPlaced = selectedCard?._onPlaced || null;
+  const _wasDelayedCard = !!(selectedCard && selectedCard._delayed);
   selectedCard = null;
-  onWallPlaced(pi, fromCardId);
+  onWallPlaced(pi, fromCardId, _wasDelayedCard);
   // WD5 Total Seizure chain: fire after onWallPlaced so state is stable
   if (_pendingOnPlaced) { _pendingOnPlaced(); return; }
 }
@@ -5811,13 +5819,18 @@ function handleWallClick(anchor, orientation, length, isPhantom, isDurable) {
   // idx === -1 means this is a chained placement (T2 phantom, G4 second wall, etc.)
   // — the original card was already discarded; don't try to discard again
   const fromCardId = selectedCard ? selectedCard.id : '';
+  const _wasDelayedWall = !!(selectedCard && selectedCard._delayed);
   if (selectedCard && selectedCard.idx >= 0) discardCard(pi, selectedCard.idx);
   executePlaceWall(anchor, orientation, length, isPhantom, isDurable, fromCardId);
 
   renderAll();
   const _wpi = gameState.activePlayer;
   const _wchamp = gameState.players[_wpi].champion.id;
-  if (_wchamp === 'magnus') {
+  // Delayed wall is free — tell the player they still have their full turn
+  const _wasDelayed = _wasDelayedWall;
+  if (_wasDelayed) {
+    showStatus('Delayed wall placed — take your turn!', 'active');
+  } else if (_wchamp === 'magnus') {
     showStatus('Wall placed — now move or play another card, or end your turn', 'active');
   } else {
     showStatus('Wall placed — end your turn', 'success');
@@ -6216,6 +6229,14 @@ function showCardPicker(pi, cards, title, onPick) {
 
   document.getElementById('picker-cancel-btn').addEventListener('click', () => {
     overlay.remove();
+    // Clean up any pending Delay state so the card play isn't wasted on cancel
+    if (gameState._delayPending) {
+      gameState._delayPending = null;
+      selectedCard = null;
+      uiMode = 'idle';
+      renderAll();
+      updateActionBar();
+    }
     showStatus('Card selection cancelled', '');
   });
 }
@@ -6249,7 +6270,7 @@ function trackCategory(type) {
   // Thorne (Wardens) — hand always revealed (handled in renderPanels)
 }
 
-function onWallPlaced(pi, fromCardId) {
+function onWallPlaced(pi, fromCardId, _wasDelayedCard) {
   // Temporal Maze free wall: mark as temporary, refund wall slot, decrement counter
   if (gameState._temporalMazePending && fromCardId === 'CH10') {
     gameState._temporalMazePending = false;
@@ -6279,7 +6300,9 @@ function onWallPlaced(pi, fromCardId) {
   const isT2Phantom = !!gameState._t2phantomPending;
   // WD5 Total Seizure chain: card was already counted on activation — don't count again per wall
   const isSeizureChain = !!(gameState._seizureWalls !== undefined && gameState._seizureWalls !== null);
-  if (!isT2Phantom && !isSeizureChain) countCardPlayed(pi);
+  // Delayed cards are free — they were already "paid for" by the Delay card on the previous turn
+  const isDelayedWall = !!_wasDelayedCard;
+  if (!isT2Phantom && !isSeizureChain && !isDelayedWall) countCardPlayed(pi);
   gameState._t2phantomPending = false;
 
   // Clear eviction state now that the wall has been placed
@@ -6515,7 +6538,12 @@ function onWallPlaced(pi, fromCardId) {
 
   // During WD5 seizure chain, skip phase/render — the callback handles it after all walls are placed
   if (gameState._seizureWalls !== null && gameState._seizureWalls !== undefined) return;
-  if (isTurnDone()) gameState.phase = 'end_turn';
+  // Delayed walls are free — ensure phase stays 'action' so the player gets their full turn
+  if (isDelayedWall) {
+    gameState.phase = 'action';
+  } else if (isTurnDone()) {
+    gameState.phase = 'end_turn';
+  }
   renderAll(); updateActionBar();
 }
 
@@ -7316,24 +7344,29 @@ async function applyDisruptionCard(pi, card, idx) {
       showCardPicker(pi, hand, 'Choose a card to delay until next turn', (pickedCard) => {
         const pending = gameState._delayPending;
         if (!pending) return;
-        const p = gameState.players[pending.pi];
-        const targetIdx = p.hand.findIndex(c => c === pickedCard || (c.id === pickedCard.id && c.name === pickedCard.name));
+        const pState = gameState.players[pending.pi];
+        const targetIdx = pState.hand.findIndex(c => c === pickedCard || (c.id === pickedCard.id && c.name === pickedCard.name));
         if (targetIdx >= 0) {
-          const delayed = p.hand[targetIdx];
-          gameState.players[pending.pi] = {...p,
-            hand: p.hand.filter((_, i) => i !== targetIdx)};
+          const delayed = pState.hand[targetIdx];
+          gameState.players[pending.pi] = {...pState,
+            hand: pState.hand.filter((_, i) => i !== targetIdx)};
           delayCard(pending.pi, delayed);
         }
         // Discard the Delay card itself (adjust index if target was before it)
         const adjIdx = pending.delayCardIdx > targetIdx ? pending.delayCardIdx - 1 : pending.delayCardIdx;
         selectedCard = { id: 'CH1', idx: adjIdx, _dejaVuQueued: pending.dejaVuQueued };
-        discardCard(pending.pi, adjIdx); selectedCard = null; countCardPlayed(pending.pi);
+        discardCard(pending.pi, adjIdx);
+        // ── Critical: fully reset UI state after Delay resolves ──
+        selectedCard = null;
+        uiMode = 'idle';
+        countCardPlayed(pending.pi);
         gameState._delayPending = null;
-        // Delay does NOT consume a movement — ensure hasMoved is still false
-        // so the player can still move this turn
-        // (countCardPlayed sets hasPlayedCard, which is correct — the Delay card IS the card play)
+        // Delay does NOT consume movement — explicitly ensure hasMoved is false
+        hasMoved = false;
         if (isTurnDone()) gameState.phase = 'end_turn';
-        renderAll(); updateActionBar(); showStatus('Card delayed for next turn — you may still move!', 'success');
+        renderAll();
+        updateActionBar();
+        showStatus('Card delayed for next turn — you may still move!', 'success');
       });
       return;
     }
@@ -10442,16 +10475,17 @@ async function mpHandleRemoteUpdate(row, localSeat, myChampId, oppChampId) {
     // Resolve turn-start effects for the local player
     resolveTurnStartEffects(localSeat);
 
-    // Resolve delayed cards for MP
-    if (gameState._delayedCards && gameState._delayedCards[localSeat]?.length) {
-      resolveDelayedCards(localSeat);
-    }
-
+    // Reset turn state FIRST, then resolve delayed cards (so phase is 'action')
     hasMoved = false;
     hasPlayedCard = false;
     cardsPlayedThisTurn = 0;
     uiMode = 'idle';
     selectedCard = null;
+
+    // Resolve delayed cards for MP (after turn state reset so buttons work)
+    if (gameState._delayedCards && gameState._delayedCards[localSeat]?.length) {
+      resolveDelayedCards(localSeat);
+    }
 
     mpUpdatePanelLabels();
     renderAll();
