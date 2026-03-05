@@ -2761,15 +2761,43 @@ function wallInBounds(anchor, orientation, length) {
 
 function wallsConflict(a, b) {
   if (a.isPhantom || b.isPhantom) return false;
+
+  // 1. Edge overlap: any shared edge means overlap
   const edgesA = new Set(wallEdges(a).map(e => edgeKey(e.a, e.b)));
   for (const e of wallEdges(b)) {
     if (edgesA.has(edgeKey(e.a, e.b))) return true;
   }
-  // Cross check for length-2 walls
-  if (a.orientation !== b.orientation && a.length===2 && b.length===2) {
-    const h = a.orientation==='H'?a:b, v = a.orientation==='V'?a:b;
-    if (h.anchor.row===v.anchor.row && h.anchor.col===v.anchor.col) return true;
+
+  // 2. Perpendicular crossing: H and V walls can cross through the same
+  //    gap between 4 cells without sharing edges. This happens when
+  //    a horizontal wall at (r, c..c+len-1) and a vertical wall at
+  //    (r2..r2+len2-1, c2) share an anchor-space intersection point.
+  //    The intersection point is at grid-vertex (row, col) where:
+  //      H wall occupies vertices row = h.anchor.row+1, cols h.anchor.col to h.anchor.col+h.length
+  //      V wall occupies vertices col = v.anchor.col+1, rows v.anchor.row to v.anchor.row+v.length
+  //    They cross if the H wall's row-line passes through the V wall's row-range
+  //    AND the V wall's col-line passes through the H wall's col-range.
+  if (a.orientation !== b.orientation) {
+    const h = a.orientation === 'H' ? a : b;
+    const v = a.orientation === 'V' ? a : b;
+    // H wall blocks between row h.anchor.row and h.anchor.row+1,
+    //   spanning columns h.anchor.col to h.anchor.col + h.length - 1
+    // V wall blocks between col v.anchor.col and v.anchor.col+1,
+    //   spanning rows v.anchor.row to v.anchor.row + v.length - 1
+    // They cross at the interior grid point if:
+    //   The H wall's row gap (h.anchor.row) falls within V wall's row span
+    //   AND the V wall's col gap (v.anchor.col) falls within H wall's col span
+    const hRow = h.anchor.row; // the row-gap the H wall straddles
+    const vCol = v.anchor.col; // the col-gap the V wall straddles
+    const vRowMin = v.anchor.row;
+    const vRowMax = v.anchor.row + v.length - 1;
+    const hColMin = h.anchor.col;
+    const hColMax = h.anchor.col + h.length - 1;
+    if (hRow >= vRowMin && hRow <= vRowMax && vCol >= hColMin && vCol <= hColMax) {
+      return true;
+    }
   }
+
   return false;
 }
 
@@ -2789,7 +2817,7 @@ function isWallLegal(anchor, orientation, length, walls, p0pos, p1pos, isPhantom
     return hasPath(p0pos, 0, afterReal) && hasPath(p1pos, BOARD_SIZE - 1, afterReal);
   }
   const after = [...walls, proposed];
-  return hasPath(p0pos, 0, after) && hasPath(p1pos, 8, after);
+  return hasPath(p0pos, 0, after) && hasPath(p1pos, BOARD_SIZE - 1, after);
 }
 
 // ── State mutations ─────────────────────────────────────────────────
@@ -3117,16 +3145,25 @@ function executePlaceWall(anchor, orientation, length, isPhantom=false, isDurabl
   const pi = gameState.activePlayer;
   const p = gameState.players[pi];
 
-  // Safety guard: prevent placing walls that intersect with existing walls.
+  // Safety guard: prevent placing walls that intersect or block paths.
   // This catches card-chain placements (e.g. Echo Strike, Corner Block secondary)
   // and multiplayer edge cases where the client state may diverge.
-  if (!isPhantom) {
-    const proposed = {id:'__exec_test__',owner:pi,anchor,orientation,length,isPhantom:false,durable:false,durableHits:0,immune:false,reinforced:false,temporary:false,turnsRemaining:null,placedOnTurn:0};
-    for (const w of gameState.walls) {
-      if (!w.isPhantom && wallsConflict(proposed, w)) {
-        console.warn('[executePlaceWall] Blocked: wall intersects existing wall', {anchor, orientation, length});
-        return;
+  {
+    const proposed = {id:'__exec_test__',owner:pi,anchor,orientation,length,isPhantom:!!isPhantom,durable:false,durableHits:0,immune:false,reinforced:false,temporary:false,turnsRemaining:null,placedOnTurn:0};
+    if (!isPhantom) {
+      for (const w of gameState.walls) {
+        if (!w.isPhantom && wallsConflict(proposed, w)) {
+          console.warn('[executePlaceWall] Blocked: wall intersects existing wall', {anchor, orientation, length});
+          return;
+        }
       }
+    }
+    // Path connectivity check: ensure both players can still reach their goals
+    const testWalls = [...gameState.walls, {...proposed, isPhantom: false}];
+    if (!hasPath(gameState.players[0].position, 0, testWalls) ||
+        !hasPath(gameState.players[1].position, BOARD_SIZE - 1, testWalls)) {
+      console.warn('[executePlaceWall] Blocked: wall would cut off a player path', {anchor, orientation, length});
+      return;
     }
   }
 
@@ -8255,8 +8292,14 @@ function pickWallForShrink(wall) {
     addLog(pi, 'card', `Undermine: shrunk opponent wall to ${result.newLength} tile(s)`);
   }
 
+  const cardIdx = gameState._shrinkCardIdx;
+  if (cardIdx !== undefined && cardIdx !== null && cardIdx >= 0) {
+    discardCard(pi, cardIdx);
+  }
+  gameState._shrinkCardIdx = null;
   uiMode = 'idle';
   selectedCard = null;
+  countCardPlayed(pi);
   if (isTurnDone()) gameState.phase = 'end_turn';
   renderAll();
   showStatus(result.removed ? 'Wall destroyed!' : 'Wall shrunk by 1 tile', 'success');
@@ -8304,8 +8347,14 @@ function pickWallForFortify(wall) {
     }
   }
 
+  const cardIdx = gameState._fortifyCardIdx;
+  if (cardIdx !== undefined && cardIdx !== null && cardIdx >= 0) {
+    discardCard(pi, cardIdx);
+  }
+  gameState._fortifyCardIdx = null;
   uiMode = 'idle';
   selectedCard = null;
+  countCardPlayed(pi);
   if (isTurnDone()) gameState.phase = 'end_turn';
   renderAll();
   showStatus(`Wall extended to ${newLength} tiles!`, 'success');
