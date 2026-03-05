@@ -4243,7 +4243,7 @@ function markProbedWalls() {
   }
 }
 
-function runAI() {
+async function runAI() {
   if (gameState.phase !== 'action' || gameState.activePlayer !== AI_PLAYER) {
     aiThinking = false; return;
   }
@@ -5090,9 +5090,15 @@ function runAI() {
         // Card self-resolves through applyDisruptionCard
         const cardIdx = gameState.players[pi].hand.findIndex(c => c.id === card.id);
         if (cardIdx >= 0) {
-          applyDisruptionCard(pi, card, cardIdx);
+          await applyDisruptionCard(pi, card, cardIdx);
+          // Safety: if applyDisruptionCard left an interactive uiMode for some reason, reset it
+          if (uiMode !== 'idle' && !isHumanSeat(pi)) {
+            uiMode = 'idle';
+            selectedCard = null;
+            addLog(pi, 'system', `AI: reset uiMode after ${card.name} (unexpected interactive state)`);
+          }
         }
-      }
+    }
 
     }
   }
@@ -6084,6 +6090,27 @@ async function applyDisruptionCard(pi, card, idx) {
     const myWalls = gameState.walls.filter(w => w.owner === pi && !w.isPhantom);
     if (!myWalls.length) { showStatus('No walls to salvage', 'error'); return; }
     discardCard(pi, idx); countCardPlayed(pi);
+    if (!isHumanSeat(pi)) {
+      // AI: remove the oldest non-blocking wall, then place a 1-tile wall near opponent's path
+      const target = myWalls.sort((a, b) => a.placedOnTurn - b.placedOnTurn)[0];
+      gameState.walls = gameState.walls.filter(w => w.id !== target.id);
+      gameState.players[pi] = {...gameState.players[pi], wallsInPlay: Math.max(0, gameState.players[pi].wallsInPlay - 1)};
+      addLog(pi, 'card', 'Salvage Parts: recycled oldest wall');
+      // Place a 1-tile wall near opponent
+      const oppPos = gameState.players[1-pi].position;
+      const cands = generateWallCandidates(oppPos, 1);
+      let placed = false;
+      for (const {anchor, orientation} of cands) {
+        if (isWallLegal(anchor, orientation, 1, gameState.walls, gameState.players[1-pi].position, gameState.players[pi].position, false)) {
+          executePlaceWall(anchor, orientation, 1, false, false, 'B04');
+          placed = true; break;
+        }
+      }
+      if (!placed) addLog(pi, 'card', 'Salvage Parts: no valid 1-tile placement found');
+      selectedCard = null;
+      if (isTurnDone()) gameState.phase = 'end_turn';
+      renderAll(); return;
+    }
     // Enter reconstruct mode to pick which wall to remove, then place a 1-tile wall
     gameState._salvageCardId = 'B04';
     uiMode = 'wallReconstruct';
@@ -6145,6 +6172,28 @@ async function applyDisruptionCard(pi, card, idx) {
     const breakable = gameState.walls.filter(w => !w.isPhantom);
     if (!breakable.length) { showStatus('No walls on the board', 'error'); return; }
     discardCard(pi, idx); countCardPlayed(pi);
+    if (!isHumanSeat(pi)) {
+      // AI: remove the wall that most blocks the AI's path
+      const aiPos = gameState.players[pi].position;
+      let bestTarget = null, bestGain = -Infinity;
+      for (const w of breakable) {
+        const simWalls = breakable.filter(x => x.id !== w.id);
+        const distBefore = bfsDistanceFor(aiPos, BOARD_SIZE - 1, breakable, pi);
+        const distAfter  = bfsDistanceFor(aiPos, BOARD_SIZE - 1, simWalls, pi);
+        const gain = distBefore - distAfter + (w.reinforced ? 3 : 0);
+        if (gain > bestGain) { bestGain = gain; bestTarget = w; }
+      }
+      if (bestTarget) {
+        const isOwnerAI = bestTarget.owner === pi;
+        gameState.walls = gameState.walls.filter(w => w.id !== bestTarget.id);
+        gameState.players[bestTarget.owner] = {...gameState.players[bestTarget.owner],
+          wallsInPlay: Math.max(0, gameState.players[bestTarget.owner].wallsInPlay - 1)};
+        addLog(pi, 'card', `Deadlock Breaker: destroyed ${isOwnerAI ? 'own' : 'opponent'} wall`);
+      }
+      selectedCard = null;
+      if (isTurnDone()) gameState.phase = 'end_turn';
+      renderAll(); return;
+    }
     selectedCard = { id: 'B14', idx: -1 };
     uiMode = 'wallPunch'; // reuse punch mode but allow reinforced
     gameState._deadlockBreaker = true; // flag to override reinforced check
@@ -6176,9 +6225,29 @@ async function applyDisruptionCard(pi, card, idx) {
     gameState.walls = gameState.walls.filter(w => w.id !== target.id);
     gameState.players[pi] = {...gameState.players[pi], wallsInPlay: Math.max(0, gameState.players[pi].wallsInPlay - 1)};
     addLog(pi, 'card', `Controlled Collapse: removed reinforced wall, placing 2 new walls`);
+    discardCard(pi, idx); countCardPlayed(pi);
+    if (!isHumanSeat(pi)) {
+      // AI: place 2 standard walls near opponent
+      const oppPos = gameState.players[1-pi].position;
+      let wallsPlaced = 0;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const cands = generateWallCandidates(oppPos, 2);
+        for (const {anchor, orientation} of cands) {
+          if (isWallLegal(anchor, orientation, 2, gameState.walls,
+              gameState.players[1-pi].position, gameState.players[pi].position, false)) {
+            executePlaceWall(anchor, orientation, 2, false, false, 'AR12');
+            wallsPlaced++;
+            break;
+          }
+        }
+      }
+      addLog(pi, 'card', `Controlled Collapse: placed ${wallsPlaced} wall(s)`);
+      selectedCard = null;
+      if (isTurnDone()) gameState.phase = 'end_turn';
+      renderAll(); return;
+    }
     // Grant 2 wall placements using BB
     gameState._collapseWallsRemaining = 2;
-    discardCard(pi, idx); countCardPlayed(pi);
     selectedCard = { id: 'BB', idx: -1, length: 2, isPhantom: false, isDurable: false };
     uiMode = 'wall';
     renderAll();
