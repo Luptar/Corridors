@@ -2420,7 +2420,7 @@ const CARDS = {
   PU9: { id:'PU9', name:'Displacement Wall', faction:'Pushers', rarity:'Uncommon', type:'Wall',
          desc:'Place a 2-tile wall. Push opponent 2 spaces toward their starting row. Walls block.', wallLen:2, special:'displacementWall' },
   PU11:{ id:'PU11',name:'Wrecking Ball',  faction:'Pushers', rarity:'Rare',     type:'Movement',
-         desc:'Move 3 spaces. Push opponent 3 spaces any direction. Pushed into wall = wall shrunk by 1.', overrideSpeed:3, special:'wreckingBall' },
+         desc:'Move 3 spaces. If you run into the opponent, push them 3 spaces in your movement direction. Pushed into wall = wall shrunk by 1.', overrideSpeed:3, special:'wreckingBall' },
   PU12:{ id:'PU12',name:'Seismic Slam',   faction:'Pushers', rarity:'Legendary', type:'Disruption',
          desc:'Push opponent 4 spaces in chosen direction. Place 1-tile wall behind them in each vacated tile. Walls stop push.' },
 
@@ -2468,7 +2468,7 @@ const CARDS = {
   CH12:{ id:'CH12',name:'Déjà Vu',        faction:'Chronists', rarity:'Common',   type:'Disruption',
          desc:'Next card you play (next turn) resolves twice.' },
   CH13:{ id:'CH13',name:'Revert',          faction:'Chronists', rarity:'Uncommon', type:'Disruption',
-         desc:'Return last wall placed (either player) to owner\'s hand as a card.' },
+         desc:'Return the last wall you placed to your hand as a Basic Barrier card.' },
 };
 
 function getCardWallLength(cardId) {
@@ -3107,49 +3107,37 @@ function executeMove(to) {
       }
     }
 
-    // PU11 Wrecking Ball: push opponent 3 in chosen direction after move
-    if (selectedCard.id === 'PU11' && isHumanSeat(pi)) {
-      const dirs = getLegalForceDirs(oppPi);
-      if (dirs.length) {
-        const savedCard = {...selectedCard};
-        showDirectionPicker(dirs, (chosen) => {
-          const r = executeForceMove(oppPi, chosen, 3);
+    // PU11 Wrecking Ball: push opponent in the direction Pushaman ran into them
+    // Only triggers if Pushaman ends adjacent to opponent AND moved toward them
+    if (selectedCard.id === 'PU11') {
+      const moveDir = dirFromTo(from, to);
+      if (moveDir && isAdj) {
+        // Pushaman must have run INTO the opponent from that direction
+        // i.e. opponent is in the direction Pushaman moved
+        const expectedOppPos = { row: to.row + moveDir.r, col: to.col + moveDir.c };
+        const ranInto = expectedOppPos.row === oppPos.row && expectedOppPos.col === oppPos.col;
+        if (ranInto) {
+          const pushDir = moveDir; // push continues in the direction of approach
+          const r = executeForceMove(oppPi, pushDir, 3);
           if (r.stoppedBy === 'wall') {
-            const wallPos = {row: r.finalPos.row + chosen.r, col: r.finalPos.col + chosen.c};
-            const hitWall = gameState.walls.find(w => {
-              return wallEdges(w).some(e =>
-                edgeKey(e.a, e.b) === edgeKey(r.finalPos, wallPos));
-            });
+            const wallPos = {row: r.finalPos.row + pushDir.r, col: r.finalPos.col + pushDir.c};
+            const hitWall = gameState.walls.find(w =>
+              wallEdges(w).some(e => edgeKey(e.a, e.b) === edgeKey(r.finalPos, wallPos)));
             if (hitWall && !hitWall.reinforced) {
               shrinkWall(hitWall.id, 'end');
               addLog(pi, 'card', 'Wrecking Ball: wall damaged on collision!');
             }
           }
-          addLog(pi, 'card', `Wrecking Ball: pushed opponent ${r.spacesMoved} spaces!`);
-          renderAll();
-        }, 'WRECKING BALL', 'Push opponent which direction? (up to 3 spaces)', () => {
-          // Cancel: skip push (movement already happened)
-          addLog(pi, 'card', 'Wrecking Ball: push skipped');
-          renderAll();
-        });
-      }
-    } else if (selectedCard.id === 'PU11' && !isHumanSeat(pi)) {
-      // AI: push away from goal
-      const dirs = getLegalForceDirs(oppPi);
-      if (dirs.length) {
-        const oppGoalRow = oppPi === 0 ? 0 : BOARD_SIZE - 1;
-        const sorted = [...dirs].sort((a, b) => {
-          const pa = oppPos.row + a.r; const pb = oppPos.row + b.r;
-          return Math.abs(pb - oppGoalRow) - Math.abs(pa - oppGoalRow);
-        });
-        const r = executeForceMove(oppPi, sorted[0], 3);
-        if (r.stoppedBy === 'wall') {
-          const wallPos = {row: r.finalPos.row + sorted[0].r, col: r.finalPos.col + sorted[0].c};
-          const hitWall = gameState.walls.find(w =>
-            wallEdges(w).some(e => edgeKey(e.a, e.b) === edgeKey(r.finalPos, wallPos)));
-          if (hitWall && !hitWall.reinforced) shrinkWall(hitWall.id, 'end');
+          if (r.spacesMoved > 0) {
+            addLog(pi, 'card', `Wrecking Ball: pushed opponent ${r.spacesMoved} spaces!`);
+          } else {
+            addLog(pi, 'card', `Wrecking Ball: opponent blocked by ${r.stoppedBy}`);
+          }
+        } else {
+          addLog(pi, 'card', 'Wrecking Ball: opponent not in approach direction — no push');
         }
-        addLog(pi, 'card', `Wrecking Ball: pushed opponent ${r.spacesMoved} spaces!`);
+      } else if (!isAdj) {
+        addLog(pi, 'card', 'Wrecking Ball: not adjacent to opponent after move — no push');
       }
     }
   }
@@ -5100,7 +5088,7 @@ async function runAI() {
     }
     // CH13 Revert
     if (card.id === 'CH13') {
-      const recentWalls = st.walls.filter(w => w.owner === 0 && !w.isPhantom); // opponent walls
+      const recentWalls = st.walls.filter(w => w.owner === pi && !w.isPhantom); // own walls only
       const s = recentWalls.length > 0 ? 4 : 0;
       if (s > bestCardScore) { secondBestCardScore = bestCardScore; secondBestCardAction = bestCardAction; bestCardScore = s; bestCardAction = {kind:'disruption', subkind:'revert', card}; }
     }
@@ -5910,7 +5898,10 @@ function isTurnDone() {
 function resetTurnState() {
   gameState._vexEchoUsedThisTurn = false;
   gameState._vexEchoPending = false;
+  gameState._vexTemporalFold = false;  // Reset so Vex's ult can delay turn-end again next time
   gameState._mpOppHandDirty = false;
+  gameState._shrinkTargetWall = null;  // Clear any pending wall shrink selection
+  gameState._pendingDejaVu = null;     // Clear any pending Déjà Vu
   hasMoved            = false;
   hasPlayedCard       = false;
   cardsPlayedThisTurn = 0;
@@ -6000,9 +5991,11 @@ function selectCard(cardId, idx) {
   selectedCard = { id: cardId, idx };
 
   // ── Déjà Vu: if active for this player, consume and mark for double resolution ──
+  let _dejaVuActive = false;
   if (gameState._dejaVu === pi && !selectedCard._isDejaVuReplay) {
     gameState._dejaVu = null;
     gameState._dejaVuTurnsLeft = 0;
+    _dejaVuActive = true;
     selectedCard._dejaVuQueued = true;
     addLog(pi, 'card', 'Déjà Vu triggers — this card will resolve twice!');
   }
@@ -6012,7 +6005,7 @@ function selectCard(cardId, idx) {
     const isPhantom = !!(card.phantom);
     const isDurable = !!(card.durable);
     const length    = getCardWallLength(card.id);
-    selectedCard = { ...selectedCard, length, isPhantom, isDurable };
+    selectedCard = { ...selectedCard, length, isPhantom, isDurable, _dejaVuQueued: _dejaVuActive || undefined };
     uiMode = 'wall';
     renderAll();
     if (card.id === 'PH4') {
@@ -6022,9 +6015,13 @@ function selectCard(cardId, idx) {
     }
   } else if (card.type === 'Movement') {
     trackCategory('Movement');
+    // Store dejaVu flag before applyMovementCard overwrites selectedCard
+    gameState._pendingDejaVu = _dejaVuActive ? { cardId: card.id, card: {...card} } : null;
     applyMovementCard(pi, card, idx);
   } else if (card.type === 'Disruption') {
     trackCategory('Disruption');
+    // Store dejaVu flag for disruption cards (selectedCard often nulled before countCardPlayed)
+    gameState._pendingDejaVu = _dejaVuActive ? { cardId: card.id, card: {...card} } : null;
     applyDisruptionCard(pi, card, idx);
   } else {
     discardCard(pi, idx);
@@ -6051,9 +6048,14 @@ function countCardPlayed(pi) {
     gameState._lastCardPlayed[pi] = CARDS[selectedCard.id];
   }
   // ── Déjà Vu: schedule replay if this card was marked ──
-  if (selectedCard?._dejaVuQueued && !selectedCard._isDejaVuReplay) {
-    const replayCard = {...CARDS[selectedCard.id]};
-    selectedCard._dejaVuQueued = false; // consume
+  const _dvFromSelected = selectedCard?._dejaVuQueued && !selectedCard?._isDejaVuReplay;
+  const _dvFromPending = gameState._pendingDejaVu;
+  if (_dvFromSelected || _dvFromPending) {
+    const replayCard = _dvFromSelected
+      ? {...CARDS[selectedCard.id]}
+      : {..._dvFromPending.card};
+    if (selectedCard) selectedCard._dejaVuQueued = false; // consume
+    gameState._pendingDejaVu = null; // consume
     setTimeout(() => {
       if (!gameState || gameState.winner !== null) return;
       checkDejaVuReplay(pi, replayCard, true);
@@ -7497,18 +7499,19 @@ async function applyDisruptionCard(pi, card, idx) {
     renderAll(); showStatus('Déjà Vu active — next card resolves twice!', 'success'); return;
   }
 
-  // ── CH13: Revert — return last wall placed to owner's hand ──
+  // ── CH13: Revert — return last OWN wall placed to hand ──
   if (card.id === 'CH13') {
-    // Find the most recently placed wall
-    const sorted = [...gameState.walls].sort((a, b) => b.placedOnTurn - a.placedOnTurn);
+    // Find the most recently placed wall belonging to the PLAYER (not opponent)
+    const sorted = [...gameState.walls]
+      .filter(w => w.owner === pi && !w.isPhantom)
+      .sort((a, b) => b.placedOnTurn - a.placedOnTurn);
     const target = sorted[0];
-    if (!target) { showStatus('No walls on the board to revert', 'error'); return; }
+    if (!target) { showStatus('No own walls on the board to revert', 'error'); return; }
     gameState.walls = gameState.walls.filter(w => w.id !== target.id);
-    gameState.players[target.owner] = {...gameState.players[target.owner],
-      wallsInPlay: Math.max(0, gameState.players[target.owner].wallsInPlay - 1),
-      hand: [...gameState.players[target.owner].hand, {...CARDS['BB']}].slice(0, gameState.players[target.owner].champion.handSize)};
-    addLog(pi, 'card', `Revert: returned ${target.owner === pi ? 'your' : 'opponent\'s'} wall to hand as Basic Barrier`);
-    if (gameMode === 'mp' && target.owner !== pi) gameState._mpOppHandDirty = true;
+    gameState.players[pi] = {...gameState.players[pi],
+      wallsInPlay: Math.max(0, gameState.players[pi].wallsInPlay - 1),
+      hand: [...gameState.players[pi].hand, {...CARDS['BB']}].slice(0, gameState.players[pi].champion.handSize)};
+    addLog(pi, 'card', `Revert: returned your wall to hand as Basic Barrier`);
     discardCard(pi, idx); selectedCard = null; countCardPlayed(pi);
     if (isTurnDone()) gameState.phase = 'end_turn';
     renderAll(); showStatus('Revert: wall undone!', 'success'); return;
@@ -8527,6 +8530,31 @@ function renderWalls() {
       el.addEventListener('click', () => pickWallForRepossess(wall));
     }
     if (isShrinkable) {
+      // If this specific wall is selected for edge picking, render individual edge tiles
+      if (gameState._shrinkTargetWall === wall.id) {
+        for (let t = 0; t < wall.length; t++) {
+          // Only show clickable tiles for the two ends (first and last tile)
+          if (t !== 0 && t !== wall.length - 1) continue;
+          const tileEl = document.createElement('div');
+          tileEl.className = cls + ` wall-tile-punch ${wall.orientation}-tile`;
+          Object.assign(tileEl.style, wallTileVisualPos(wall, t));
+          tileEl.style.cursor = 'crosshair';
+          tileEl.style.zIndex = '12';
+          tileEl.title = t === 0 ? 'Remove this end' : 'Remove this end';
+          const shrinkEnd = t === 0 ? 'start' : 'end';
+          tileEl.addEventListener('click', (e) => {
+            e.stopPropagation();
+            gameState._shrinkTargetWall = null;
+            finalizeShrink(wall, shrinkEnd, gameState.activePlayer);
+          });
+          layer.appendChild(tileEl);
+        }
+        // Still show the base wall element (dimmed) so the player sees the full wall
+        el.style.opacity = '0.4';
+        el.style.pointerEvents = 'none';
+        layer.appendChild(el);
+        continue;
+      }
       el.style.cursor = 'pointer';
       el.addEventListener('click', () => pickWallForShrink(wall));
     }
@@ -8785,19 +8813,10 @@ function pickWallForShrink(wall) {
     return;
   }
 
-  // Show direction picker to choose which end to shrink
-  const startLabel = wall.orientation === 'H' ? 'LEFT end' : 'TOP end';
-  const endLabel = wall.orientation === 'H' ? 'RIGHT end' : 'BOTTOM end';
-  const dirs = [
-    { r: 0, c: -1, label: startLabel, _shrinkEnd: 'start' },
-    { r: 0, c: 1, label: endLabel, _shrinkEnd: 'end' },
-  ];
-  showDirectionPicker(dirs, (chosen) => {
-    finalizeShrink(wall, chosen._shrinkEnd, pi);
-  }, 'UNDERMINE', 'Which end to shrink?', () => {
-    // Cancel
-    showStatus('Shrink cancelled', '');
-  });
+  // Enter edge-selection sub-mode: render clickable edge tiles on this wall
+  gameState._shrinkTargetWall = wall.id;
+  renderAll();
+  showStatus('Click the edge of the wall you want to remove', 'active');
 }
 
 function finalizeShrink(wall, fromEnd, pi) {
