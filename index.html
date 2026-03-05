@@ -4175,7 +4175,7 @@ function resolveTurnStartEffects(pi) {
             placedOnTurn: gameState.turnNumber,
           };
           gameState.walls.push(wall);
-          addLog(pi, 'card', 'Free wall placed');
+          addLog(pi, 'card', 'Wall placed');
         }
         tm.turnsRemaining--;
         if (tm.turnsRemaining <= 0) delete gameState._temporalMaze[pi];
@@ -4204,11 +4204,10 @@ function resolveTurnStartEffects(pi) {
     for(const ca of candidates){
       if(wallInBounds(ca,nO,pw.length)&&isWallLegal(ca,nO,pw.length,tw,gameState.players[0].position,gameState.players[1].position,false)){
         gameState.walls=gameState.walls.map(w=>w.id===pw.id?{...w,anchor:ca,orientation:nO}:w);
-        addLog(pi,'card','Wall shifted position');
         placed=true;break;
       }
     }
-    if(!placed){gameState.walls=gameState.walls.map(w=>w.id===pw.id?{...w,_paradox:false}:w);addLog(pi,'card','Wall locked in place');}
+    if(!placed){gameState.walls=gameState.walls.map(w=>w.id===pw.id?{...w,_paradox:false}:w);}
   }
 }
 
@@ -6421,7 +6420,7 @@ function onWallPlaced(pi, fromCardId, _wasDelayedCard) {
       gameState._temporalMaze[pi].turnsRemaining--;
       if (gameState._temporalMaze[pi].turnsRemaining <= 0) delete gameState._temporalMaze[pi];
     }
-    addLog(pi, 'card', 'Free wall placed');
+    addLog(pi, 'card', 'Wall placed');
     // Don't call countCardPlayed — this is a free wall, not a card play
     uiMode = 'idle'; selectedCard = null;
     // Continue with the normal draw/action phase
@@ -6678,7 +6677,7 @@ function onWallPlaced(pi, fromCardId, _wasDelayedCard) {
       // Refund wall slot (temporal walls don't count)
       gameState.players[pi] = {...gameState.players[pi],
         wallsInPlay: Math.max(0, gameState.players[pi].wallsInPlay - 1)};
-      addLog(pi, 'card', 'Wall placed (vanishes in 2 turns, free slot)');
+      addLog(pi, 'card', 'Wall placed');
     }
   }
 
@@ -6687,7 +6686,7 @@ function onWallPlaced(pi, fromCardId, _wasDelayedCard) {
     const lastWall = gameState.walls[gameState.walls.length - 1];
     if (lastWall) {
       gameState.walls=gameState.walls.map(w=>w.id===lastWall.id?{...w,_paradox:true,_paradoxDir:'AUTO'}:w);
-      addLog(pi,'card','Wall will shift each turn');
+      addLog(pi,'card','Wall placed');
     }
   }
 
@@ -8443,8 +8442,9 @@ function renderPanels() {
           const label = labels[e.type] || e.type.replace(/_/g,' ').toUpperCase();
           return `<span class="status-chip">${label} (${e.turnsRemaining}t)</span>`;
         }).join('');
-      // Temporal Maze tracker
-      if (gameState._temporalMaze && gameState._temporalMaze[pi] && gameState._temporalMaze[pi].turnsRemaining > 0) {
+      // Temporal Maze tracker — only visible to the owner
+      const _tmLocalViewer = (gameMode === 'mp') ? mp_localSeat : 0;
+      if (pi === _tmLocalViewer && gameState._temporalMaze && gameState._temporalMaze[pi] && gameState._temporalMaze[pi].turnsRemaining > 0) {
         const tmTurns = gameState._temporalMaze[pi].turnsRemaining;
         chipHtml += `<span class="status-chip" style="border-color:var(--wall-chro);color:var(--wall-chro)">TEMPORAL MAZE (${tmTurns}t)</span>`;
       }
@@ -8665,8 +8665,8 @@ function renderWalls() {
     if (wall.binding) cls += ' wall-binding';
     if (wall.gust) cls += ' wall-gust';
     if (wall.displacement) cls += ' wall-displacement';
-    if (wall._paradox) cls += ' wall-paradox';
-    if (wall.temporary) cls += ' wall-temporal';
+    if (wall._paradox && wall.owner === localPlayer) cls += ' wall-paradox';
+    if (wall.temporary && wall.owner === localPlayer) cls += ' wall-temporal';
     if (isPickable)       cls += ' wall-pickable';
     if (isRedirect)       cls += ' wall-pickable wall-redirect';
     if (isSealable)       cls += ' wall-pickable wall-sealable';
