@@ -423,6 +423,8 @@
     background: var(--legal-move);
     cursor: pointer;
   }
+.breach-aoe { box-shadow: inset 0 0 8px 2px rgba(255,100,100,0.5) !important; }
+.breach-stun { border: 1px dashed rgba(255,100,100,0.4); }
   .cell.legal-move::after {
     content: '';
     position: absolute;
@@ -2667,7 +2669,7 @@ function hasPath(from, goalRow, walls) {
 }
 
 // ── Legal moves ─────────────────────────────────────────────────────
-function getLegalMoves(state, pIdx, overrideSpeed, tunnelThrough, diagonal, ownWallsPassthrough) {
+function getLegalMoves(state, pIdx, overrideSpeed, tunnelThrough, diagonal, ownWallsPassthrough, lateralOnly) {
   const player = state.players[pIdx];
   const opponent = state.players[pIdx === 0 ? 1 : 0];
   // Build effective wall set based on card flags:
@@ -2692,6 +2694,30 @@ function getLegalMoves(state, pIdx, overrideSpeed, tunnelThrough, diagonal, ownW
   const visited = new Set([key(pos)]);
   let frontier = [pos];
   const reachable = [];
+
+  // Flanking Path (B10): lateral-only movement — left/right only, ignore walls on lateral edges
+  if (arguments.length > 6 && arguments[6]) {
+    // lateralOnly mode: move up to 'speed' steps left/right, ignoring walls
+    const lateralDirs = [{r:0,c:-1},{r:0,c:1}];
+    for (let step = 0; step < speed; step++) {
+      const nextFrontier = [];
+      for (const cur of frontier) {
+        for (const d of lateralDirs) {
+          const nb = {row:cur.row+d.r, col:cur.col+d.c};
+          if (nb.row<0||nb.row>=BOARD_SIZE||nb.col<0||nb.col>=BOARD_SIZE) continue;
+          const k = key(nb);
+          if (visited.has(k)) continue;
+          if (k === key(opPos)) continue;
+          // Flanking Path ignores walls on lateral moves
+          visited.add(k);
+          nextFrontier.push(nb);
+          reachable.push(nb);
+        }
+      }
+      frontier = nextFrontier;
+    }
+    return reachable;
+  }
 
   if (diagonal) {
     // Diagonal-only BFS (Quick Step). One step, 8-directional.
@@ -2913,6 +2939,48 @@ function performDraw() {
   }
 }
 
+// Reconstruct shortest BFS path from 'from' to 'to' for trap checking (intermediate tiles only)
+function reconstructBFSPath(from, to, pi) {
+  if (from.row === to.row && from.col === to.col) return [];
+  const state = gameState;
+  const player = state.players[pi];
+  const effectiveWalls = player.stormpath ? [] : state.walls;
+  const blocked = buildBlockedEdges(effectiveWalls, pi);
+  const opPos = state.players[1-pi].position;
+  const key = p => `${p.row},${p.col}`;
+  const dirs = [{r:-1,c:0},{r:1,c:0},{r:0,c:1},{r:0,c:-1}];
+  const visited = new Map();
+  visited.set(key(from), null);
+  const queue = [from];
+  while (queue.length) {
+    const cur = queue.shift();
+    if (cur.row === to.row && cur.col === to.col) {
+      // Reconstruct path (excluding start, excluding end — intermediate tiles only)
+      const path = [];
+      let node = cur;
+      while (node && !(node.row === from.row && node.col === from.col)) {
+        path.unshift(node);
+        node = visited.get(key(node));
+      }
+      // Return intermediate tiles only (exclude the start, keep everything including end)
+      // But since we want to check traps on intermediate tiles (not end — that's checked separately),
+      // return tiles excluding first (from) and last (to)
+      return path.slice(0, -1); // intermediate tiles only
+    }
+    for (const d of dirs) {
+      const nb = {row:cur.row+d.r, col:cur.col+d.c};
+      if (nb.row<0||nb.row>=BOARD_SIZE||nb.col<0||nb.col>=BOARD_SIZE) continue;
+      const k = key(nb);
+      if (visited.has(k)) continue;
+      if (k === key(opPos)) continue;
+      if (isEdgeBlocked(cur, nb, blocked)) continue;
+      visited.set(k, cur);
+      queue.push(nb);
+    }
+  }
+  return []; // no path found (shouldn't happen for a legal move)
+}
+
 function executeMove(to) {
   const pi   = gameState.activePlayer;
   const from = gameState.players[pi].position;
@@ -2932,6 +3000,18 @@ function executeMove(to) {
     uiMode = 'idle';
     addLog(pi, 'ultimate', `Breach: teleported to (${to.row},${to.col})`);
     countCardPlayed(pi);
+
+    // Check win condition — Breach can land on the goal row
+    const breachGoalRow = pi === 0 ? 0 : BOARD_SIZE - 1;
+    if (to.row === breachGoalRow) {
+      gameState.winner = pi;
+      gameState.phase = 'ended';
+      addLog(pi, 'system', `PLAYER ${pi} WINS — Breach to the goal!`);
+      renderAll();
+      showVictory(pi);
+      return;
+    }
+
     if (isTurnDone()) gameState.phase = 'end_turn';
     renderAll();
     showStatus('Breach complete!', 'success');
@@ -3095,17 +3175,34 @@ function executeMove(to) {
   // Phantoms only dissolve when a player physically crosses through them (see above).
   // Stepping adjacent does NOT reveal or remove them.
 
-  // ── Trap trigger detection ─────────────────────────────────────────
-  // When a player VOLUNTARILY moves onto a tile with an opponent's trap, trigger it.
-  // Snare traps stop movement (already at destination by this point — handled).
-  // Other traps apply their effect after landing.
-  const trap = getTrapAtTile(to, pi);
-  if (trap) {
-    const trapResult = triggerTrap(trap, pi);
-    // Snare: movement already stopped (player is on the tile).
-    // For multi-step movement cards, the snare would need to interrupt mid-path.
-    // Current implementation: trap triggers on final destination.
-    // Future: for multi-step cards, check each intermediate tile.
+  // ── Trap trigger detection (all tiles along path) ───────────────────
+  // For multi-step moves, check intermediate tiles for traps too.
+  // Reconstruct the shortest BFS path from 'from' to 'to' and check each tile.
+  {
+    const pathTiles = reconstructBFSPath(from, to, pi);
+    let stoppedEarly = false;
+    for (const tile of pathTiles) {
+      const trap = getTrapAtTile(tile, pi);
+      if (trap) {
+        const trapResult = triggerTrap(trap, pi);
+        // Snare: stop movement at this tile instead of final destination
+        if (trapResult.type === 'snare' || trapResult.effect === 'movement_stop') {
+          if (tile.row !== to.row || tile.col !== to.col) {
+            gameState.players[pi] = {...gameState.players[pi], position: tile};
+            addLog(pi, 'trap', `Movement stopped at (${tile.row},${tile.col}) by trap!`);
+            stoppedEarly = true;
+          }
+          break; // Stop checking further tiles
+        }
+      }
+    }
+    // Also check the final destination if we didn't stop early
+    if (!stoppedEarly) {
+      const finalTrap = getTrapAtTile(to, pi);
+      if (finalTrap) {
+        triggerTrap(finalTrap, pi);
+      }
+    }
   }
 
   const goalRow = pi===0 ? 0 : BOARD_SIZE-1;
@@ -3773,7 +3870,8 @@ function resolveDelayedCards(pi) {
       const speed = card.overrideSpeed || 1;
       selectedCard = { id: card.id, idx: -1, overrideSpeed: speed,
         tunnelThrough: !!card.tunnelThrough, diagonal: !!card.diagonal,
-        ownWallsPassthrough: !!card.ownWallsPassthrough, _pendingMove: true, _delayed: true };
+        ownWallsPassthrough: !!card.ownWallsPassthrough, _pendingMove: true, _delayed: true,
+        _freePlay: true };
       uiMode = 'move';
       renderAll();
       showStatus(`Delayed ${card.name} — move now (${speed} step${speed > 1 ? 's' : ''})`, 'active');
@@ -3967,42 +4065,53 @@ function placeTrapWallBehind(pos, pushDir, ownerPi) {
 // Handles delayed cards, Temporal Maze free walls, Paradox Wall teleport.
 // Called by performDraw() (SP) and mpHandleRemoteUpdate/mpUpdateTurnState (MP).
 function resolveTurnStartEffects(pi) {
-  // Temporal Maze: place a free 1-tile wall at turn start
+  // Temporal Maze: place a free 1-tile wall at turn start — player chooses location
   if (gameState._temporalMaze && gameState._temporalMaze[pi]) {
     const tm = gameState._temporalMaze[pi];
     if (tm.turnsRemaining > 0) {
-      // Auto-place a 1-tile temporary wall at a random legal position near opponent
-      const opp = 1 - pi;
-      const oppPos = gameState.players[opp].position;
-      const candidates = [];
-      for (let dr = -2; dr <= 2; dr++) {
-        for (let dc = -2; dc <= 2; dc++) {
-          const a = {row: oppPos.row + dr, col: oppPos.col + dc};
-          for (const ori of ['H', 'V']) {
-            if (wallInBounds(a, ori, 1) && isWallLegal(a, ori, 1, gameState.walls,
-                gameState.players[0].position, gameState.players[1].position, false)) {
-              candidates.push({anchor: a, orientation: ori});
+      if (isHumanSeat(pi)) {
+        // Human: enter wall placement mode for a free 1-tile temporary wall
+        gameState._temporalMazePending = true;
+        selectedCard = { id: 'CH10', idx: -1, length: 1, isPhantom: false, isDurable: false,
+                         _temporalMazeWall: true };
+        uiMode = 'wall';
+        renderAll();
+        showStatus(`Temporal Maze (${tm.turnsRemaining} left) — place a free 1-tile wall anywhere`, 'active');
+        // Don't decrement yet — will be decremented in onWallPlaced when the wall is placed
+        return; // pause further resolution until wall is placed
+      } else {
+        // AI: auto-place near opponent
+        const opp = 1 - pi;
+        const oppPos = gameState.players[opp].position;
+        const candidates = [];
+        for (let dr = -2; dr <= 2; dr++) {
+          for (let dc = -2; dc <= 2; dc++) {
+            const a = {row: oppPos.row + dr, col: oppPos.col + dc};
+            for (const ori of ['H', 'V']) {
+              if (wallInBounds(a, ori, 1) && isWallLegal(a, ori, 1, gameState.walls,
+                  gameState.players[0].position, gameState.players[1].position, false)) {
+                candidates.push({anchor: a, orientation: ori});
+              }
             }
           }
         }
+        if (candidates.length) {
+          const pick = candidates[Math.floor(Math.random() * candidates.length)];
+          const wall = {
+            id: `w${gameState.nextWallId++}`, owner: pi,
+            anchor: pick.anchor, orientation: pick.orientation, length: 1,
+            isPhantom: false, durable: false, durableHits: 0,
+            immune: false, reinforced: false, permanent: false,
+            binding: false, noJump: false,
+            temporary: true, turnsRemaining: 2,
+            placedOnTurn: gameState.turnNumber,
+          };
+          gameState.walls.push(wall);
+          addLog(pi, 'card', 'Temporal Maze: free 1-tile wall placed');
+        }
+        tm.turnsRemaining--;
+        if (tm.turnsRemaining <= 0) delete gameState._temporalMaze[pi];
       }
-      if (candidates.length) {
-        const pick = candidates[Math.floor(Math.random() * candidates.length)];
-        const wall = {
-          id: `w${gameState.nextWallId++}`, owner: pi,
-          anchor: pick.anchor, orientation: pick.orientation, length: 1,
-          isPhantom: false, durable: false, durableHits: 0,
-          immune: false, reinforced: false, permanent: false,
-          binding: false, noJump: false,
-          temporary: true, turnsRemaining: 2,
-          placedOnTurn: gameState.turnNumber,
-        };
-        gameState.walls.push(wall);
-        // Temporal walls don't count toward wall limit
-        addLog(pi, 'card', 'Temporal Maze: free 1-tile wall placed');
-      }
-      tm.turnsRemaining--;
-      if (tm.turnsRemaining <= 0) delete gameState._temporalMaze[pi];
     }
   }
 
@@ -4545,7 +4654,8 @@ async function runAI() {
       const diag = !!card.diagonal;
       const ownPass = !!card.ownWallsPassthrough;
       const simState = {...gameState, walls: st.walls};
-      const boostedMoves = getLegalMoves(simState, pi, speed, tunnel, diag, ownPass);
+      const isLateral = card.special === 'flanking';
+      const boostedMoves = getLegalMoves(simState, pi, speed, tunnel, diag, ownPass, isLateral);
       let bestMoveWithCard = -Infinity;
       let bestDest = null;
       for (const to of boostedMoves) {
@@ -5767,6 +5877,12 @@ function isTurnDone() {
     return false;
   }
 
+  // Vex (Temporal Fold): if ultimate is ready and unused, don't auto-end the turn
+  // so the player has a chance to activate it after their normal card+move
+  if (champId === 'vex' && p.ultimateReady && !p.ultimateUsed && !gameState._vexTemporalFold) {
+    return false; // player can still activate ultimate
+  }
+
   // All other champions: move + play 1 card (or just move if hand empty)
   if (p.hand.length === 0) return hasMoved;
   return hasMoved && cardsPlayedThisTurn >= 1;
@@ -6128,6 +6244,31 @@ function trackCategory(type) {
 }
 
 function onWallPlaced(pi, fromCardId) {
+  // Temporal Maze free wall: mark as temporary, refund wall slot, decrement counter
+  if (gameState._temporalMazePending && fromCardId === 'CH10') {
+    gameState._temporalMazePending = false;
+    const lastWall = gameState.walls[gameState.walls.length - 1];
+    if (lastWall) {
+      gameState.walls = gameState.walls.map(w =>
+        w.id === lastWall.id ? {...w, temporary: true, turnsRemaining: 2} : w);
+      // Refund wall slot (temporal walls don't count toward limit)
+      gameState.players[pi] = {...gameState.players[pi],
+        wallsInPlay: Math.max(0, gameState.players[pi].wallsInPlay - 1)};
+    }
+    if (gameState._temporalMaze && gameState._temporalMaze[pi]) {
+      gameState._temporalMaze[pi].turnsRemaining--;
+      if (gameState._temporalMaze[pi].turnsRemaining <= 0) delete gameState._temporalMaze[pi];
+    }
+    addLog(pi, 'card', 'Temporal Maze: free 1-tile wall placed');
+    // Don't call countCardPlayed — this is a free wall, not a card play
+    uiMode = 'idle'; selectedCard = null;
+    // Continue with the normal draw/action phase
+    gameState.phase = 'action';
+    renderAll(); updateActionBar();
+    showStatus('Temporal Maze wall placed — now take your turn', 'success');
+    return;
+  }
+
   // T2 phantom step: don't count as a second card play
   const isT2Phantom = !!gameState._t2phantomPending;
   // WD5 Total Seizure chain: card was already counted on activation — don't count again per wall
@@ -6243,13 +6384,28 @@ function onWallPlaced(pi, fromCardId) {
     }
   }
 
-  // PU9 Displacement Wall: push opponent 2 toward their start row
+  // PU9 Displacement Wall: push opponent 2 toward their start row ONLY if adjacent to wall
   if (fromCardId === 'PU9') {
     const opp = 1 - pi;
-    const oppStartRow = opp === 0 ? BOARD_SIZE - 1 : 0;
-    const pushDir = oppStartRow > gameState.players[opp].position.row ? DIR.DOWN : DIR.UP;
-    const r = executeForceMove(opp, pushDir, 2);
-    if (r.spacesMoved > 0) addLog(pi, 'card', `Displacement Wall: pushed opponent ${r.spacesMoved} toward start!`);
+    const lastWall = gameState.walls[gameState.walls.length - 1];
+    if (lastWall) {
+      // Check if opponent is adjacent to the placed wall (within 1 tile of any wall edge)
+      const oppPos = gameState.players[opp].position;
+      const wEdges = wallEdges(lastWall);
+      const isAdjacent = wEdges.some(e => {
+        // Wall edge separates cells e.a and e.b — opponent is adjacent if on either side
+        return (oppPos.row === e.a.row && oppPos.col === e.a.col) ||
+               (oppPos.row === e.b.row && oppPos.col === e.b.col);
+      });
+      if (isAdjacent) {
+        const oppStartRow = opp === 0 ? BOARD_SIZE - 1 : 0;
+        const pushDir = oppStartRow > oppPos.row ? DIR.DOWN : DIR.UP;
+        const r = executeForceMove(opp, pushDir, 2);
+        if (r.spacesMoved > 0) addLog(pi, 'card', `Displacement Wall: pushed opponent ${r.spacesMoved} toward start!`);
+      } else {
+        addLog(pi, 'card', 'Displacement Wall: opponent not adjacent — no push');
+      }
+    }
   }
 
   // ── Trapper wall specials ─────────────────────────────────────────
@@ -6456,6 +6612,7 @@ function applyMovementCard(pi, card, idx) {
   // Store pending card info with all movement flags; discard happens in executeMove.
   selectedCard = { id: card.id, idx, overrideSpeed: speed, tunnelThrough: !!card.tunnelThrough,
                    diagonal: !!card.diagonal, ownWallsPassthrough: !!card.ownWallsPassthrough,
+                   lateralOnly: !!(card.special === 'flanking'),
                    _pendingMove: true };
   uiMode = 'move';
   renderAll();
@@ -6569,17 +6726,29 @@ async function applyDisruptionCard(pi, card, idx) {
       gameState.players[pi] = {...gameState.players[pi], deck: newDeck, hand: newHand.slice(0, p.champion.handSize)};
       addLog(pi, 'card', `Scavenge: kept ${kept.name}`);
     } else {
-      // Human: show a simple picker (use the top card for now — full picker is Phase 7 polish)
-      const kept = top3[0];
-      const rest = top3.slice(1);
-      const newDeck = [...deck.slice(3), ...rest];
-      const newHand = [...p.hand, kept];
-      gameState.players[pi] = {...gameState.players[pi], deck: newDeck, hand: newHand.slice(0, p.champion.handSize)};
-      addLog(pi, 'card', `Scavenge: kept ${kept.name}, put ${rest.length} on bottom`);
+      // Human: show card picker to choose which card to keep
+      const scavengeIdx = idx;
+      showCardPicker(pi, top3, 'Scavenge — choose 1 card to keep (others go to bottom of deck)', (pickedCard) => {
+        const p2 = gameState.players[pi];
+        let deck2 = [...p2.deck];
+        // If we reshuffled, deck was already updated above
+        if (deck2.length < 3) {
+          deck2 = [...deck2, ...shuffle([...p2.discard])];
+          gameState.players[pi] = {...p2, deck: deck2, discard: []};
+        }
+        const top = deck2.slice(0, 3);
+        const kept = top.find(c => c.id === pickedCard.id && c.name === pickedCard.name) || top[0];
+        const rest = top.filter(c => c !== kept);
+        const newDeck = [...deck2.slice(3), ...rest];
+        const newHand = [...gameState.players[pi].hand, kept];
+        gameState.players[pi] = {...gameState.players[pi], deck: newDeck, hand: newHand.slice(0, gameState.players[pi].champion.handSize)};
+        addLog(pi, 'card', `Scavenge: kept ${kept.name}, put ${rest.length} on bottom`);
+        discardCard(pi, scavengeIdx); selectedCard = null; countCardPlayed(pi);
+        if (isTurnDone()) gameState.phase = 'end_turn';
+        renderAll(); showStatus(`Scavenge: kept ${kept.name}!`, 'success');
+      });
+      return;
     }
-    discardCard(pi, idx); selectedCard = null; countCardPlayed(pi);
-    if (isTurnDone()) gameState.phase = 'end_turn';
-    renderAll(); showStatus('Scavenge complete!', 'success'); return;
   }
 
   // ── B14: Deadlock Breaker — remove any wall including reinforced ──
@@ -7154,8 +7323,11 @@ async function applyDisruptionCard(pi, card, idx) {
         selectedCard = { id: 'CH1', idx: adjIdx, _dejaVuQueued: pending.dejaVuQueued };
         discardCard(pending.pi, adjIdx); selectedCard = null; countCardPlayed(pending.pi);
         gameState._delayPending = null;
+        // Delay does NOT consume a movement — ensure hasMoved is still false
+        // so the player can still move this turn
+        // (countCardPlayed sets hasPlayedCard, which is correct — the Delay card IS the card play)
         if (isTurnDone()) gameState.phase = 'end_turn';
-        renderAll(); showStatus('Card delayed for next turn!', 'success');
+        renderAll(); updateActionBar(); showStatus('Card delayed for next turn — you may still move!', 'success');
       });
       return;
     }
@@ -8127,7 +8299,8 @@ function renderBoard() {
   const tunnelThrough = !!(selectedCard && selectedCard.tunnelThrough);
   const diagonal = !!(selectedCard && selectedCard.diagonal);
   const ownWallsPassthrough = !!(selectedCard && selectedCard.ownWallsPassthrough);
-  let legalMoves = uiMode==='move' ? getLegalMoves(gameState, gameState.activePlayer, overrideSpeed, tunnelThrough, diagonal, ownWallsPassthrough) : [];
+  const lateralOnly = !!(selectedCard && selectedCard.lateralOnly);
+  let legalMoves = uiMode==='move' ? getLegalMoves(gameState, gameState.activePlayer, overrideSpeed, tunnelThrough, diagonal, ownWallsPassthrough, lateralOnly) : [];
   // Breach override: show breach targets instead of normal moves
   if (gameState._breachTargets && selectedCard && selectedCard._breach) {
     legalMoves = gameState._breachTargets;
@@ -8145,6 +8318,28 @@ function renderBoard() {
       const cell = document.createElement('div');
       cell.className = `cell${isLegal?' legal-move':''}${isTrapTarget?' legal-move trap-place-target':''}${r===0?' goal-row-p0':''}${r===BOARD_SIZE-1?' goal-row-p1':''}`;
       cell.dataset.row = r; cell.dataset.col = c;
+      // Breach: show stun AoE on hover
+      if (isLegal && gameState._breachTargets && selectedCard && selectedCard._breach) {
+        const oppPos = gameState.players[1 - gameState.activePlayer].position;
+        const dist = Math.abs(r - oppPos.row) + Math.abs(c - oppPos.col);
+        if (dist <= 2) cell.classList.add('breach-stun');
+        cell.addEventListener('mouseenter', () => {
+          document.querySelectorAll('.breach-aoe').forEach(el => el.classList.remove('breach-aoe'));
+          // Highlight all tiles within 2 Manhattan of this cell
+          for (let dr2 = -2; dr2 <= 2; dr2++) {
+            for (let dc2 = -2; dc2 <= 2; dc2++) {
+              if (Math.abs(dr2) + Math.abs(dc2) > 2) continue;
+              const ar = r + dr2, ac = c + dc2;
+              if (ar < 0 || ar >= BOARD_SIZE || ac < 0 || ac >= BOARD_SIZE) continue;
+              const target = document.querySelector(`.cell[data-row="${ar}"][data-col="${ac}"]`);
+              if (target) target.classList.add('breach-aoe');
+            }
+          }
+        });
+        cell.addEventListener('mouseleave', () => {
+          document.querySelectorAll('.breach-aoe').forEach(el => el.classList.remove('breach-aoe'));
+        });
+      }
       if (isLegal) cell.onclick = () => handleCellClick(r, c);
       else if (isTrapTarget) cell.onclick = () => handleTrapPlaceClick(r, c);
       grid.appendChild(cell);
@@ -8545,7 +8740,29 @@ function pickWallForShrink(wall) {
   if (uiMode !== 'wallShrink') return;
   const pi = gameState.activePlayer;
 
-  const result = shrinkWall(wall.id, 'end');
+  // If wall is only 1 tile, just remove it (no side choice needed)
+  if (wall.length <= 1) {
+    finalizeShrink(wall, 'end', pi);
+    return;
+  }
+
+  // Show direction picker to choose which end to shrink
+  const startLabel = wall.orientation === 'H' ? 'LEFT end' : 'TOP end';
+  const endLabel = wall.orientation === 'H' ? 'RIGHT end' : 'BOTTOM end';
+  const dirs = [
+    { r: 0, c: -1, label: startLabel, _shrinkEnd: 'start' },
+    { r: 0, c: 1, label: endLabel, _shrinkEnd: 'end' },
+  ];
+  showDirectionPicker(dirs, (chosen) => {
+    finalizeShrink(wall, chosen._shrinkEnd, pi);
+  }, 'UNDERMINE', 'Which end to shrink?', () => {
+    // Cancel
+    showStatus('Shrink cancelled', '');
+  });
+}
+
+function finalizeShrink(wall, fromEnd, pi) {
+  const result = shrinkWall(wall.id, fromEnd);
   if (!result.success) {
     showStatus('Cannot shrink: ' + result.reason, 'error');
     return;
@@ -8554,7 +8771,7 @@ function pickWallForShrink(wall) {
   if (result.removed) {
     addLog(pi, 'card', `Undermine: destroyed ${wall.owner === pi ? 'own' : 'opponent'} wall (shrunk to 0)`);
   } else {
-    addLog(pi, 'card', `Undermine: shrunk opponent wall to ${result.newLength} tile(s)`);
+    addLog(pi, 'card', `Undermine: shrunk opponent wall to ${result.newLength} tile(s) from ${fromEnd}`);
   }
 
   const cardIdx = gameState._shrinkCardIdx;
