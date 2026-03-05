@@ -2458,7 +2458,7 @@ const CARDS = {
   CH6: { id:'CH6', name:'Time Loop',       faction:'Chronists', rarity:'Uncommon', type:'Disruption',
          desc:'Return the last card you played (previous turn) from discard to hand.' },
   CH8: { id:'CH8', name:'Paradox Wall',    faction:'Chronists', rarity:'Uncommon', type:'Wall',
-         desc:'Place 2-tile wall. Flips to a nearby random position for 2 turns, then locks in place.', wallLen:2, special:'paradoxWall' },
+         desc:'Place 2-tile wall. Each turn, rotates around one edge (your choice). Locks in place if no legal rotation exists.', wallLen:2, special:'paradoxWall' },
   CH9: { id:'CH9', name:'Recall',          faction:'Chronists', rarity:'Rare',     type:'Disruption',
          desc:'Return any discard pile card to hand. Play it immediately for free.' },
   CH10:{ id:'CH10',name:'Temporal Maze',   faction:'Chronists', rarity:'Rare',     type:'Wall',
@@ -2468,7 +2468,7 @@ const CARDS = {
   CH12:{ id:'CH12',name:'Déjà Vu',        faction:'Chronists', rarity:'Common',   type:'Disruption',
          desc:'Next card you play (next turn) resolves twice.' },
   CH13:{ id:'CH13',name:'Revert',          faction:'Chronists', rarity:'Uncommon', type:'Disruption',
-         desc:'Return the last wall you placed to your hand as a Basic Barrier card.' },
+         desc:'Return the last wall placed (by either player) to its owner\'s hand as a Basic Barrier card.' },
 };
 
 function getCardWallLength(cardId) {
@@ -4130,53 +4130,116 @@ function resolveTurnStartEffects(pi) {
     }
   }
 
-  // Paradox Wall: flip to a nearby random legal position, decrement turns, lock when done
+  // Paradox Wall: rotate around one edge (CW or CCW, player choice via modal)
+  // Rotation: keep one endpoint fixed, pivot 90° to flip orientation
+  // H wall at (r,c) len=2: endpoints are (r,c) and (r,c+1)
+  //   CW around left edge (r,c): becomes V wall at (r,c) len=2
+  //   CCW around left edge: becomes V wall at (r-1,c) len=2
+  //   CW around right edge (r,c+1): becomes V wall at (r,c+1) len=2
+  //   CCW around right edge: becomes V wall at (r-1,c+1) len=2
+  // V wall at (r,c) len=2: endpoints are (r,c) and (r+1,c)
+  //   CW around top edge (r,c): becomes H wall at (r,c) len=2
+  //   CCW around top edge: becomes H wall at (r,c-1) len=2
+  //   CW around bottom edge (r+1,c): becomes H wall at (r+1,c-1) len=2
+  //   CCW around bottom edge: becomes H wall at (r+1,c) len=2
   const paradoxWalls = gameState.walls.filter(w => w._paradox && w.owner === pi);
   for (const pw of paradoxWalls) {
-    if (pw._paradoxTurns !== undefined && pw._paradoxTurns <= 0) {
-      // Already locked — remove paradox flag
+    // Generate all possible rotations (4 options: 2 edges × CW/CCW)
+    const rotations = [];
+    const testWalls = gameState.walls.filter(w => w.id !== pw.id);
+    const newOri = pw.orientation === 'H' ? 'V' : 'H';
+    if (pw.orientation === 'H') {
+      // Left edge CW/CCW
+      rotations.push({anchor: {row: pw.anchor.row, col: pw.anchor.col}, orientation: newOri, label: 'Left edge CW'});
+      rotations.push({anchor: {row: pw.anchor.row - 1, col: pw.anchor.col}, orientation: newOri, label: 'Left edge CCW'});
+      // Right edge CW/CCW
+      const rightCol = pw.anchor.col + pw.length - 1;
+      rotations.push({anchor: {row: pw.anchor.row, col: rightCol}, orientation: newOri, label: 'Right edge CW'});
+      rotations.push({anchor: {row: pw.anchor.row - 1, col: rightCol}, orientation: newOri, label: 'Right edge CCW'});
+    } else {
+      // Top edge CW/CCW
+      rotations.push({anchor: {row: pw.anchor.row, col: pw.anchor.col}, orientation: newOri, label: 'Top edge CW'});
+      rotations.push({anchor: {row: pw.anchor.row, col: pw.anchor.col - 1}, orientation: newOri, label: 'Top edge CCW'});
+      // Bottom edge CW/CCW
+      const bottomRow = pw.anchor.row + pw.length - 1;
+      rotations.push({anchor: {row: bottomRow, col: pw.anchor.col - 1}, orientation: newOri, label: 'Bottom edge CW'});
+      rotations.push({anchor: {row: bottomRow, col: pw.anchor.col}, orientation: newOri, label: 'Bottom edge CCW'});
+    }
+    // Filter to legal rotations
+    const legalRotations = rotations.filter(rot =>
+      wallInBounds(rot.anchor, rot.orientation, pw.length) &&
+      isWallLegal(rot.anchor, rot.orientation, pw.length, testWalls,
+        gameState.players[0].position, gameState.players[1].position, false)
+    );
+    if (!legalRotations.length) {
+      // No legal rotations — lock permanently
       gameState.walls = gameState.walls.map(w =>
         w.id === pw.id ? {...w, _paradox: false} : w);
-      addLog(pi, 'card', 'Paradox Wall locked in place');
+      addLog(pi, 'card', 'Paradox Wall: no legal rotations — permanently locked');
       continue;
     }
-    // Find adjacent legal positions (within 2 tiles of original placement)
-    const origin = pw._paradoxOrigin || {row: pw.anchor.row, col: pw.anchor.col};
-    const candidates = [];
-    for (let dr = -2; dr <= 2; dr++) {
-      for (let dc = -2; dc <= 2; dc++) {
-        if (dr === 0 && dc === 0) continue;
-        for (const ori of ['H', 'V']) {
-          const a = {row: origin.row + dr, col: origin.col + dc};
-          if (wallInBounds(a, ori, pw.length)) {
-            const testWalls = gameState.walls.filter(w => w.id !== pw.id);
-            if (isWallLegal(a, ori, pw.length, testWalls,
-                gameState.players[0].position, gameState.players[1].position, false)) {
-              candidates.push({anchor: a, orientation: ori});
-            }
-          }
-        }
-      }
-    }
-    if (candidates.length) {
-      const pick = candidates[Math.floor(Math.random() * candidates.length)];
-      const newTurns = (pw._paradoxTurns !== undefined ? pw._paradoxTurns : 2) - 1;
+    if (!isHumanSeat(pi)) {
+      // AI: pick random legal rotation
+      const pick = legalRotations[Math.floor(Math.random() * legalRotations.length)];
       gameState.walls = gameState.walls.map(w =>
-        w.id === pw.id ? {...w, anchor: pick.anchor, orientation: pick.orientation, _paradoxTurns: newTurns} : w
-      );
-      if (newTurns <= 0) {
-        addLog(pi, 'card', 'Paradox Wall: final flip — now locked in place');
-      } else {
-        addLog(pi, 'card', `Paradox Wall: flipped (${newTurns} flip${newTurns !== 1 ? 's' : ''} left)`);
-      }
+        w.id === pw.id ? {...w, anchor: pick.anchor, orientation: pick.orientation} : w);
+      addLog(pi, 'card', `Paradox Wall: rotated (${pick.label})`);
     } else {
-      gameState.walls = gameState.walls.map(w =>
-        w.id === pw.id ? {...w, _paradox: false, _paradoxTurns: 0} : w);
-      addLog(pi, 'card', 'Paradox Wall: no legal nearby positions — locked');
+      // Human: show picker for rotation choice
+      gameState._paradoxPending = { wallId: pw.id, rotations: legalRotations };
+      showParadoxRotationPicker(pi, pw, legalRotations);
+      return; // pause resolution until player picks
     }
   }
 }
 
+
+// ── Paradox Wall rotation picker ──────────────────────────────────────
+function showParadoxRotationPicker(pi, wall, rotations) {
+  document.getElementById('paradox-picker-overlay')?.remove();
+  const overlay = document.createElement('div');
+  overlay.id = 'paradox-picker-overlay';
+  overlay.style.cssText = `
+    position:fixed; inset:0; background:rgba(0,0,0,0.7);
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
+    z-index:200; padding:20px;
+  `;
+  const items = rotations.map((rot, i) => `
+    <div class="picker-card" data-rot-idx="${i}" style="
+      padding:12px 16px; border:1px solid var(--border); background:var(--surface2);
+      cursor:pointer; transition:all 0.15s; margin-bottom:6px;
+    " onmouseover="this.style.borderColor='var(--wall-chro)'" onmouseout="this.style.borderColor='var(--border)'">
+      <span style="font-family:'Teko',sans-serif;font-size:15px;color:var(--wall-chro)">${rot.label}</span>
+      <span style="font-size:10px;color:var(--text-dim);margin-left:8px">${rot.orientation} at (${rot.anchor.row},${rot.anchor.col})</span>
+    </div>
+  `).join('');
+  overlay.innerHTML = `
+    <div style="max-width:380px;width:100%;">
+      <div style="font-family:'Teko',sans-serif;font-size:18px;letter-spacing:0.12em;color:var(--wall-chro);margin-bottom:12px;text-align:center;">
+        PARADOX WALL — CHOOSE ROTATION
+      </div>
+      <div id="paradox-choices">${items}</div>
+    </div>
+  `;
+  overlay.querySelectorAll('.picker-card').forEach(el => {
+    el.addEventListener('click', () => {
+      const idx = parseInt(el.dataset.rotIdx);
+      const pick = rotations[idx];
+      overlay.remove();
+      const pending = gameState._paradoxPending;
+      if (pending) {
+        gameState.walls = gameState.walls.map(w =>
+          w.id === pending.wallId ? {...w, anchor: pick.anchor, orientation: pick.orientation} : w);
+        gameState._paradoxPending = null;
+        addLog(pi, 'card', 'Paradox Wall: rotated (' + pick.label + ')');
+        // Continue resolving turn start effects
+        renderAll();
+        showStatus('Paradox Wall rotated — take your turn', 'success');
+      }
+    });
+  });
+  document.body.appendChild(overlay);
+}
 
 function discardCard(pi, idx) {
   const p = gameState.players[pi];
@@ -5120,10 +5183,12 @@ async function runAI() {
       const s = 3.5; // double next card
       if (s > bestCardScore) { secondBestCardScore = bestCardScore; secondBestCardAction = bestCardAction; bestCardScore = s; bestCardAction = {kind:'disruption', subkind:'dejaVu', card}; }
     }
-    // CH13 Revert
+    // CH13 Revert — returns most recent wall (any owner) to owner's hand
     if (card.id === 'CH13') {
-      const recentWalls = st.walls.filter(w => w.owner === pi && !w.isPhantom); // own walls only
-      const s = recentWalls.length > 0 ? 4 : 0;
+      const anyWalls = st.walls.filter(w => !w.isPhantom);
+      const lastWall = anyWalls.sort((a,b) => b.placedOnTurn - a.placedOnTurn)[0];
+      // High value if last wall is opponent's (remove their wall); moderate if own
+      const s = lastWall ? (lastWall.owner !== pi ? 6 : 3) : 0;
       if (s > bestCardScore) { secondBestCardScore = bestCardScore; secondBestCardAction = bestCardAction; bestCardScore = s; bestCardAction = {kind:'disruption', subkind:'revert', card}; }
     }
 
@@ -5941,6 +6006,7 @@ function resetTurnState() {
   gameState._mpOppHandDirty = false;
   gameState._shrinkTargetWall = null;  // Clear any pending wall shrink selection
   gameState._pendingDejaVu = null;     // Clear any pending Déjà Vu
+  gameState._freePlayActive = false;   // Clear free-play flag
   hasMoved            = false;
   hasPlayedCard       = false;
   cardsPlayedThisTurn = 0;
@@ -6042,6 +6108,7 @@ function selectCard(cardId, idx) {
     const dvEffects = gameState.players[pi].statusEffects || [];
     gameState.players[pi] = {...gameState.players[pi],
       statusEffects: dvEffects.filter(e => e.type !== 'deja_vu')};
+    console.log('[DEJA VU] Consumed! Card:', selectedCard.id, 'queued=true, _pendingDejaVu will be set for Disruption/Movement');
     addLog(pi, 'card', 'Déjà Vu triggers — this card will resolve twice!');
   }
 
@@ -6080,8 +6147,15 @@ function selectCard(cardId, idx) {
 }
 
 function countCardPlayed(pi) {
-  cardsPlayedThisTurn++;
-  hasPlayedCard = true;
+  // Skip counting for free/delayed card plays (they don't consume the card budget)
+  const isFreePlay = (selectedCard && (selectedCard._freePlay || selectedCard._delayed || selectedCard._isDejaVuReplay))
+    || gameState._freePlayActive;
+  if (isFreePlay) {
+    console.log('[countCardPlayed] Skipping count — free/delayed/dejaVu replay. freePlayActive=', gameState._freePlayActive);
+  } else {
+    cardsPlayedThisTurn++;
+    hasPlayedCard = true;
+  }
   // Track card history for Infinite Recursion
   if (selectedCard && selectedCard.id && selectedCard.id !== '__breach__') {
     if (!gameState._cardHistory) gameState._cardHistory = [];
@@ -6095,16 +6169,20 @@ function countCardPlayed(pi) {
   // ── Déjà Vu: schedule replay if this card was marked ──
   const _dvFromSelected = selectedCard?._dejaVuQueued && !selectedCard?._isDejaVuReplay;
   const _dvFromPending = gameState._pendingDejaVu;
+  console.log('[DEJA VU countCardPlayed] dvFromSelected=', _dvFromSelected, 'dvFromPending=', !!_dvFromPending,
+    'selectedCard=', selectedCard?.id, 'queued=', selectedCard?._dejaVuQueued, 'isReplay=', selectedCard?._isDejaVuReplay);
   if (_dvFromSelected || _dvFromPending) {
     const replayCard = _dvFromSelected
       ? {...CARDS[selectedCard.id]}
       : {..._dvFromPending.card};
     if (selectedCard) selectedCard._dejaVuQueued = false; // consume
     gameState._pendingDejaVu = null; // consume
+    console.log('[DEJA VU] Scheduling replay for:', replayCard.name, 'type:', replayCard.type);
     setTimeout(() => {
       if (!gameState || gameState.winner !== null) return;
+      console.log('[DEJA VU] Executing replay now for:', replayCard.name);
       checkDejaVuReplay(pi, replayCard, true);
-    }, 100);
+    }, 400);
   }
 }
 
@@ -6115,6 +6193,8 @@ function checkDejaVuReplay(pi, card, dejaVuQueued) {
   if (!dejaVuQueued) return;
   addLog(pi, 'card', `Déjà Vu: ${card.name} resolves a second time!`);
   showStatus(`Déjà Vu: ${card.name} resolves again!`, 'success');
+  // Set flag so countCardPlayed knows this is a free replay (even if selectedCard gets nulled by callbacks)
+  gameState._freePlayActive = true;
   // Create a virtual copy and replay it
   const copy = {...card};
   // For disruptions: re-apply immediately
@@ -6123,18 +6203,22 @@ function checkDejaVuReplay(pi, card, dejaVuQueued) {
     selectedCard = { id: copy.id, idx: fakeIdx, _isDejaVuReplay: true };
     applyDisruptionCard(pi, copy, fakeIdx);
     selectedCard = null;
+    // Clear flag after a delay to catch async callbacks (e.g. card pickers)
+    setTimeout(() => { if (gameState) gameState._freePlayActive = false; }, 2000);
   } else if (copy.type === 'Movement') {
     const fakeIdx = -99;
     selectedCard = { id: copy.id, idx: fakeIdx, _isDejaVuReplay: true };
     applyMovementCard(pi, copy, fakeIdx);
     selectedCard = null;
+    gameState._freePlayActive = false;
   } else if (copy.type === 'Wall') {
     // Queue a second wall placement — player gets to place another wall of same type
     const isPhantom = !!copy.phantom;
     const isDurable = !!copy.durable;
     const length = copy.wallLen || 2;
-    selectedCard = { id: copy.id, idx: -99, length, isPhantom, isDurable, _isDejaVuReplay: true };
+    selectedCard = { id: copy.id, idx: -99, length, isPhantom, isDurable, _isDejaVuReplay: true, _freePlay: true };
     uiMode = 'wall';
+    gameState._freePlayActive = false; // wall placement will use selectedCard._freePlay
     renderAll();
     showStatus(`Déjà Vu: place ${copy.name} again!`, 'active');
   }
@@ -6434,7 +6518,7 @@ function onWallPlaced(pi, fromCardId, _wasDelayedCard) {
 
 
   // ── Pusher wall specials ──────────────────────────────────────────
-  // PU4 Gust Wall: push opponent 1 away if adjacent to new wall
+  // PU4 Gust Wall: push opponent 1 space perpendicular to wall, away from wall
   if (fromCardId === 'PU4') {
     const lastWall = gameState.walls[gameState.walls.length - 1];
     if (lastWall) {
@@ -6445,15 +6529,24 @@ function onWallPlaced(pi, fromCardId, _wasDelayedCard) {
         const adj = (e.a.row === oppPos.row && e.a.col === oppPos.col) ||
                     (e.b.row === oppPos.row && e.b.col === oppPos.col);
         if (adj) {
-          // Push away from wall center
-          const wallCenter = {row: lastWall.anchor.row + (lastWall.orientation === 'V' ? lastWall.length/2 : 0),
-                             col: lastWall.anchor.col + (lastWall.orientation === 'H' ? lastWall.length/2 : 0)};
-          const pushDir = {r: Math.sign(oppPos.row - wallCenter.row) || 1, c: Math.sign(oppPos.col - wallCenter.col)};
-          // Normalize to orthogonal
-          const dir = Math.abs(pushDir.r) >= Math.abs(pushDir.c) ? {r: pushDir.r, c: 0} : {r: 0, c: pushDir.c};
-          const normalDir = ALL_DIRS.find(d => d.r === Math.sign(dir.r) && d.c === Math.sign(dir.c)) || DIR.DOWN;
+          // Push direction: perpendicular to wall, away from the wall surface
+          // H wall at anchor (r,c): blocks between row r and r+1 → push N or S
+          // V wall at anchor (r,c): blocks between col c and c+1 → push W or E
+          let pushDir;
+          if (lastWall.orientation === 'H') {
+            // Wall is horizontal — push perpendicular (north or south)
+            // If opponent is on top side (row <= anchor.row), push north (-1)
+            // If opponent is on bottom side (row > anchor.row), push south (+1)
+            pushDir = oppPos.row <= lastWall.anchor.row ? {r: -1, c: 0} : {r: 1, c: 0};
+          } else {
+            // Wall is vertical — push perpendicular (west or east)
+            // If opponent is on left side (col <= anchor.col), push west (-1)
+            // If opponent is on right side (col > anchor.col), push east (+1)
+            pushDir = oppPos.col <= lastWall.anchor.col ? {r: 0, c: -1} : {r: 0, c: 1};
+          }
+          const normalDir = ALL_DIRS.find(d => d.r === pushDir.r && d.c === pushDir.c) || DIR.DOWN;
           executeForceMove(opp, normalDir, 1);
-          addLog(pi, 'card', 'Gust Wall: opponent pushed away from wall!');
+          addLog(pi, 'card', 'Gust Wall: opponent pushed perpendicular from wall!');
           break;
         }
       }
@@ -6564,14 +6657,13 @@ function onWallPlaced(pi, fromCardId, _wasDelayedCard) {
     }
   }
 
-  // CH8 Paradox Wall: flips to nearby random position for 2 turns then locks
+  // CH8 Paradox Wall: rotates around edge each turn until no legal rotations remain
   if (fromCardId === 'CH8') {
     const lastWall = gameState.walls[gameState.walls.length - 1];
     if (lastWall) {
       gameState.walls = gameState.walls.map(w =>
-        w.id === lastWall.id ? {...w, _paradox: true, _paradoxTurns: 2,
-          _paradoxOrigin: {row: lastWall.anchor.row, col: lastWall.anchor.col, ori: lastWall.orientation}} : w);
-      addLog(pi, 'card', 'Paradox Wall: will flip position for 2 turns then lock');
+        w.id === lastWall.id ? {...w, _paradox: true} : w);
+      addLog(pi, 'card', 'Paradox Wall: will rotate each turn until locked');
     }
   }
 
@@ -7548,22 +7640,26 @@ async function applyDisruptionCard(pi, card, idx) {
     renderAll(); showStatus('Déjà Vu active — next card resolves twice!', 'success'); return;
   }
 
-  // ── CH13: Revert — return last OWN wall placed to hand ──
+  // ── CH13: Revert — return the LAST wall placed (by anyone) to its owner's hand ──
   if (card.id === 'CH13') {
-    // Find the most recently placed wall belonging to the PLAYER (not opponent)
+    // Find the most recently placed wall on the board (any owner)
     const sorted = [...gameState.walls]
-      .filter(w => w.owner === pi && !w.isPhantom)
+      .filter(w => !w.isPhantom)
       .sort((a, b) => b.placedOnTurn - a.placedOnTurn);
     const target = sorted[0];
-    if (!target) { showStatus('No own walls on the board to revert', 'error'); return; }
+    if (!target) { showStatus('No walls on the board to revert', 'error'); return; }
+    const wallOwner = target.owner;
     gameState.walls = gameState.walls.filter(w => w.id !== target.id);
-    gameState.players[pi] = {...gameState.players[pi],
-      wallsInPlay: Math.max(0, gameState.players[pi].wallsInPlay - 1),
-      hand: [...gameState.players[pi].hand, {...CARDS['BB']}].slice(0, gameState.players[pi].champion.handSize)};
-    addLog(pi, 'card', `Revert: returned your wall to hand as Basic Barrier`);
+    // Return the wall to its OWNER's hand as a Basic Barrier (if there's room)
+    const ownerState = gameState.players[wallOwner];
+    gameState.players[wallOwner] = {...ownerState,
+      wallsInPlay: Math.max(0, ownerState.wallsInPlay - 1),
+      hand: [...ownerState.hand, {...CARDS['BB']}].slice(0, ownerState.champion.handSize)};
+    const whose = wallOwner === pi ? 'your' : "opponent's";
+    addLog(pi, 'card', `Revert: returned ${whose} wall to ${wallOwner === pi ? 'your' : "opponent's"} hand as Basic Barrier`);
     discardCard(pi, idx); selectedCard = null; countCardPlayed(pi);
     if (isTurnDone()) gameState.phase = 'end_turn';
-    renderAll(); showStatus('Revert: wall undone!', 'success'); return;
+    renderAll(); showStatus(`Revert: ${whose} wall undone!`, 'success'); return;
   }
 
 
@@ -9380,59 +9476,25 @@ function showVictory(winner) {
   const victoryBox = overlay.querySelector('.victory-box') || overlay;
   victoryBox.insertAdjacentHTML('beforeend', summaryHTML);
 
-  // ── Issue shard + card reward if logged in ──
+  // ── Issue shard reward if logged in (SP: shards only for wins, nothing for losses) ──
   if (_userProfile) {
     const isWinner = winner !== AI_PLAYER;
-    const rewardFn = async () => {
-      // Shards (winner only)
-      let shardAmount = 0;
-      if (isWinner) {
-        shardAmount = await issueSPWinReward(aiDifficulty);
-      }
-      // Card drops (winner and loser both get cards — winner gets more)
-      const cards = rollRewardCards(isWinner);
-      if (cards.length) await grantCards(cards);
-      return { shardAmount, cards };
-    };
-
-    rewardFn().then(({ shardAmount, cards }) => {
-      document.getElementById('sp-reward-banner')?.remove();
-      const factionColors = {
-        Basic:'var(--text-dim)', Architects:'var(--wall-arch)', Pathfinders:'var(--wall-path)',
-        Wardens:'var(--wall-ward)', Phantoms:'var(--wall-phan)',
-        Pushers:'var(--wall-push)', Trappers:'var(--wall-trap)', Chronists:'var(--wall-chro)',
-      };
-      const rarityColors = { Common:'#505a60', Uncommon:'#50a060', Rare:'#4a80d0', Legendary:'#c0a030' };
-
-      const cardHTML = cards.map((id, i) => {
-        const card = CARDS[id];
-        if (!card) return '';
-        const col = factionColors[card.faction] || 'var(--text-dim)';
-        const rarCol = rarityColors[card.rarity] || '#505a60';
-        return `
-          <div class="reward-card-flip" style="animation-delay:${i * 0.18}s">
-            <div class="reward-card-inner">
-              <div class="reward-card-back"></div>
-              <div class="reward-card-front" style="border-color:${rarCol}">
-                <div class="reward-card-faction" style="color:${col}">${card.faction}</div>
-                <div class="reward-card-name">${card.name}</div>
-                <div class="reward-card-rarity" style="color:${rarCol}">◆ ${card.rarity}</div>
-              </div>
-            </div>
-          </div>`;
-      }).join('');
-
-      const banner = document.createElement('div');
-      banner.id = 'sp-reward-banner';
-      banner.className = 'reward-banner';
-      banner.innerHTML = `
-        <div class="reward-banner-label">${isWinner ? 'VICTORY REWARDS' : 'CONSOLATION REWARD'}</div>
-        ${shardAmount > 0 ? `<div class="reward-banner-value">+${shardAmount} <span class="reward-shard-icon">◆</span> SHARDS</div>
-        <div class="reward-banner-sub">${aiDifficulty.toUpperCase()} difficulty bonus</div>` : ''}
-        <div class="mp-reward-cards" style="margin-top:12px;">${cardHTML}</div>
-      `;
-      victoryBox.appendChild(banner);
-    });
+    if (isWinner) {
+      issueSPWinReward(aiDifficulty).then(shardAmount => {
+        if (shardAmount > 0) {
+          document.getElementById('sp-reward-banner')?.remove();
+          const banner = document.createElement('div');
+          banner.id = 'sp-reward-banner';
+          banner.className = 'reward-banner';
+          banner.innerHTML = `
+            <div class="reward-banner-label">VICTORY REWARDS</div>
+            <div class="reward-banner-value">+${shardAmount} <span class="reward-shard-icon">◆</span> SHARDS</div>
+            <div class="reward-banner-sub">${aiDifficulty.toUpperCase()} difficulty bonus</div>
+          `;
+          victoryBox.appendChild(banner);
+        }
+      });
+    }
   }
 }
 
