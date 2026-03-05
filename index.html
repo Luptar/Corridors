@@ -2506,7 +2506,7 @@ const CARDS = {
   CH6: { id:'CH6', name:'Time Loop',       faction:'Chronists', rarity:'Uncommon', type:'Disruption',
          desc:'Return the last card you played (previous turn) from discard to hand.' },
   CH8: { id:'CH8', name:'Paradox Wall',    faction:'Chronists', rarity:'Uncommon', type:'Wall',
-         desc:'Place 2-tile wall. Choose CW or CCW. Auto-rotates each turn until blocked.', wallLen:2, special:'paradoxWall' },
+         desc:'Place 2-tile wall. Spins around its center axis each turn if the rotation is legal.', wallLen:2, special:'paradoxWall' },
   CH9: { id:'CH9', name:'Recall',          faction:'Chronists', rarity:'Rare',     type:'Disruption',
          desc:'Return any discard pile card to hand. Play it immediately for free.' },
   CH10:{ id:'CH10',name:'Temporal Maze',   faction:'Chronists', rarity:'Rare',     type:'Wall',
@@ -4183,25 +4183,19 @@ function resolveTurnStartEffects(pi) {
     }
   }
 
-  // Paradox Wall auto-rotate around center axis (H<->V if legal)
+  // Paradox Wall auto-rotate: flip H<->V at same anchor (center-axis spin for 2-tile walls)
   for(const pw of gameState.walls.filter(w=>w._paradox&&w.owner===pi&&w._paradoxDir)){
     const nO=pw.orientation==='H'?'V':'H';
     const tw=gameState.walls.filter(w=>w.id!==pw.id);
-    // Compute new anchor for rotated orientation, pivoting around the wall's start corner
-    let candidates = [];
-    if(pw.orientation==='H'){
-      // H->V: try anchoring at same position, offset up by length-1, and middle
-      for(let off=-(pw.length-1);off<=0;off++){
-        candidates.push({row:pw.anchor.row+off, col:pw.anchor.col});
-      }
-    } else {
-      // V->H: try anchoring at same position, offset left by length-1, and middle  
-      for(let off=-(pw.length-1);off<=0;off++){
-        candidates.push({row:pw.anchor.row, col:pw.anchor.col+off});
-      }
-    }
+    // For a 2-tile wall, center-axis rotation = same anchor, flip orientation
+    // For longer walls, try the same anchor first, then offsets
     let placed=false;
-    for(const ca of candidates){
+    const offsets = [0];
+    for(let o=1;o<pw.length;o++){offsets.push(-o);offsets.push(o);}
+    for(const off of offsets){
+      let ca;
+      if(pw.orientation==='H'){ca={row:pw.anchor.row+off, col:pw.anchor.col};}
+      else{ca={row:pw.anchor.row, col:pw.anchor.col+off};}
       if(wallInBounds(ca,nO,pw.length)&&isWallLegal(ca,nO,pw.length,tw,gameState.players[0].position,gameState.players[1].position,false)){
         gameState.walls=gameState.walls.map(w=>w.id===pw.id?{...w,anchor:ca,orientation:nO}:w);
         placed=true;break;
@@ -4212,15 +4206,6 @@ function resolveTurnStartEffects(pi) {
 }
 
 
-// ── Paradox Wall direction picker ──
-function showParadoxDirectionPicker(pi){
-  document.getElementById('paradox-picker-overlay')?.remove();
-  const ov=document.createElement('div');ov.id='paradox-picker-overlay';
-  ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.7);display:flex;align-items:center;justify-content:center;z-index:200;';
-  ov.innerHTML='<div style="max-width:320px;text-align:center;"><div style="font-family:Teko,sans-serif;font-size:18px;color:var(--wall-chro);margin-bottom:16px;">PARADOX WALL ROTATION</div><div style="font-size:11px;color:var(--text-dim);margin-bottom:16px;">Auto-rotates this direction each turn.</div><div style="display:flex;gap:12px;justify-content:center;"><button id="px-cw" style="padding:10px 24px;background:var(--surface2);border:1px solid var(--wall-chro);color:var(--wall-chro);cursor:pointer;font-size:16px;">↻ CW</button><button id="px-ccw" style="padding:10px 24px;background:var(--surface2);border:1px solid var(--wall-chro);color:var(--wall-chro);cursor:pointer;font-size:16px;">↺ CCW</button></div></div>';
-  const pick=d=>{ov.remove();const w=gameState._paradoxDirPending;if(w){gameState.walls=gameState.walls.map(x=>x.id===w?{...x,_paradoxDir:d}:x);gameState._paradoxDirPending=null;addLog(pi,'card','Paradox Wall: '+d);}if(isTurnDone())gameState.phase='end_turn';renderAll();updateActionBar();showStatus('Paradox Wall: '+d,'success');};
-  ov.querySelector('#px-cw').onclick=()=>pick('CW');ov.querySelector('#px-ccw').onclick=()=>pick('CCW');
-  document.body.appendChild(ov);}
 
 function discardCard(pi, idx) {
   const p = gameState.players[pi];
@@ -7570,16 +7555,19 @@ async function applyDisruptionCard(pi, card, idx) {
     renderAll(); showStatus('Wall rewound to hand!', 'success'); return;
   }
 
-  // ── CH6: Time Loop — return last played card to hand ──
+  // ── CH6: Time Loop — return last played card (before Time Loop) to hand ──
   if (card.id === 'CH6') {
     const p = gameState.players[pi];
     if (!p.discard.length) { showStatus('Discard pile is empty', 'error'); return; }
-    discardCard(pi, idx); // free slot first
-    const p2=gameState.players[pi];
-    const recovered = p2.discard[p2.discard.length - 1];
-    gameState.players[pi] = {...p2,
-      discard: p2.discard.slice(0, -1),
-      hand: [...p2.hand, recovered].slice(0, p2.champion.handSize)};
+    // Grab the most recent card in discard BEFORE we discard Time Loop itself
+    const recovered = p.discard[p.discard.length - 1];
+    // Remove the recovered card from discard
+    const trimmedDiscard = p.discard.slice(0, -1);
+    // Now discard Time Loop from hand and update state
+    const newHand = p.hand.filter((_,i) => i !== idx);
+    gameState.players[pi] = {...p,
+      hand: [...newHand, recovered].slice(0, p.champion.handSize),
+      discard: [...trimmedDiscard, card]};  // Time Loop goes to discard
     addLog(pi, 'card', `Time Loop: recovered ${recovered.name} from discard`);
     selectedCard = null; countCardPlayed(pi);
     if (isTurnDone()) gameState.phase = 'end_turn';
