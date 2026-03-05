@@ -2458,7 +2458,7 @@ const CARDS = {
   CH6: { id:'CH6', name:'Time Loop',       faction:'Chronists', rarity:'Uncommon', type:'Disruption',
          desc:'Return the last card you played (previous turn) from discard to hand.' },
   CH8: { id:'CH8', name:'Paradox Wall',    faction:'Chronists', rarity:'Uncommon', type:'Wall',
-         desc:'Place 2-tile wall. Teleports to random legal position each turn. Lock by spending card play.', wallLen:2, special:'paradoxWall' },
+         desc:'Place 2-tile wall. Flips to a nearby random position for 2 turns, then locks in place.', wallLen:2, special:'paradoxWall' },
   CH9: { id:'CH9', name:'Recall',          faction:'Chronists', rarity:'Rare',     type:'Disruption',
          desc:'Return any discard pile card to hand. Play it immediately for free.' },
   CH10:{ id:'CH10',name:'Temporal Maze',   faction:'Chronists', rarity:'Rare',     type:'Wall',
@@ -3879,9 +3879,22 @@ function resolveDelayedCards(pi) {
       showStatus(`Delayed ${card.name} — move now (${speed} step${speed > 1 ? 's' : ''})`, 'active');
       return;
     } else if (card.type === 'Disruption') {
-      // Auto-resolve disruption effects
-      // For complex disruptions (pick targets), this would need UI — simplified here
-      addLog(pi, 'card', `Delayed ${card.name} resolved automatically`);
+      // Resolve delayed disruption card through the proper handler
+      addLog(pi, 'card', `Delayed ${card.name} activates!`);
+      if (!isHumanSeat(pi)) {
+        // AI: auto-resolve
+        selectedCard = { id: card.id, idx: -99, _delayed: true, _freePlay: true };
+        applyDisruptionCard(pi, card, -99);
+        selectedCard = null;
+        continue; // process remaining delayed cards
+      } else {
+        // Human: route through full disruption handler with UI
+        selectedCard = { id: card.id, idx: -99, _delayed: true, _freePlay: true };
+        applyDisruptionCard(pi, card, -99);
+        // If the disruption needs UI interaction (e.g. card picker), it will return
+        // and the remaining delayed cards will be processed next turn
+        return;
+      }
     }
   }
 }
@@ -4117,14 +4130,24 @@ function resolveTurnStartEffects(pi) {
     }
   }
 
-  // Paradox Wall: teleport to random legal position
+  // Paradox Wall: flip to a nearby random legal position, decrement turns, lock when done
   const paradoxWalls = gameState.walls.filter(w => w._paradox && w.owner === pi);
   for (const pw of paradoxWalls) {
+    if (pw._paradoxTurns !== undefined && pw._paradoxTurns <= 0) {
+      // Already locked — remove paradox flag
+      gameState.walls = gameState.walls.map(w =>
+        w.id === pw.id ? {...w, _paradox: false} : w);
+      addLog(pi, 'card', 'Paradox Wall locked in place');
+      continue;
+    }
+    // Find adjacent legal positions (within 2 tiles of original placement)
+    const origin = pw._paradoxOrigin || {row: pw.anchor.row, col: pw.anchor.col};
     const candidates = [];
-    for (let r = 0; r < BOARD_SIZE - 1; r++) {
-      for (let c = 0; c < BOARD_SIZE - 1; c++) {
+    for (let dr = -2; dr <= 2; dr++) {
+      for (let dc = -2; dc <= 2; dc++) {
+        if (dr === 0 && dc === 0) continue;
         for (const ori of ['H', 'V']) {
-          const a = {row: r, col: c};
+          const a = {row: origin.row + dr, col: origin.col + dc};
           if (wallInBounds(a, ori, pw.length)) {
             const testWalls = gameState.walls.filter(w => w.id !== pw.id);
             if (isWallLegal(a, ori, pw.length, testWalls,
@@ -4137,9 +4160,19 @@ function resolveTurnStartEffects(pi) {
     }
     if (candidates.length) {
       const pick = candidates[Math.floor(Math.random() * candidates.length)];
+      const newTurns = (pw._paradoxTurns !== undefined ? pw._paradoxTurns : 2) - 1;
       gameState.walls = gameState.walls.map(w =>
-        w.id === pw.id ? {...w, anchor: pick.anchor, orientation: pick.orientation} : w
+        w.id === pw.id ? {...w, anchor: pick.anchor, orientation: pick.orientation, _paradoxTurns: newTurns} : w
       );
+      if (newTurns <= 0) {
+        addLog(pi, 'card', 'Paradox Wall: final flip — now locked in place');
+      } else {
+        addLog(pi, 'card', `Paradox Wall: flipped (${newTurns} flip${newTurns !== 1 ? 's' : ''} left)`);
+      }
+    } else {
+      gameState.walls = gameState.walls.map(w =>
+        w.id === pw.id ? {...w, _paradox: false, _paradoxTurns: 0} : w);
+      addLog(pi, 'card', 'Paradox Wall: no legal nearby positions — locked');
     }
   }
 }
@@ -4189,6 +4222,7 @@ function endTurnHuman() {
     gameState._redirectCardIdx = null;
     gameState._reconstructCardIdx = null;
     gameState._repossessCardIdx = null;
+    gameState._shrinkCardIdx = null;
     gameState._evictionInProgress = false;
     selectedCard = null;
     uiMode = 'idle';
@@ -5891,6 +5925,11 @@ function isTurnDone() {
   }
 
   // All other champions: move + play 1 card (or just move if hand empty)
+  if (champId === 'vex') {
+    console.log('[VEX isTurnDone] cardsPlayed=', cardsPlayedThisTurn, 'hasMoved=', hasMoved,
+      'hand=', p.hand.length, 'ult ready=', p.ultimateReady, 'ult used=', p.ultimateUsed,
+      'temporalFold=', gameState._vexTemporalFold);
+  }
   if (p.hand.length === 0) return hasMoved;
   return hasMoved && cardsPlayedThisTurn >= 1;
 }
@@ -5935,9 +5974,10 @@ function selectCard(cardId, idx) {
 
   // ── Cancellation BEFORE budget guards — a pending card must always be switchable ──
   // Same card re-clicked: deselect it (but not if Eviction has been committed).
-  if (selectedCard && selectedCard.idx === idx && (uiMode === 'wall' || uiMode === 'move')) {
+  if (selectedCard && selectedCard.idx === idx && (uiMode === 'wall' || uiMode === 'move' || uiMode === 'wallShrink' || uiMode === 'wallFortify')) {
     if (selectedCard._evictionPlacing) { showStatus('Eviction committed — place the wall to finish', 'error'); return; }
     if (selectedCard._pendingMove) { cardsPlayedThisTurn = Math.max(0, cardsPlayedThisTurn - 1); hasPlayedCard = cardsPlayedThisTurn > 0; }
+    gameState._shrinkCardIdx = null;
     selectedCard = null; uiMode = 'idle'; renderAll(); showStatus('Card deselected', ''); return;
   }
   // Different card clicked while a movement card is pending: cancel and restore budget.
@@ -5956,6 +5996,7 @@ function selectCard(cardId, idx) {
     gameState._redirectCardIdx = null;
     gameState._reconstructCardIdx = null;
     gameState._repossessCardIdx = null;
+    gameState._shrinkCardIdx = null;
     gameState._evictionInProgress = false;
     selectedCard = null; uiMode = 'idle';
   }
@@ -5997,6 +6038,10 @@ function selectCard(cardId, idx) {
     gameState._dejaVuTurnsLeft = 0;
     _dejaVuActive = true;
     selectedCard._dejaVuQueued = true;
+    // Remove the Déjà Vu status chip now that it's consumed
+    const dvEffects = gameState.players[pi].statusEffects || [];
+    gameState.players[pi] = {...gameState.players[pi],
+      statusEffects: dvEffects.filter(e => e.type !== 'deja_vu')};
     addLog(pi, 'card', 'Déjà Vu triggers — this card will resolve twice!');
   }
 
@@ -6519,21 +6564,23 @@ function onWallPlaced(pi, fromCardId, _wasDelayedCard) {
     }
   }
 
-  // CH8 Paradox Wall: mark as paradox for random teleport each turn
+  // CH8 Paradox Wall: flips to nearby random position for 2 turns then locks
   if (fromCardId === 'CH8') {
     const lastWall = gameState.walls[gameState.walls.length - 1];
     if (lastWall) {
       gameState.walls = gameState.walls.map(w =>
-        w.id === lastWall.id ? {...w, _paradox: true} : w);
-      addLog(pi, 'card', 'Paradox Wall: will teleport each turn until locked');
+        w.id === lastWall.id ? {...w, _paradox: true, _paradoxTurns: 2,
+          _paradoxOrigin: {row: lastWall.anchor.row, col: lastWall.anchor.col, ori: lastWall.orientation}} : w);
+      addLog(pi, 'card', 'Paradox Wall: will flip position for 2 turns then lock');
     }
   }
 
-  // CH10 Temporal Maze: starts free wall generation for 3 turns
+  // CH10 Temporal Maze: starts free wall generation for 3 turns (stacks with existing)
   if (fromCardId === 'CH10') {
     if (!gameState._temporalMaze) gameState._temporalMaze = {};
-    gameState._temporalMaze[pi] = {turnsRemaining: 3};
-    addLog(pi, 'card', 'Temporal Maze: free 1-tile wall at start of your next 3 turns');
+    const existing = gameState._temporalMaze[pi]?.turnsRemaining || 0;
+    gameState._temporalMaze[pi] = {turnsRemaining: existing + 3};
+    addLog(pi, 'card', `Temporal Maze: +3 free wall turns (${existing + 3} total remaining)`);
   }
 
   opponentLastPlayedWall = (pi !== 0);
@@ -6668,12 +6715,12 @@ async function applyDisruptionCard(pi, card, idx) {
       showStatus('No opponent walls to shrink', 'error');
       return;
     }
-    discardCard(pi, idx);
-    countCardPlayed(pi);
-    selectedCard = { id: card.id, idx: -1 };
+    // Don't discard yet — allow cancel by re-clicking the card
+    gameState._shrinkCardIdx = idx;
+    selectedCard = { id: card.id, idx: idx, _dejaVuQueued: _dvQueued || undefined };
     uiMode = 'wallShrink';
     renderAll();
-    showStatus('Undermine — click an opponent wall to shrink it by 1 tile', 'active');
+    showStatus('Undermine — click an opponent wall to shrink, or click the card again to cancel', 'active');
     return;
   }
 
@@ -7493,6 +7540,8 @@ async function applyDisruptionCard(pi, card, idx) {
   if (card.id === 'CH12') {
     gameState._dejaVu = pi;
     gameState._dejaVuTurnsLeft = 2; // survives end of this turn, expires end of next turn if unused
+    // Add status effect so the player can see the Déjà Vu indicator
+    addStatusEffect(pi, 'deja_vu', 2);
     addLog(pi, 'card', 'Déjà Vu: your next card play will resolve twice!');
     discardCard(pi, idx); selectedCard = null; countCardPlayed(pi);
     if (isTurnDone()) gameState.phase = 'end_turn';
@@ -8031,10 +8080,13 @@ function applyUltimate(pi, champId) {
 
     case 'vex': {
       // Temporal Fold: extra action phase — allow 1 more card play + 1 more movement
+      console.log('[VEX ULT] Before: cardsPlayedThisTurn=', cardsPlayedThisTurn, 'hasMoved=', hasMoved, 'hasPlayedCard=', hasPlayedCard);
       hasPlayedCard = false;
       hasMoved = false;
-      cardsPlayedThisTurn = Math.max(0, cardsPlayedThisTurn - 1);
+      // Reset card count to 0 so the player gets a full fresh card play
+      cardsPlayedThisTurn = 0;
       gameState._vexTemporalFold = true;
+      console.log('[VEX ULT] After: cardsPlayedThisTurn=', cardsPlayedThisTurn, 'hasMoved=', hasMoved, 'hasPlayedCard=', hasPlayedCard);
       addLog(pi, 'ultimate', 'Temporal Fold: extra action phase — play another card and move again!');
       showStatus('Temporal Fold — you get an extra card play and an extra movement!', 'success');
       renderAll(); return; // Don't fall through to countCardPlayed
@@ -8263,12 +8315,18 @@ function renderPanels() {
     // Status chips
     const statusEl = document.getElementById(`${prefix}-status`);
     if (statusEl) {
-      statusEl.innerHTML = p.statusEffects.filter(e=>e.turnsRemaining>0)
+      let chipHtml = p.statusEffects.filter(e=>e.turnsRemaining>0)
         .map(e => {
-          const labels = { skip_move:'BOUND', bind_cooldown:'COOLDOWN', veil_of_shadows:'VEILED' };
+          const labels = { skip_move:'BOUND', bind_cooldown:'COOLDOWN', veil_of_shadows:'VEILED', deja_vu:'DÉJÀ VU' };
           const label = labels[e.type] || e.type.replace(/_/g,' ').toUpperCase();
           return `<span class="status-chip">${label} (${e.turnsRemaining}t)</span>`;
         }).join('');
+      // Temporal Maze tracker
+      if (gameState._temporalMaze && gameState._temporalMaze[pi] && gameState._temporalMaze[pi].turnsRemaining > 0) {
+        const tmTurns = gameState._temporalMaze[pi].turnsRemaining;
+        chipHtml += `<span class="status-chip" style="border-color:var(--wall-chro);color:var(--wall-chro)">TEMPORAL MAZE (${tmTurns}t)</span>`;
+      }
+      statusEl.innerHTML = chipHtml;
     }
 
     // Hand — human sees own cards; opponent hand hidden unless Thorne's Warden's Stare is active
@@ -10774,6 +10832,7 @@ function mpGuardedEndTurnHuman() {
     gameState._redirectCardIdx = null;
     gameState._reconstructCardIdx = null;
     gameState._repossessCardIdx = null;
+    gameState._shrinkCardIdx = null;
     gameState._evictionInProgress = false;
     selectedCard = null; uiMode = 'idle';
   }
