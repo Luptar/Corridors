@@ -2807,20 +2807,22 @@ function wallsConflict(a, b) {
   }
 
   // 2. Perpendicular crossing detection for ALL wall lengths.
-  //    Walls in Quoridor sit on the grid lines between cells.
   //    An H wall at anchor (r,c) of length L occupies the horizontal line
-  //    at row-gap r, from col c to col c+L (blocking L cell-edges).
+  //    segment from grid-vertex (r+1, c) to (r+1, c+L).
   //    A V wall at anchor (r,c) of length L occupies the vertical line
-  //    at col-gap c, from row r to row r+L (blocking L cell-edges).
-  //    Two perpendicular walls cross at a grid vertex if their line segments
-  //    intersect in the interior (not just touching at endpoints).
-  //    H-line covers row-gap hRow from col hCol to hCol+hLen.
-  //    V-line covers col-gap vCol from row vRow to vRow+vLen.
-  //    They cross if hRow is strictly inside [vRow, vRow+vLen)
-  //                AND vCol is strictly inside [hCol, hCol+hLen).
-  //    But walls of length >= 1 that share the same anchor vertex also cross
-  //    (the == case is a valid crossing, not just a touching endpoint).
-  //    So the check is: hRow >= vRow && hRow < vRow+vLen && vCol >= hCol && vCol < hCol+hLen
+  //    segment from grid-vertex (r, c+1) to (r+L, c+1).
+  //    Two perpendicular walls cross only if their line segments intersect
+  //    at an INTERIOR point (not just touching at shared endpoints).
+  //    Interior vertices of H wall: (hRow+1, x) for hCol < x < hCol+hLen
+  //      → these exist only when hLen >= 2 (there are hLen-1 interior vertices).
+  //    Interior vertices of V wall: (y, vCol+1) for vRow < y < vRow+vLen
+  //      → these exist only when vLen >= 2 (there are vLen-1 interior vertices).
+  //    They cross if they share any interior vertex, i.e.:
+  //      hRow+1 is an interior y of V: vRow < hRow+1 < vRow+vLen → hR >= vR && hR < vR+vL-1
+  //      vCol+1 is an interior x of H: hCol < vCol+1 < hCol+hLen → vC >= hC && vC < hC+hL-1
+  //    Consequence: two 1-tile perpendicular walls NEVER cross (no interior vertices).
+  //    A 1-tile wall perpendicular to any wall also never crosses (the short wall has
+  //    no interior on its axis, so the condition on that axis always fails).
   if (a.orientation !== b.orientation) {
     const h = a.orientation === 'H' ? a : b;
     const v = a.orientation === 'V' ? a : b;
@@ -2830,7 +2832,11 @@ function wallsConflict(a, b) {
     const vRow = v.anchor.row;
     const vCol = v.anchor.col;
     const vLen = v.length;
-    if (hRow >= vRow && hRow < vRow + vLen && vCol >= hCol && vCol < hCol + hLen) {
+    // Both walls need length >= 2 to have interior vertices on their respective axes.
+    // The crossing point (hRow+1, vCol+1) must be strictly interior to BOTH segments.
+    if (hLen >= 2 && vLen >= 2 &&
+        hRow >= vRow && hRow < vRow + vLen - 1 &&
+        vCol >= hCol && vCol < hCol + hLen - 1) {
       return true;
     }
   }
