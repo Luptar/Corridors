@@ -8643,6 +8643,12 @@ function showHandPicker(hand, title, subtitle, count, onChoose, onCancel) {
 }
 
 
+// ── Status message ──────────────────────────────────────────────────
+function showStatus(msg, type='') {
+  const el = document.getElementById('mode-indicator');
+  if (el) { el.textContent = msg; el.className = `mode-indicator${type?' '+type:''}`; }
+}
+
 // ── Victory ─────────────────────────────────────────────────────────
 // ── Game record builder ──────────────────────────────────────────────
 function buildGameRecord(winner) {
