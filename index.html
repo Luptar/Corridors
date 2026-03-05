@@ -658,6 +658,18 @@
     box-shadow: inset 0 0 8px rgba(192,64,64,0.5);
   }
 
+  /* ── Echo Chamber pick mode ────────────────────────────────── */
+  .card.echo-pick {
+    border-color: var(--wall-chro) !important;
+    box-shadow: 0 0 8px rgba(120,80,200,0.4);
+    cursor: pointer;
+  }
+  .card.echo-pick:hover {
+    border-color: #a070e0 !important;
+    box-shadow: 0 0 14px rgba(140,100,220,0.6);
+    background: rgba(120,80,200,0.08);
+  }
+
   /* ── Trap tokens ───────────────────────────────────────────────── */
   .trap-token {
     position: absolute;
@@ -2762,38 +2774,37 @@ function wallInBounds(anchor, orientation, length) {
 function wallsConflict(a, b) {
   if (a.isPhantom || b.isPhantom) return false;
 
-  // 1. Edge overlap: any shared edge means overlap
+  // 1. Edge overlap: any shared edge means conflict
   const edgesA = new Set(wallEdges(a).map(e => edgeKey(e.a, e.b)));
   for (const e of wallEdges(b)) {
     if (edgesA.has(edgeKey(e.a, e.b))) return true;
   }
 
-  // 2. Perpendicular crossing: H and V walls can cross through the same
-  //    gap between 4 cells without sharing edges. This happens when
-  //    a horizontal wall at (r, c..c+len-1) and a vertical wall at
-  //    (r2..r2+len2-1, c2) share an anchor-space intersection point.
-  //    The intersection point is at grid-vertex (row, col) where:
-  //      H wall occupies vertices row = h.anchor.row+1, cols h.anchor.col to h.anchor.col+h.length
-  //      V wall occupies vertices col = v.anchor.col+1, rows v.anchor.row to v.anchor.row+v.length
-  //    They cross if the H wall's row-line passes through the V wall's row-range
-  //    AND the V wall's col-line passes through the H wall's col-range.
+  // 2. Perpendicular crossing detection for ALL wall lengths.
+  //    Walls in Quoridor sit on the grid lines between cells.
+  //    An H wall at anchor (r,c) of length L occupies the horizontal line
+  //    at row-gap r, from col c to col c+L (blocking L cell-edges).
+  //    A V wall at anchor (r,c) of length L occupies the vertical line
+  //    at col-gap c, from row r to row r+L (blocking L cell-edges).
+  //    Two perpendicular walls cross at a grid vertex if their line segments
+  //    intersect in the interior (not just touching at endpoints).
+  //    H-line covers row-gap hRow from col hCol to hCol+hLen.
+  //    V-line covers col-gap vCol from row vRow to vRow+vLen.
+  //    They cross if hRow is strictly inside [vRow, vRow+vLen)
+  //                AND vCol is strictly inside [hCol, hCol+hLen).
+  //    But walls of length >= 1 that share the same anchor vertex also cross
+  //    (the == case is a valid crossing, not just a touching endpoint).
+  //    So the check is: hRow >= vRow && hRow < vRow+vLen && vCol >= hCol && vCol < hCol+hLen
   if (a.orientation !== b.orientation) {
     const h = a.orientation === 'H' ? a : b;
     const v = a.orientation === 'V' ? a : b;
-    // H wall blocks between row h.anchor.row and h.anchor.row+1,
-    //   spanning columns h.anchor.col to h.anchor.col + h.length - 1
-    // V wall blocks between col v.anchor.col and v.anchor.col+1,
-    //   spanning rows v.anchor.row to v.anchor.row + v.length - 1
-    // They cross at the interior grid point if:
-    //   The H wall's row gap (h.anchor.row) falls within V wall's row span
-    //   AND the V wall's col gap (v.anchor.col) falls within H wall's col span
-    const hRow = h.anchor.row; // the row-gap the H wall straddles
-    const vCol = v.anchor.col; // the col-gap the V wall straddles
-    const vRowMin = v.anchor.row;
-    const vRowMax = v.anchor.row + v.length - 1;
-    const hColMin = h.anchor.col;
-    const hColMax = h.anchor.col + h.length - 1;
-    if (hRow >= vRowMin && hRow <= vRowMax && vCol >= hColMin && vCol <= hColMax) {
+    const hRow = h.anchor.row;
+    const hCol = h.anchor.col;
+    const hLen = h.length;
+    const vRow = v.anchor.row;
+    const vCol = v.anchor.col;
+    const vLen = v.length;
+    if (hRow >= vRow && hRow < vRow + vLen && vCol >= hCol && vCol < hCol + hLen) {
       return true;
     }
   }
@@ -3145,25 +3156,19 @@ function executePlaceWall(anchor, orientation, length, isPhantom=false, isDurabl
   const pi = gameState.activePlayer;
   const p = gameState.players[pi];
 
-  // Safety guard: prevent placing walls that intersect or block paths.
+  // Safety guard: prevent placing walls that intersect with existing walls.
   // This catches card-chain placements (e.g. Echo Strike, Corner Block secondary)
   // and multiplayer edge cases where the client state may diverge.
-  {
-    const proposed = {id:'__exec_test__',owner:pi,anchor,orientation,length,isPhantom:!!isPhantom,durable:false,durableHits:0,immune:false,reinforced:false,temporary:false,turnsRemaining:null,placedOnTurn:0};
-    if (!isPhantom) {
-      for (const w of gameState.walls) {
-        if (!w.isPhantom && wallsConflict(proposed, w)) {
-          console.warn('[executePlaceWall] Blocked: wall intersects existing wall', {anchor, orientation, length});
-          return;
-        }
+  // NOTE: Path connectivity is already validated by isWallLegal in handleWallClick
+  // and by the AI's scoring loop. This guard only catches intersection/overlap.
+  if (!isPhantom) {
+    const proposed = {id:'__exec_test__',owner:pi,anchor,orientation,length,isPhantom:false,durable:false,durableHits:0,immune:false,reinforced:false,temporary:false,turnsRemaining:null,placedOnTurn:0};
+    for (const w of gameState.walls) {
+      if (!w.isPhantom && wallsConflict(proposed, w)) {
+        console.warn('[executePlaceWall] Blocked: wall intersects existing wall', {anchor, orientation, length});
+        showStatus('Cannot place wall — intersects existing wall', 'error');
+        return;
       }
-    }
-    // Path connectivity check: ensure both players can still reach their goals
-    const testWalls = [...gameState.walls, {...proposed, isPhantom: false}];
-    if (!hasPath(gameState.players[0].position, 0, testWalls) ||
-        !hasPath(gameState.players[1].position, BOARD_SIZE - 1, testWalls)) {
-      console.warn('[executePlaceWall] Blocked: wall would cut off a player path', {anchor, orientation, length});
-      return;
     }
   }
 
@@ -3844,6 +3849,9 @@ function resolveEchoChamber(cardIdx) {
   addLog(pi, 'passive', `Echo Chamber: discarded ${discarded.name}, drew a new card`);
   renderAll();
   showStatus(`Echo Chamber: swapped ${discarded.name} for a new card`, 'success');
+
+  // In MP, persist the updated hand+deck to Supabase immediately
+  if (gameMode === 'mp') mpPushState();
 }
 
 
@@ -4409,7 +4417,7 @@ async function runAI() {
   if (gameState.phase !== 'action' || gameState.activePlayer !== AI_PLAYER) {
     aiThinking = false; return;
   }
-  // Global AI turn timeout: if AI hasn't finished in 8 seconds, force-end
+  // Global AI turn timeout: if AI hasn't finished in 5 seconds, force-end
   const _aiTurnTimeout = setTimeout(() => {
     if (aiThinking && gameState?.activePlayer === AI_PLAYER) {
       console.error('[AI] Turn timeout — forcing end');
@@ -4419,7 +4427,7 @@ async function runAI() {
       renderAll();
       setTimeout(endTurn, 100);
     }
-  }, 8000);
+  }, 5000);
   try {
 
   maybeAIUltimate(AI_PLAYER);
@@ -7815,7 +7823,8 @@ function renderPanels() {
 
 function renderCard(card, idx, pi, interactive) {
   const isSel = selectedCard && selectedCard.idx === idx;
-  const cls = `card${isSel?' selected':''}${!interactive?' card-disabled':''}`;
+  const isEchoPick = gameState._vexEchoPending && pi === gameState.activePlayer && interactive;
+  const cls = `card${isSel?' selected':''}${!interactive?' card-disabled':''}${isEchoPick?' echo-pick':''}`;
   return `<div class="${cls}" onclick="${interactive?`selectCard('${card.id}',${idx})`:''}">
     <div class="card-header">
       <span class="card-name"><span class="rarity-dot rarity-${card.rarity}"></span>${card.name}</span>
