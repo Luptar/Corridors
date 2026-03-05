@@ -2269,17 +2269,52 @@ function shuffle(arr) {
   return a;
 }
 
-// GDD-accurate starter decks per faction
+// GDD-accurate starter decks per faction (20-card, max 5 rares, max 1 legendary)
 function buildStarterDeck(faction) {
   const deckDefs = {
-    Architects:  ['BB','BB','BB','AR1','AR1','AR2','AR3','AR4','RC','RC'],
-    Pathfinders: ['BB','BB','BB','RC','RC','QS','QS','WS','PF1','PF3'],
-    Wardens:     ['BB','BB','BB','BB','RC','WD1','WD1','WD2','WD3','WD3'],
-    Phantoms:    ['BB','PH1','PH1','PH3','PH3','PH4','PH5','RC','PH2','PH2'],
-    Adepts:      ['AD1','AD1','AD2','AD2','AD3','AD3','AD4','BB','WD3','PH1'],
+    Architects:  ['BB','BB','BB','BB','AR1','AR1','AR1','AR2','AR2','AR3','AR3','AR4','AR4','AR5','RC','RC','CB','CB','AV','QS'],
+    Pathfinders: ['BB','BB','BB','RC','RC','RC','QS','QS','QS','AV','AV','WS','WS','PF1','PF1','PF3','PF3','PF4','PF4','CB'],
+    Wardens:     ['BB','BB','BB','BB','RC','RC','WD1','WD1','WD1','WD2','WD2','WD2','WD3','WD3','WD4','WD4','WD6','WD6','AV','QS'],
+    Phantoms:    ['BB','BB','BB','PH1','PH1','PH1','PH1','PH2','PH2','PH2','PH3','PH3','PH3','PH4','PH4','PH5','PH5','RC','RC','AV'],
+    Adepts:      ['AD1','AD1','AD1','AD2','AD2','AD2','AD3','AD3','AD3','AD5','AD5','AD5','BB','BB','BB','RC','RC','WD3','PH1','AV'],
   };
   const ids = deckDefs[faction] || deckDefs['Architects'];
-  // 10-card deck — no doubling
+  // 20-card deck
+  const base = ids.map(id => ({...CARDS[id]}));
+  return shuffle([...base]);
+}
+
+// AI difficulty decks per faction (20-card, tiered power level)
+function buildAIStarterDeck(faction, difficulty) {
+  const deckDefs = {
+    Architects: {
+      easy:   ['BB','BB','BB','BB','AR1','AR1','AR1','AR2','AR2','AR3','AR3','RC','RC','RC','CB','CB','AV','AV','QS','QS'],
+      medium: ['BB','BB','BB','BB','AR1','AR1','AR1','AR2','AR2','AR3','AR3','AR4','AR4','AR5','RC','RC','CB','CB','AV','QS'],
+      hard:   ['BB','BB','BB','BB','AR1','AR1','AR1','AR2','AR2','AR3','AR4','AR4','AR5','AR5','RC','RC','CB','SW','SW','QS'],
+    },
+    Pathfinders: {
+      easy:   ['BB','BB','BB','RC','RC','RC','QS','QS','QS','AV','AV','AV','CB','CB','CB','PF3','PF3','WS','PF1','PF1'],
+      medium: ['BB','BB','BB','RC','RC','RC','QS','QS','QS','AV','AV','WS','WS','PF1','PF1','PF3','PF3','PF4','PF4','CB'],
+      hard:   ['BB','BB','BB','RC','RC','QS','QS','AV','AV','WS','WS','PF1','PF1','PF3','PF3','PF4','PF4','PF2','PF2','SW'],
+    },
+    Wardens: {
+      easy:   ['BB','BB','BB','BB','RC','RC','RC','WD2','WD2','WD2','WD1','WD1','AV','AV','QS','QS','CB','CB','WD3','WD6'],
+      medium: ['BB','BB','BB','BB','RC','RC','WD1','WD1','WD1','WD2','WD2','WD2','WD3','WD3','WD4','WD4','WD6','WD6','AV','QS'],
+      hard:   ['BB','BB','BB','RC','RC','WD1','WD1','WD1','WD2','WD2','WD3','WD3','WD4','WD4','WD6','WD6','WD5','WD5','AV','SW'],
+    },
+    Phantoms: {
+      easy:   ['BB','BB','BB','BB','PH1','PH1','PH1','PH2','PH2','PH2','PH3','PH3','PH3','RC','RC','AV','AV','QS','QS','CB'],
+      medium: ['BB','BB','BB','PH1','PH1','PH1','PH1','PH2','PH2','PH2','PH3','PH3','PH3','PH4','PH4','PH5','PH5','RC','RC','AV'],
+      hard:   ['BB','BB','BB','PH1','PH1','PH1','PH2','PH2','PH2','PH3','PH3','PH4','PH4','PH5','PH5','RC','RC','SW','SW','AV'],
+    },
+    Adepts: {
+      easy:   ['AD1','AD1','AD1','AD2','AD2','AD2','AD3','AD3','AD3','BB','BB','BB','BB','RC','RC','RC','WD3','PH1','AV','QS'],
+      medium: ['AD1','AD1','AD1','AD2','AD2','AD2','AD3','AD3','AD3','AD5','AD5','AD5','BB','BB','BB','RC','RC','WD3','PH1','AV'],
+      hard:   ['AD1','AD1','AD1','AD2','AD2','AD2','AD3','AD3','AD5','AD5','AD5','BB','BB','BB','RC','RC','WD3','PH1','AD4','AD4'],
+    },
+  };
+  const factionDecks = deckDefs[faction] || deckDefs['Architects'];
+  const ids = factionDecks[difficulty] || factionDecks['medium'];
   const base = ids.map(id => ({...CARDS[id]}));
   return shuffle([...base]);
 }
@@ -2313,13 +2348,13 @@ function isHumanSeat(pi) {
 }
 
 // ── createPlayer ────────────────────────────────────────────────────
-function createPlayer(index, championId, faction, deckCards) {
+function createPlayer(index, championId, faction, deckCards, aiDiff) {
   const def = CHAMPIONS[championId];
   return {
     index,
     champion: { ...def },
     position: index === 0 ? {row:8, col:4} : {row:0, col:4},
-    deck: buildDeckForGame(championId, deckCards),
+    deck: buildDeckForGame(championId, deckCards, aiDiff),
     hand: [],
     discard: [],
     wallsInPlay: 0,
@@ -2349,7 +2384,7 @@ function initGame(playerChampId, aiChampId, playerDeckCards) {
   gameState = {
     players: [
       createPlayer(0, playerChampId, pChamp.faction, playerDeckCards),
-      createPlayer(1, aiChampId,     aChamp.faction),
+      createPlayer(1, aiChampId,     aChamp.faction, null, aiDifficulty),
     ],
     walls: [],
     decoyTokens: [],
@@ -7527,6 +7562,9 @@ async function saveUserProfile(updates) {
 }
 
 // ── Rarity limits & helpers ───────────────────────────────────────────
+const DECK_SIZE = 20;
+const DECK_RARE_LIMIT = 5;
+const DECK_LEGENDARY_LIMIT = 1;
 const RARITY_COPY_LIMITS = { Common: 4, Uncommon: 3, Rare: 2, Legendary: 1 };
 function getCardCopyLimit(cardId) {
   return RARITY_COPY_LIMITS[CARDS[cardId]?.rarity] ?? 4;
@@ -7593,8 +7631,15 @@ function validateDeck(championId, cardIds) {
   const errors  = [];
   const champion = CHAMPIONS[championId];
   if (!champion) return { valid: false, errors: ['Unknown champion'] };
-  if (cardIds.length !== 10)
-    errors.push(`Deck must be exactly 10 cards (currently ${cardIds.length})`);
+  if (cardIds.length !== DECK_SIZE)
+    errors.push(`Deck must be exactly ${DECK_SIZE} cards (currently ${cardIds.length})`);
+  // Rarity composition limits
+  const rareCnt = cardIds.filter(id => CARDS[id]?.rarity === 'Rare').length;
+  const legCnt  = cardIds.filter(id => CARDS[id]?.rarity === 'Legendary').length;
+  if (rareCnt > DECK_RARE_LIMIT)
+    errors.push(`Too many Rare cards: ${rareCnt}/${DECK_RARE_LIMIT} max`);
+  if (legCnt > DECK_LEGENDARY_LIMIT)
+    errors.push(`Too many Legendary cards: ${legCnt}/${DECK_LEGENDARY_LIMIT} max`);
   if (champion.faction !== 'Adepts') {
     const bad = cardIds.filter(id => {
       const c = CARDS[id];
@@ -7677,11 +7722,13 @@ async function issueMatchRewards(won) {
 }
 
 // ── Deck builder helper ───────────────────────────────────────────────
-function buildDeckForGame(championId, savedDeckCards) {
-  if (savedDeckCards?.length === 10) {
+function buildDeckForGame(championId, savedDeckCards, difficulty) {
+  if (savedDeckCards?.length === DECK_SIZE) {
     return shuffle(savedDeckCards.map(id => ({ ...CARDS[id] })).filter(Boolean));
   }
-  return buildStarterDeck(CHAMPIONS[championId]?.faction);
+  const faction = CHAMPIONS[championId]?.faction;
+  if (difficulty) return buildAIStarterDeck(faction, difficulty);
+  return buildStarterDeck(faction);
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -7818,7 +7865,7 @@ async function authSubmitRegister() {
 
 // ── State for deck builder ────────────────────────────────────────────
 let _deckBuilderState = null;
-// { championId, cards: [cardId x0-10], deckId: null|string, name: string }
+// { championId, cards: [cardId x0-20], deckId: null|string, name: string }
 
 function showCollectionScreen(tab = 'collection') {
   ['landing-overlay', 'auth-overlay', 'collection-overlay'].forEach(id =>
@@ -8147,11 +8194,11 @@ function viewStarterDeck(championId) {
   if (!champ) return;
 
   const deckDefs = {
-    Architects:  ['BB','BB','BB','AR1','AR1','AR2','AR3','AR4','RC','RC'],
-    Pathfinders: ['BB','BB','BB','RC','RC','QS','QS','WS','PF1','PF3'],
-    Wardens:     ['BB','BB','BB','BB','RC','WD1','WD1','WD2','WD3','WD3'],
-    Phantoms:    ['BB','PH1','PH1','PH3','PH3','PH4','PH5','RC','PH2','PH2'],
-    Adepts:      ['AD1','AD1','AD2','AD2','AD3','AD3','AD4','BB','WD3','PH1'],
+    Architects:  ['BB','BB','BB','BB','AR1','AR1','AR1','AR2','AR2','AR3','AR3','AR4','AR4','AR5','RC','RC','CB','CB','AV','QS'],
+    Pathfinders: ['BB','BB','BB','RC','RC','RC','QS','QS','QS','AV','AV','WS','WS','PF1','PF1','PF3','PF3','PF4','PF4','CB'],
+    Wardens:     ['BB','BB','BB','BB','RC','RC','WD1','WD1','WD1','WD2','WD2','WD2','WD3','WD3','WD4','WD4','WD6','WD6','AV','QS'],
+    Phantoms:    ['BB','BB','BB','PH1','PH1','PH1','PH1','PH2','PH2','PH2','PH3','PH3','PH3','PH4','PH4','PH5','PH5','RC','RC','AV'],
+    Adepts:      ['AD1','AD1','AD1','AD2','AD2','AD2','AD3','AD3','AD3','AD5','AD5','AD5','BB','BB','BB','RC','RC','WD3','PH1','AV'],
   };
   const ids = deckDefs[champ.faction] || [];
 
@@ -8237,11 +8284,11 @@ function useStarterAsTemplate(championId) {
   if (!champ) return;
 
   const deckDefs = {
-    Architects:  ['BB','BB','BB','AR1','AR1','AR2','AR3','AR4','RC','RC'],
-    Pathfinders: ['BB','BB','BB','RC','RC','QS','QS','WS','PF1','PF3'],
-    Wardens:     ['BB','BB','BB','BB','RC','WD1','WD1','WD2','WD3','WD3'],
-    Phantoms:    ['BB','PH1','PH1','PH3','PH3','PH4','PH5','RC','PH2','PH2'],
-    Adepts:      ['AD1','AD1','AD2','AD2','AD3','AD3','AD4','BB','WD3','PH1'],
+    Architects:  ['BB','BB','BB','BB','AR1','AR1','AR1','AR2','AR2','AR3','AR3','AR4','AR4','AR5','RC','RC','CB','CB','AV','QS'],
+    Pathfinders: ['BB','BB','BB','RC','RC','RC','QS','QS','QS','AV','AV','WS','WS','PF1','PF1','PF3','PF3','PF4','PF4','CB'],
+    Wardens:     ['BB','BB','BB','BB','RC','RC','WD1','WD1','WD1','WD2','WD2','WD2','WD3','WD3','WD4','WD4','WD6','WD6','AV','QS'],
+    Phantoms:    ['BB','BB','BB','PH1','PH1','PH1','PH1','PH2','PH2','PH2','PH3','PH3','PH3','PH4','PH4','PH5','PH5','RC','RC','AV'],
+    Adepts:      ['AD1','AD1','AD1','AD2','AD2','AD2','AD3','AD3','AD3','AD5','AD5','AD5','BB','BB','BB','RC','RC','WD3','PH1','AV'],
   };
   const ids = deckDefs[champ.faction] || [];
 
@@ -8300,7 +8347,10 @@ function openDeckBuilder(championId, existingDeckId = null, templateCards = null
       <!-- Right: current deck -->
       <div class="db-deck-panel">
         <div class="db-panel-label">DECK
-          <span id="db-count" class="db-count">0/10</span>
+          <span id="db-count" class="db-count">0/20</span>
+        </div>
+        <div id="db-rarity-budget" style="font-size:9px;color:var(--text-dim);letter-spacing:.08em;margin-bottom:4px;">
+          Rare: <span id="db-rare-count" style="color:var(--text)">0</span>/5 &nbsp;·&nbsp; Legendary: <span id="db-leg-count" style="color:var(--text)">0</span>/1
         </div>
         <input id="db-deck-name" class="db-name-input"
                type="text" placeholder="Deck name…" maxlength="30"
@@ -8371,12 +8421,18 @@ function dbRenderPool(typeFilter = 'All') {
     const notOwned   = owned === 0;
     const atDeckLimit = inDeck >= limit;          // hit per-card deck copy limit
     const atOwnedCap  = inDeck >= owned;          // can't add more than you own
-    const deckFull    = _deckBuilderState.cards.length >= 10;
-    const blocked     = notOwned || atDeckLimit || atOwnedCap || deckFull;
-    const blockReason = notOwned    ? 'NOT OWNED'
-                      : atDeckLimit ? 'LIMIT REACHED'
-                      : atOwnedCap  ? 'NO MORE COPIES'
-                      : deckFull    ? 'DECK FULL'
+    const deckFull    = _deckBuilderState.cards.length >= DECK_SIZE;
+    const deckRareCnt  = _deckBuilderState.cards.filter(id => CARDS[id]?.rarity === 'Rare').length;
+    const deckLegCnt   = _deckBuilderState.cards.filter(id => CARDS[id]?.rarity === 'Legendary').length;
+    const rareLimit    = card.rarity === 'Rare'      && deckRareCnt >= DECK_RARE_LIMIT;
+    const legendLimit  = card.rarity === 'Legendary' && deckLegCnt  >= DECK_LEGENDARY_LIMIT;
+    const blocked     = notOwned || atDeckLimit || atOwnedCap || deckFull || rareLimit || legendLimit;
+    const blockReason = notOwned     ? 'NOT OWNED'
+                      : atDeckLimit  ? 'LIMIT REACHED'
+                      : atOwnedCap   ? 'NO MORE COPIES'
+                      : rareLimit    ? `RARE LIMIT (${DECK_RARE_LIMIT} max)`
+                      : legendLimit  ? 'LEGENDARY LIMIT (1 max)'
+                      : deckFull     ? 'DECK FULL'
                       : '';
     const col        = factionColors[card.faction] || 'var(--text-dim)';
 
@@ -8403,8 +8459,15 @@ function dbRenderDeck() {
   const { cards } = _deckBuilderState;
   const countEl = document.getElementById('db-count');
   if (countEl) {
-    countEl.textContent = `${cards.length}/10`;
-    countEl.style.color = cards.length === 10 ? 'var(--success)' : cards.length > 10 ? 'var(--danger)' : 'var(--text-dim)';
+    countEl.textContent = `${cards.length}/${DECK_SIZE}`;
+    countEl.style.color = cards.length === DECK_SIZE ? 'var(--success)' : cards.length > DECK_SIZE ? 'var(--danger)' : 'var(--text-dim)';
+  // Update rarity budget counters
+  const rareCount = cards.filter(id => CARDS[id]?.rarity === 'Rare').length;
+  const legCount  = cards.filter(id => CARDS[id]?.rarity === 'Legendary').length;
+  const rareEl = document.getElementById('db-rare-count');
+  const legEl  = document.getElementById('db-leg-count');
+  if (rareEl) { rareEl.textContent = rareCount; rareEl.style.color = rareCount >= DECK_RARE_LIMIT ? 'var(--danger)' : rareCount > 0 ? 'var(--amber)' : 'var(--text)'; }
+  if (legEl)  { legEl.textContent  = legCount;  legEl.style.color  = legCount  >= DECK_LEGENDARY_LIMIT ? 'var(--danger)' : legCount > 0 ? '#c0a030' : 'var(--text)'; }
   }
 
   const slots = document.getElementById('db-deck-slots');
@@ -8505,7 +8568,7 @@ function dbAddCard(cardId) {
   if (!_deckBuilderState) return;
   const { cards } = _deckBuilderState;
   // Hard stops — these mirror the visual blocked state exactly
-  if (cards.length >= 10) return;                          // deck full
+  if (cards.length >= DECK_SIZE) return;                   // deck full
   const owned  = getOwnedCount(cardId);
   if (owned < 1) return;                                   // not owned
   const inDeck = cards.filter(id => id === cardId).length;
