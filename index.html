@@ -2354,7 +2354,7 @@ const CARDS = {
   WD1: { id:'WD1', name:'Binding Wall',   faction:'Wardens', rarity:'Uncommon',   type:'Wall',
          desc:'Place a 1-tile Binding Wall. If the opponent ends their turn adjacent to it, they skip their move action next turn (may still play a card).', wallLen:1, binding:true },
   WD2: { id:'WD2', name:'Tax Notice',     faction:'Wardens', rarity:'Common',   type:'Disruption',
-         desc:'If the opponent has 3+ walls in play, look at their hand and steal 1 card of your choice. It goes into your hand.' },
+         desc:'If the opponent has 3+ walls in play, steal 1 card of your choice from their hand.' },
   WD3: { id:'WD3', name:'Eviction',       faction:'Wardens', rarity:'Uncommon', type:'Disruption',
          desc:'Move 1 non-reinforced opponent wall to any legal location on the board. The opponent cannot respond.' },
   WD4: { id:'WD4', name:'Confiscate',          faction:'Wardens', rarity:'Uncommon',     type:'Disruption',
@@ -2458,7 +2458,7 @@ const CARDS = {
   CH6: { id:'CH6', name:'Time Loop',       faction:'Chronists', rarity:'Uncommon', type:'Disruption',
          desc:'Return the last card you played (previous turn) from discard to hand.' },
   CH8: { id:'CH8', name:'Paradox Wall',    faction:'Chronists', rarity:'Uncommon', type:'Wall',
-         desc:'Place 2-tile wall. Each turn, rotates around one edge (your choice). Locks in place if no legal rotation exists.', wallLen:2, special:'paradoxWall' },
+         desc:'Place 2-tile wall. Choose CW or CCW. Auto-rotates each turn until blocked.', wallLen:2, special:'paradoxWall' },
   CH9: { id:'CH9', name:'Recall',          faction:'Chronists', rarity:'Rare',     type:'Disruption',
          desc:'Return any discard pile card to hand. Play it immediately for free.' },
   CH10:{ id:'CH10',name:'Temporal Maze',   faction:'Chronists', rarity:'Rare',     type:'Wall',
@@ -2466,7 +2466,7 @@ const CARDS = {
   CH11:{ id:'CH11',name:'Infinite Recursion', faction:'Chronists', rarity:'Legendary', type:'Disruption',
          desc:'Copy last 3 cards played this game (either player). Play all 3 free. Walls belong to you.' },
   CH12:{ id:'CH12',name:'Déjà Vu',        faction:'Chronists', rarity:'Common',   type:'Disruption',
-         desc:'Next card you play (next turn) resolves twice.' },
+         desc:'Next turn, you may play one extra card.' },
   CH13:{ id:'CH13',name:'Revert',          faction:'Chronists', rarity:'Uncommon', type:'Disruption',
          desc:'Return the last wall placed (by either player) to its owner\'s hand as a Basic Barrier card.' },
 };
@@ -3061,29 +3061,17 @@ function executeMove(to) {
   }
 
 
-  // ── Pushaman "Chad Aura" passive: push opponent on adjacency ───────
-  if (gameState.players[pi].champion.id === 'pushaman') {
-    const oppPi = 1 - pi;
-    const oppPos = gameState.players[oppPi].position;
-    const myPos = to;
-    // Check adjacency (orthogonal only)
-    const dr = myPos.row - oppPos.row;
-    const dc = myPos.col - oppPos.col;
-    const isAdjacent = (Math.abs(dr) + Math.abs(dc)) === 1;
-    if (isAdjacent) {
-      // Push direction = opposite of approach (away from Pushaman)
-      const pushDir = { r: -dr, c: -dc };
-      const result = executeForceMove(oppPi, pushDir, 1);
-      if (result.spacesMoved > 0) {
-        addLog(pi, 'passive', `Chad Aura: pushed opponent ${result.spacesMoved} space away!`);
-      } else {
-        addLog(pi, 'passive', `Chad Aura: opponent blocked by ${result.stoppedBy}`);
-      }
-    }
-  }
-
 
   // ── Pusher movement card effects ──────────────────────────────────
+  // Body Block pin check
+  if(selectedCard&&selectedCard._bodyBlock&&gameState._bodyBlockWallId){
+    const bbW=gameState.walls.find(w=>w.id===gameState._bodyBlockWallId);
+    if(bbW){const oP=1-pi,oPs=gameState.players[oP].position;
+      const aW=wallEdges(bbW).some(e=>(e.a.row===oPs.row&&e.a.col===oPs.col)||(e.b.row===oPs.row&&e.b.col===oPs.col));
+      const aM=(Math.abs(to.row-oPs.row)+Math.abs(to.col-oPs.col))===1;
+      if(aW&&aM){addStatusEffect(oP,'skip_move',1);addLog(pi,'card','Body Block: opponent pinned!');}}
+    gameState._bodyBlockWallId=null;}
+
   if (selectedCard && selectedCard._pendingMove) {
     const oppPi = 1 - pi;
     const oppPos = gameState.players[oppPi].position;
@@ -3219,7 +3207,17 @@ function executeMove(to) {
   // Clear Phase Walk flag after movement
   if (gameState._phaseWalk) gameState._phaseWalk = false;
 
-  // PF7 Trail Blaze: draw 1 if moved toward goal
+
+  // ── Pushaman "Chad Aura" passive: after card effects ──
+  if(gameState.players[pi].champion.id==='pushaman'){
+    const oP3=1-pi,oPs3=gameState.players[oP3].position,mPs3=gameState.players[pi].position;
+    const d3r=mPs3.row-oPs3.row,d3c=mPs3.col-oPs3.col;
+    if((Math.abs(d3r)+Math.abs(d3c))===1){
+      const r3=executeForceMove(oP3,{r:-d3r,c:-d3c},1);
+      if(r3.spacesMoved>0)addLog(pi,'passive','Chad Aura: pushed opponent away!');
+      else addLog(pi,'passive','Chad Aura: blocked by '+r3.stoppedBy);}}
+
+    // PF7 Trail Blaze: draw 1 if moved toward goal
   if (gameState._trailBlazeFrom !== undefined) {
     const goalRow = pi === 0 ? 0 : BOARD_SIZE - 1;
     const startDist = Math.abs(gameState._trailBlazeFrom - goalRow);
@@ -3881,14 +3879,13 @@ function resolveDelayedCards(pi) {
     } else if (card.type === 'Disruption') {
       // Resolve delayed disruption card through the proper handler
       addLog(pi, 'card', `Delayed ${card.name} activates!`);
+      gameState._freePlayActive = true;
       if (!isHumanSeat(pi)) {
-        // AI: auto-resolve
         selectedCard = { id: card.id, idx: -99, _delayed: true, _freePlay: true };
         applyDisruptionCard(pi, card, -99);
-        selectedCard = null;
-        continue; // process remaining delayed cards
+        selectedCard = null; gameState._freePlayActive = false;
+        continue;
       } else {
-        // Human: route through full disruption handler with UI
         selectedCard = { id: card.id, idx: -99, _delayed: true, _freePlay: true };
         applyDisruptionCard(pi, card, -99);
         // If the disruption needs UI interaction (e.g. card picker), it will return
@@ -4130,116 +4127,26 @@ function resolveTurnStartEffects(pi) {
     }
   }
 
-  // Paradox Wall: rotate around one edge (CW or CCW, player choice via modal)
-  // Rotation: keep one endpoint fixed, pivot 90° to flip orientation
-  // H wall at (r,c) len=2: endpoints are (r,c) and (r,c+1)
-  //   CW around left edge (r,c): becomes V wall at (r,c) len=2
-  //   CCW around left edge: becomes V wall at (r-1,c) len=2
-  //   CW around right edge (r,c+1): becomes V wall at (r,c+1) len=2
-  //   CCW around right edge: becomes V wall at (r-1,c+1) len=2
-  // V wall at (r,c) len=2: endpoints are (r,c) and (r+1,c)
-  //   CW around top edge (r,c): becomes H wall at (r,c) len=2
-  //   CCW around top edge: becomes H wall at (r,c-1) len=2
-  //   CW around bottom edge (r+1,c): becomes H wall at (r+1,c-1) len=2
-  //   CCW around bottom edge: becomes H wall at (r+1,c) len=2
-  const paradoxWalls = gameState.walls.filter(w => w._paradox && w.owner === pi);
-  for (const pw of paradoxWalls) {
-    // Generate all possible rotations (4 options: 2 edges × CW/CCW)
-    const rotations = [];
-    const testWalls = gameState.walls.filter(w => w.id !== pw.id);
-    const newOri = pw.orientation === 'H' ? 'V' : 'H';
-    if (pw.orientation === 'H') {
-      // Left edge CW/CCW
-      rotations.push({anchor: {row: pw.anchor.row, col: pw.anchor.col}, orientation: newOri, label: 'Left edge CW'});
-      rotations.push({anchor: {row: pw.anchor.row - 1, col: pw.anchor.col}, orientation: newOri, label: 'Left edge CCW'});
-      // Right edge CW/CCW
-      const rightCol = pw.anchor.col + pw.length - 1;
-      rotations.push({anchor: {row: pw.anchor.row, col: rightCol}, orientation: newOri, label: 'Right edge CW'});
-      rotations.push({anchor: {row: pw.anchor.row - 1, col: rightCol}, orientation: newOri, label: 'Right edge CCW'});
-    } else {
-      // Top edge CW/CCW
-      rotations.push({anchor: {row: pw.anchor.row, col: pw.anchor.col}, orientation: newOri, label: 'Top edge CW'});
-      rotations.push({anchor: {row: pw.anchor.row, col: pw.anchor.col - 1}, orientation: newOri, label: 'Top edge CCW'});
-      // Bottom edge CW/CCW
-      const bottomRow = pw.anchor.row + pw.length - 1;
-      rotations.push({anchor: {row: bottomRow, col: pw.anchor.col - 1}, orientation: newOri, label: 'Bottom edge CW'});
-      rotations.push({anchor: {row: bottomRow, col: pw.anchor.col}, orientation: newOri, label: 'Bottom edge CCW'});
-    }
-    // Filter to legal rotations
-    const legalRotations = rotations.filter(rot =>
-      wallInBounds(rot.anchor, rot.orientation, pw.length) &&
-      isWallLegal(rot.anchor, rot.orientation, pw.length, testWalls,
-        gameState.players[0].position, gameState.players[1].position, false)
-    );
-    if (!legalRotations.length) {
-      // No legal rotations — lock permanently
-      gameState.walls = gameState.walls.map(w =>
-        w.id === pw.id ? {...w, _paradox: false} : w);
-      addLog(pi, 'card', 'Paradox Wall: no legal rotations — permanently locked');
-      continue;
-    }
-    if (!isHumanSeat(pi)) {
-      // AI: pick random legal rotation
-      const pick = legalRotations[Math.floor(Math.random() * legalRotations.length)];
-      gameState.walls = gameState.walls.map(w =>
-        w.id === pw.id ? {...w, anchor: pick.anchor, orientation: pick.orientation} : w);
-      addLog(pi, 'card', `Paradox Wall: rotated (${pick.label})`);
-    } else {
-      // Human: show picker for rotation choice
-      gameState._paradoxPending = { wallId: pw.id, rotations: legalRotations };
-      showParadoxRotationPicker(pi, pw, legalRotations);
-      return; // pause resolution until player picks
-    }
+  // Paradox Wall auto-rotate
+  for(const pw of gameState.walls.filter(w=>w._paradox&&w.owner===pi&&w._paradoxDir)){
+    const d=pw._paradoxDir,nO=pw.orientation==='H'?'V':'H',tw=gameState.walls.filter(w=>w.id!==pw.id),cs=[];
+    if(pw.orientation==='H'){if(d==='CW'){cs.push({a:{row:pw.anchor.row,col:pw.anchor.col},o:nO});cs.push({a:{row:pw.anchor.row,col:pw.anchor.col+pw.length-1},o:nO});}else{cs.push({a:{row:pw.anchor.row-1,col:pw.anchor.col},o:nO});cs.push({a:{row:pw.anchor.row-1,col:pw.anchor.col+pw.length-1},o:nO});}}
+    else{if(d==='CW'){cs.push({a:{row:pw.anchor.row,col:pw.anchor.col},o:nO});cs.push({a:{row:pw.anchor.row+pw.length-1,col:pw.anchor.col},o:nO});}else{cs.push({a:{row:pw.anchor.row,col:pw.anchor.col-1},o:nO});cs.push({a:{row:pw.anchor.row+pw.length-1,col:pw.anchor.col-1},o:nO});}}
+    const lg=cs.filter(c=>wallInBounds(c.a,c.o,pw.length)&&isWallLegal(c.a,c.o,pw.length,tw,gameState.players[0].position,gameState.players[1].position,false));
+    if(lg.length){const p=lg[0];gameState.walls=gameState.walls.map(w=>w.id===pw.id?{...w,anchor:p.a,orientation:p.o}:w);addLog(pi,'card','Paradox Wall rotated '+d);}
+    else{gameState.walls=gameState.walls.map(w=>w.id===pw.id?{...w,_paradox:false}:w);addLog(pi,'card','Paradox Wall locked');}
   }
 }
 
-
-// ── Paradox Wall rotation picker ──────────────────────────────────────
-function showParadoxRotationPicker(pi, wall, rotations) {
+// ── Paradox Wall direction picker ──
+function showParadoxDirectionPicker(pi){
   document.getElementById('paradox-picker-overlay')?.remove();
-  const overlay = document.createElement('div');
-  overlay.id = 'paradox-picker-overlay';
-  overlay.style.cssText = `
-    position:fixed; inset:0; background:rgba(0,0,0,0.7);
-    display:flex; flex-direction:column; align-items:center; justify-content:center;
-    z-index:200; padding:20px;
-  `;
-  const items = rotations.map((rot, i) => `
-    <div class="picker-card" data-rot-idx="${i}" style="
-      padding:12px 16px; border:1px solid var(--border); background:var(--surface2);
-      cursor:pointer; transition:all 0.15s; margin-bottom:6px;
-    " onmouseover="this.style.borderColor='var(--wall-chro)'" onmouseout="this.style.borderColor='var(--border)'">
-      <span style="font-family:'Teko',sans-serif;font-size:15px;color:var(--wall-chro)">${rot.label}</span>
-      <span style="font-size:10px;color:var(--text-dim);margin-left:8px">${rot.orientation} at (${rot.anchor.row},${rot.anchor.col})</span>
-    </div>
-  `).join('');
-  overlay.innerHTML = `
-    <div style="max-width:380px;width:100%;">
-      <div style="font-family:'Teko',sans-serif;font-size:18px;letter-spacing:0.12em;color:var(--wall-chro);margin-bottom:12px;text-align:center;">
-        PARADOX WALL — CHOOSE ROTATION
-      </div>
-      <div id="paradox-choices">${items}</div>
-    </div>
-  `;
-  overlay.querySelectorAll('.picker-card').forEach(el => {
-    el.addEventListener('click', () => {
-      const idx = parseInt(el.dataset.rotIdx);
-      const pick = rotations[idx];
-      overlay.remove();
-      const pending = gameState._paradoxPending;
-      if (pending) {
-        gameState.walls = gameState.walls.map(w =>
-          w.id === pending.wallId ? {...w, anchor: pick.anchor, orientation: pick.orientation} : w);
-        gameState._paradoxPending = null;
-        addLog(pi, 'card', 'Paradox Wall: rotated (' + pick.label + ')');
-        // Continue resolving turn start effects
-        renderAll();
-        showStatus('Paradox Wall rotated — take your turn', 'success');
-      }
-    });
-  });
-  document.body.appendChild(overlay);
-}
+  const ov=document.createElement('div');ov.id='paradox-picker-overlay';
+  ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.7);display:flex;align-items:center;justify-content:center;z-index:200;';
+  ov.innerHTML='<div style="max-width:320px;text-align:center;"><div style="font-family:Teko,sans-serif;font-size:18px;color:var(--wall-chro);margin-bottom:16px;">PARADOX WALL ROTATION</div><div style="font-size:11px;color:var(--text-dim);margin-bottom:16px;">Auto-rotates this direction each turn.</div><div style="display:flex;gap:12px;justify-content:center;"><button id="px-cw" style="padding:10px 24px;background:var(--surface2);border:1px solid var(--wall-chro);color:var(--wall-chro);cursor:pointer;font-size:16px;">↻ CW</button><button id="px-ccw" style="padding:10px 24px;background:var(--surface2);border:1px solid var(--wall-chro);color:var(--wall-chro);cursor:pointer;font-size:16px;">↺ CCW</button></div></div>';
+  const pick=d=>{ov.remove();const w=gameState._paradoxDirPending;if(w){gameState.walls=gameState.walls.map(x=>x.id===w?{...x,_paradoxDir:d}:x);gameState._paradoxDirPending=null;addLog(pi,'card','Paradox Wall: '+d);}if(isTurnDone())gameState.phase='end_turn';renderAll();updateActionBar();showStatus('Paradox Wall: '+d,'success');};
+  ov.querySelector('#px-cw').onclick=()=>pick('CW');ov.querySelector('#px-ccw').onclick=()=>pick('CCW');
+  document.body.appendChild(ov);}
 
 function discardCard(pi, idx) {
   const p = gameState.players[pi];
@@ -4355,11 +4262,7 @@ function endTurn() {
     gameState._braceTurnsLeft = 0;
   }
 
-  // Tick Déjà Vu expiry
-  if (gameState._dejaVu === pi && gameState._dejaVuTurnsLeft !== undefined) {
-    gameState._dejaVuTurnsLeft--;
-    if (gameState._dejaVuTurnsLeft <= 0) { gameState._dejaVu = null; gameState._dejaVuTurnsLeft = 0; }
-  }
+  // DV expiry via status tick
 
   onEndTurnPassives(pi);
   const next = pi===0?1:0;
@@ -5995,8 +5898,9 @@ function isTurnDone() {
       'hand=', p.hand.length, 'ult ready=', p.ultimateReady, 'ult used=', p.ultimateUsed,
       'temporalFold=', gameState._vexTemporalFold);
   }
+  const _dvT=(p.statusEffects||[]).some(e=>e.type==='deja_vu'&&e.turnsRemaining>0);
   if (p.hand.length === 0) return hasMoved;
-  return hasMoved && cardsPlayedThisTurn >= 1;
+  return hasMoved && cardsPlayedThisTurn >= (_dvT?2:1);
 }
 
 function resetTurnState() {
@@ -6086,7 +5990,8 @@ function selectCard(cardId, idx) {
     showStatus('Already moved — this faction plays cards OR moves, not both', 'error'); return;
   }
   // Magnus (Master Mason): can play 2 cards (or 1 card + 1 move)
-  const maxCards = (champId === 'magnus') ? 2 : rule.cardPlays;
+  const _dvB=(gameState.players[pi].statusEffects||[]).some(e=>e.type==='deja_vu'&&e.turnsRemaining>0)?1:0;
+  const maxCards=((champId==='magnus')?2:rule.cardPlays)+_dvB;
   if (cardsPlayedThisTurn >= maxCards) {
     showStatus('Card budget for this turn used up', 'error'); return;
   }
@@ -6098,26 +6003,14 @@ function selectCard(cardId, idx) {
   selectedCard = { id: cardId, idx };
 
   // ── Déjà Vu: if active for this player, consume and mark for double resolution ──
-  let _dejaVuActive = false;
-  if (gameState._dejaVu === pi && !selectedCard._isDejaVuReplay) {
-    gameState._dejaVu = null;
-    gameState._dejaVuTurnsLeft = 0;
-    _dejaVuActive = true;
-    selectedCard._dejaVuQueued = true;
-    // Remove the Déjà Vu status chip now that it's consumed
-    const dvEffects = gameState.players[pi].statusEffects || [];
-    gameState.players[pi] = {...gameState.players[pi],
-      statusEffects: dvEffects.filter(e => e.type !== 'deja_vu')};
-    console.log('[DEJA VU] Consumed! Card:', selectedCard.id, 'queued=true, _pendingDejaVu will be set for Disruption/Movement');
-    addLog(pi, 'card', 'Déjà Vu triggers — this card will resolve twice!');
-  }
+  // Déjà Vu: extra card play (status effect)
 
   if (card.type === 'Wall') {
     trackCategory('Wall');
     const isPhantom = !!(card.phantom);
     const isDurable = !!(card.durable);
     const length    = getCardWallLength(card.id);
-    selectedCard = { ...selectedCard, length, isPhantom, isDurable, _dejaVuQueued: _dejaVuActive || undefined };
+    selectedCard = { ...selectedCard, length, isPhantom, isDurable,  };
     uiMode = 'wall';
     renderAll();
     if (card.id === 'PH4') {
@@ -6128,12 +6021,9 @@ function selectCard(cardId, idx) {
   } else if (card.type === 'Movement') {
     trackCategory('Movement');
     // Store dejaVu flag before applyMovementCard overwrites selectedCard
-    gameState._pendingDejaVu = _dejaVuActive ? { cardId: card.id, card: {...card} } : null;
     applyMovementCard(pi, card, idx);
   } else if (card.type === 'Disruption') {
     trackCategory('Disruption');
-    // Store dejaVu flag for disruption cards (selectedCard often nulled before countCardPlayed)
-    gameState._pendingDejaVu = _dejaVuActive ? { cardId: card.id, card: {...card} } : null;
     applyDisruptionCard(pi, card, idx);
   } else {
     discardCard(pi, idx);
@@ -6553,6 +6443,27 @@ function onWallPlaced(pi, fromCardId, _wasDelayedCard) {
     }
   }
 
+  // PU7 Body Block: place wall, then move up to 2 spaces, pin check
+  if (fromCardId === 'PU7') {
+    if (!isHumanSeat(pi)) {
+      const aiMvs = getLegalMoves(gameState, pi, 2);
+      if (aiMvs.length) {
+        const gR=pi===0?0:BOARD_SIZE-1; aiMvs.sort((a,b)=>(pi===0?a.row-b.row:b.row-a.row));
+        gameState.players[pi]={...gameState.players[pi],position:aiMvs[0]}; hasMoved=true;
+        const lw=gameState.walls[gameState.walls.length-1];
+        if(lw){const op=gameState.players[1-pi].position;
+          const aW=wallEdges(lw).some(e=>(e.a.row===op.row&&e.a.col===op.col)||(e.b.row===op.row&&e.b.col===op.col));
+          const aM=(Math.abs(aiMvs[0].row-op.row)+Math.abs(aiMvs[0].col-op.col))===1;
+          if(aW&&aM){addStatusEffect(1-pi,'skip_move',1);addLog(pi,'card','Body Block: pinned!');}}
+        addLog(pi,'card','Body Block: moved after wall');
+      }
+    } else {
+      gameState._bodyBlockWallId=gameState.walls[gameState.walls.length-1]?.id;
+      selectedCard={id:'PU7',idx:-1,overrideSpeed:2,_pendingMove:true,_bodyBlock:true,_freePlay:true};
+      uiMode='move'; renderAll(); showStatus('Body Block: move up to 2 spaces','active'); return;
+    }
+  }
+
   // PU9 Displacement Wall: push opponent 2 toward their start row ONLY if adjacent to wall
   if (fromCardId === 'PU9') {
     const opp = 1 - pi;
@@ -6661,9 +6572,15 @@ function onWallPlaced(pi, fromCardId, _wasDelayedCard) {
   if (fromCardId === 'CH8') {
     const lastWall = gameState.walls[gameState.walls.length - 1];
     if (lastWall) {
-      gameState.walls = gameState.walls.map(w =>
-        w.id === lastWall.id ? {...w, _paradox: true} : w);
-      addLog(pi, 'card', 'Paradox Wall: will rotate each turn until locked');
+      if (!isHumanSeat(pi)) {
+        const d=Math.random()<0.5?'CW':'CCW';
+        gameState.walls=gameState.walls.map(w=>w.id===lastWall.id?{...w,_paradox:true,_paradoxDir:d}:w);
+        addLog(pi,'card','Paradox Wall: rotates '+d);
+      } else {
+        gameState.walls=gameState.walls.map(w=>w.id===lastWall.id?{...w,_paradox:true,_paradoxDir:null}:w);
+        gameState._paradoxDirPending=lastWall.id;
+        showParadoxDirectionPicker(pi); return;
+      }
     }
   }
 
@@ -6809,7 +6726,7 @@ async function applyDisruptionCard(pi, card, idx) {
     }
     // Don't discard yet — allow cancel by re-clicking the card
     gameState._shrinkCardIdx = idx;
-    selectedCard = { id: card.id, idx: idx, _dejaVuQueued: _dvQueued || undefined };
+    selectedCard = { id: card.id, idx: idx,  };
     uiMode = 'wallShrink';
     renderAll();
     showStatus('Undermine — click an opponent wall to shrink, or click the card again to cancel', 'active');
@@ -7548,12 +7465,14 @@ async function applyDisruptionCard(pi, card, idx) {
   if (card.id === 'CH6') {
     const p = gameState.players[pi];
     if (!p.discard.length) { showStatus('Discard pile is empty', 'error'); return; }
-    const recovered = p.discard[p.discard.length - 1];
-    gameState.players[pi] = {...p,
-      discard: p.discard.slice(0, -1),
-      hand: [...p.hand, recovered].slice(0, p.champion.handSize)};
+    discardCard(pi, idx); // free slot first
+    const p2=gameState.players[pi];
+    const recovered = p2.discard[p2.discard.length - 1];
+    gameState.players[pi] = {...p2,
+      discard: p2.discard.slice(0, -1),
+      hand: [...p2.hand, recovered].slice(0, p2.champion.handSize)};
     addLog(pi, 'card', `Time Loop: recovered ${recovered.name} from discard`);
-    discardCard(pi, idx); selectedCard = null; countCardPlayed(pi);
+    selectedCard = null; countCardPlayed(pi);
     if (isTurnDone()) gameState.phase = 'end_turn';
     renderAll(); showStatus(`Time Loop: ${recovered.name} returned!`, 'success'); return;
   }
@@ -7630,11 +7549,8 @@ async function applyDisruptionCard(pi, card, idx) {
 
   // ── CH12: Déjà Vu — next card resolves twice ──
   if (card.id === 'CH12') {
-    gameState._dejaVu = pi;
-    gameState._dejaVuTurnsLeft = 2; // survives end of this turn, expires end of next turn if unused
-    // Add status effect so the player can see the Déjà Vu indicator
     addStatusEffect(pi, 'deja_vu', 2);
-    addLog(pi, 'card', 'Déjà Vu: your next card play will resolve twice!');
+    addLog(pi, 'card', 'Déjà Vu: extra card play next turn!');
     discardCard(pi, idx); selectedCard = null; countCardPlayed(pi);
     if (isTurnDone()) gameState.phase = 'end_turn';
     renderAll(); showStatus('Déjà Vu active — next card resolves twice!', 'success'); return;
@@ -10705,11 +10621,7 @@ function mpEndTurnLocal() {
     gameState._braceTurnsLeft = 0;
   }
 
-  // Tick Déjà Vu expiry
-  if (gameState._dejaVu === pi && gameState._dejaVuTurnsLeft !== undefined) {
-    gameState._dejaVuTurnsLeft--;
-    if (gameState._dejaVuTurnsLeft <= 0) { gameState._dejaVu = null; gameState._dejaVuTurnsLeft = 0; }
-  }
+  // DV expiry via status tick
 
   onEndTurnPassives(pi);
   // Track completed turns per seat (used by mpHandleRemoteUpdate to skip draw on first turn)
