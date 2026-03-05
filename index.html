@@ -5864,6 +5864,14 @@ function selectCard(cardId, idx) {
 
   selectedCard = { id: cardId, idx };
 
+  // ── Déjà Vu: if active for this player, consume and mark for double resolution ──
+  if (gameState._dejaVu === pi && !selectedCard._isDejaVuReplay) {
+    gameState._dejaVu = null;
+    gameState._dejaVuTurnsLeft = 0;
+    selectedCard._dejaVuQueued = true;
+    addLog(pi, 'card', 'Déjà Vu triggers — this card will resolve twice!');
+  }
+
   if (card.type === 'Wall') {
     trackCategory('Wall');
     const isPhantom = !!(card.phantom);
@@ -5907,6 +5915,187 @@ function countCardPlayed(pi) {
     if (!gameState._lastCardPlayed) gameState._lastCardPlayed = [null, null];
     gameState._lastCardPlayed[pi] = CARDS[selectedCard.id];
   }
+  // ── Déjà Vu: schedule replay if this card was marked ──
+  if (selectedCard?._dejaVuQueued && !selectedCard._isDejaVuReplay) {
+    const replayCard = {...CARDS[selectedCard.id]};
+    selectedCard._dejaVuQueued = false; // consume
+    setTimeout(() => {
+      if (!gameState || gameState.winner !== null) return;
+      checkDejaVuReplay(pi, replayCard, true);
+    }, 100);
+  }
+}
+
+// ── Déjà Vu replay helper ──────────────────────────────────────────
+// Called after a card fully resolves. If the card was marked for Déjà Vu
+// double resolution, replay it once more (without consuming another card).
+function checkDejaVuReplay(pi, card, dejaVuQueued) {
+  if (!dejaVuQueued) return;
+  addLog(pi, 'card', `Déjà Vu: ${card.name} resolves a second time!`);
+  showStatus(`Déjà Vu: ${card.name} resolves again!`, 'success');
+  // Create a virtual copy and replay it
+  const copy = {...card};
+  // For disruptions: re-apply immediately
+  if (copy.type === 'Disruption') {
+    const fakeIdx = -99; // sentinel: card is not in hand
+    selectedCard = { id: copy.id, idx: fakeIdx, _isDejaVuReplay: true };
+    applyDisruptionCard(pi, copy, fakeIdx);
+    selectedCard = null;
+  } else if (copy.type === 'Movement') {
+    const fakeIdx = -99;
+    selectedCard = { id: copy.id, idx: fakeIdx, _isDejaVuReplay: true };
+    applyMovementCard(pi, copy, fakeIdx);
+    selectedCard = null;
+  } else if (copy.type === 'Wall') {
+    // Queue a second wall placement — player gets to place another wall of same type
+    const isPhantom = !!copy.phantom;
+    const isDurable = !!copy.durable;
+    const length = copy.wallLen || 2;
+    selectedCard = { id: copy.id, idx: -99, length, isPhantom, isDurable, _isDejaVuReplay: true };
+    uiMode = 'wall';
+    renderAll();
+    showStatus(`Déjà Vu: place ${copy.name} again!`, 'active');
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// ── FREE-PLAY SYSTEM — play a card without consuming card budget ──
+// Used by Recall (CH9), Infinite Recursion (CH11), and delayed cards.
+// The card is NOT in the player's hand — it's a virtual play.
+// ═══════════════════════════════════════════════════════════════════
+function freePlayCard(pi, card) {
+  if (!card || !CARDS[card.id]) {
+    addLog(pi, 'card', `Free play failed: invalid card`);
+    return;
+  }
+  addLog(pi, 'card', `Free play: ${card.name}`);
+
+  if (card.type === 'Wall') {
+    // For walls, AI auto-places; Human enters wall mode
+    const isPhantom = !!card.phantom;
+    const isDurable = !!card.durable;
+    const length = card.wallLen || 2;
+
+    if (!isHumanSeat(pi)) {
+      // AI: auto-place near opponent
+      const oppPos = gameState.players[1 - pi].position;
+      const cands = generateWallCandidates(oppPos, length);
+      let placed = false;
+      for (const {anchor, orientation} of cands) {
+        if (isWallLegal(anchor, orientation, length, gameState.walls,
+            gameState.players[0].position, gameState.players[1].position, isPhantom)) {
+          selectedCard = { id: card.id, idx: -1, length, isPhantom, isDurable, _freePlay: true };
+          executePlaceWall(anchor, orientation, length, isPhantom, isDurable, card.id);
+          selectedCard = null;
+          placed = true;
+          break;
+        }
+      }
+      if (!placed) addLog(pi, 'card', `Free play ${card.name}: no legal wall placement found`);
+    } else {
+      // Human: enter wall placement mode
+      selectedCard = { id: card.id, idx: -1, length, isPhantom, isDurable, _freePlay: true };
+      uiMode = 'wall';
+      renderAll();
+      showStatus(`Free play: place ${card.name}`, 'active');
+    }
+  } else if (card.type === 'Movement') {
+    if (!isHumanSeat(pi)) {
+      // AI: movement boost will be consumed by executeMove
+      const speed = card.overrideSpeed || 1;
+      // Just add boost — AI move phase will use it
+      selectedCard = { id: card.id, idx: -1, overrideSpeed: speed,
+        tunnelThrough: !!card.tunnelThrough, diagonal: !!card.diagonal,
+        ownWallsPassthrough: !!card.ownWallsPassthrough, _pendingMove: true, _freePlay: true };
+      addLog(pi, 'card', `Free play: ${card.name} movement boost applied`);
+    } else {
+      // Human: enter movement mode
+      selectedCard = { id: card.id, idx: -1, overrideSpeed: card.overrideSpeed || 1,
+        tunnelThrough: !!card.tunnelThrough, diagonal: !!card.diagonal,
+        ownWallsPassthrough: !!card.ownWallsPassthrough, _pendingMove: true, _freePlay: true };
+      uiMode = 'move';
+      renderAll();
+      showStatus(`Free play: ${card.name} — move now`, 'active');
+    }
+  } else if (card.type === 'Disruption') {
+    // Auto-resolve disruptions
+    selectedCard = { id: card.id, idx: -99, _freePlay: true };
+    applyDisruptionCard(pi, card, -99);
+    selectedCard = null;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// ── CARD PICKER MODAL — used by Delay (CH1), Recall (CH9), etc. ──
+// Shows a modal with selectable cards and calls onPick(card) when chosen.
+// ═══════════════════════════════════════════════════════════════════
+function showCardPicker(pi, cards, title, onPick) {
+  // Remove any existing picker
+  document.getElementById('card-picker-overlay')?.remove();
+
+  const factionColors = {
+    Basic:'var(--text-dim)', Architects:'var(--amber)', Pathfinders:'#4ecdc4',
+    Wardens:'#e76f51', Phantoms:'#9b5de5', Pushers:'#f77f00',
+    Trappers:'#06d6a0', Chronists:'#118ab2'
+  };
+
+  const overlay = document.createElement('div');
+  overlay.id = 'card-picker-overlay';
+  overlay.style.cssText = `
+    position:fixed; inset:0; background:rgba(0,0,0,0.7);
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
+    z-index:200; padding:20px;
+  `;
+
+  const cardItems = cards.map((card, i) => {
+    const col = factionColors[card.faction] || 'var(--text-dim)';
+    return `
+      <div class="picker-card" data-picker-idx="${i}" style="
+        padding:12px 16px; border:1px solid var(--border); background:var(--surface2);
+        cursor:pointer; transition:all 0.15s; margin-bottom:6px;
+      " onmouseover="this.style.borderColor='var(--amber)'" onmouseout="this.style.borderColor='var(--border)'">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+          <span style="color:${col};font-size:10px;letter-spacing:.12em;text-transform:uppercase;">${card.faction}</span>
+          <span style="color:var(--text-dim);font-size:9px;">${card.rarity}</span>
+        </div>
+        <div style="font-family:'Teko',sans-serif;font-size:20px;font-weight:500;color:var(--text);letter-spacing:.06em;">
+          ${card.name}
+        </div>
+        <div style="font-size:10px;color:var(--text-dim);margin-top:2px;line-height:1.4;">
+          ${card.desc || ''}
+        </div>
+      </div>`;
+  }).join('');
+
+  overlay.innerHTML = `
+    <div style="max-width:380px;width:100%;max-height:80vh;overflow-y:auto;background:var(--bg);border:1px solid var(--border);padding:20px;">
+      <div style="font-size:10px;letter-spacing:.18em;color:var(--amber);text-transform:uppercase;margin-bottom:12px;">
+        ${title}
+      </div>
+      <div id="picker-card-list">${cardItems}</div>
+      <button id="picker-cancel-btn" style="
+        width:100%;padding:10px;margin-top:10px;background:transparent;
+        border:1px solid var(--border);color:var(--text-dim);cursor:pointer;
+        font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.14em;text-transform:uppercase;
+      ">CANCEL</button>
+    </div>
+  `;
+
+  document.body.appendChild(overlay);
+
+  // Attach click handlers
+  overlay.querySelectorAll('.picker-card').forEach(el => {
+    el.addEventListener('click', () => {
+      const pickIdx = parseInt(el.dataset.pickerIdx);
+      overlay.remove();
+      onPick(cards[pickIdx]);
+    });
+  });
+
+  document.getElementById('picker-cancel-btn').addEventListener('click', () => {
+    overlay.remove();
+    showStatus('Card selection cancelled', '');
+  });
 }
 
 // Returns true if the player is currently mid-resolve on a pick-mode card
@@ -6277,6 +6466,7 @@ function applyMovementCard(pi, card, idx) {
 // ── Disruption card handler ───────────────────────────────────────────
 async function applyDisruptionCard(pi, card, idx) {
   const opp = 1 - pi;
+  const _dvQueued = selectedCard?._dejaVuQueued && !selectedCard?._isDejaVuReplay;
 
   // ── B07: Undermine — shrink one opponent wall by 1 tile ──
   if (card.id === 'B07') {
@@ -6944,10 +7134,38 @@ async function applyDisruptionCard(pi, card, idx) {
   if (card.id === 'CH1') {
     const hand = gameState.players[pi].hand.filter((_, i) => i !== idx);
     if (!hand.length) { showStatus('No other cards to delay', 'error'); return; }
+
+    if (isHumanSeat(pi) && idx !== -99) {
+      // Human: show card picker to choose which card to delay
+      gameState._delayPending = { pi, delayCardIdx: idx, dejaVuQueued: selectedCard?._dejaVuQueued };
+      showCardPicker(pi, hand, 'Choose a card to delay until next turn', (pickedCard) => {
+        const pending = gameState._delayPending;
+        if (!pending) return;
+        const p = gameState.players[pending.pi];
+        const targetIdx = p.hand.findIndex(c => c === pickedCard || (c.id === pickedCard.id && c.name === pickedCard.name));
+        if (targetIdx >= 0) {
+          const delayed = p.hand[targetIdx];
+          gameState.players[pending.pi] = {...p,
+            hand: p.hand.filter((_, i) => i !== targetIdx)};
+          delayCard(pending.pi, delayed);
+        }
+        // Discard the Delay card itself (adjust index if target was before it)
+        const adjIdx = pending.delayCardIdx > targetIdx ? pending.delayCardIdx - 1 : pending.delayCardIdx;
+        selectedCard = { id: 'CH1', idx: adjIdx, _dejaVuQueued: pending.dejaVuQueued };
+        discardCard(pending.pi, adjIdx); selectedCard = null; countCardPlayed(pending.pi);
+        gameState._delayPending = null;
+        if (isTurnDone()) gameState.phase = 'end_turn';
+        renderAll(); showStatus('Card delayed for next turn!', 'success');
+      });
+      return;
+    }
+
     // AI: delay the highest-value card
-    // Human: for now, auto-delay the first non-CH1 card (full picker in Phase 7)
-    const target = hand[0];
-    const targetIdx = gameState.players[pi].hand.indexOf(target);
+    const aiTarget = hand.reduce((a, b) =>
+      ((b.overrideSpeed||0) + (b.wallLen||0)*2 + (b.rarity==='Rare'?3:0) + (b.rarity==='Legendary'?5:0)) >
+      ((a.overrideSpeed||0) + (a.wallLen||0)*2 + (a.rarity==='Rare'?3:0) + (a.rarity==='Legendary'?5:0)) ? b : a
+    );
+    const targetIdx = gameState.players[pi].hand.indexOf(aiTarget);
     if (targetIdx >= 0) {
       const delayed = gameState.players[pi].hand[targetIdx];
       gameState.players[pi] = {...gameState.players[pi],
@@ -6992,46 +7210,76 @@ async function applyDisruptionCard(pi, card, idx) {
   if (card.id === 'CH9') {
     const p = gameState.players[pi];
     if (!p.discard.length) { showStatus('Discard pile is empty', 'error'); return; }
-    // Pick the highest-value card from discard
+
+    const dvQueued = selectedCard?._dejaVuQueued;
+
+    if (isHumanSeat(pi) && idx !== -99) {
+      // Human: show picker to choose which discard card to recover
+      showCardPicker(pi, [...p.discard], 'Choose a card to Recall (it will be played for free)', (pickedCard) => {
+        const pp = gameState.players[pi];
+        const pickedIdx = pp.discard.findIndex(c => c === pickedCard);
+        if (pickedIdx < 0) return;
+        const recovered = pp.discard[pickedIdx];
+        gameState.players[pi] = {...pp,
+          discard: pp.discard.filter((_, i) => i !== pickedIdx)};
+        addLog(pi, 'card', `Recall: recovered ${recovered.name} — playing it for free!`);
+        // Discard Recall itself
+        const recallIdx = gameState.players[pi].hand.findIndex(c => c.id === 'CH9');
+        if (recallIdx >= 0) discardCard(pi, recallIdx);
+        selectedCard = { id: 'CH9', idx: -1, _dejaVuQueued: dvQueued };
+        countCardPlayed(pi);
+        selectedCard = null;
+        // Free-play the recovered card
+        freePlayCard(pi, recovered);
+        renderAll();
+      });
+      return;
+    }
+
+    // AI: pick the highest-value card from discard
     const best = p.discard.reduce((a, b) =>
       ((b.overrideSpeed||0) + (b.wallLen||0)*2 + (b.rarity==='Rare'?3:0) + (b.rarity==='Legendary'?5:0)) >
       ((a.overrideSpeed||0) + (a.wallLen||0)*2 + (a.rarity==='Rare'?3:0) + (a.rarity==='Legendary'?5:0)) ? b : a
     );
     const bestIdx = p.discard.indexOf(best);
     gameState.players[pi] = {...p,
-      discard: p.discard.filter((_, i) => i !== bestIdx),
-      hand: [...p.hand, best].slice(0, p.champion.handSize + 1)}; // temporary over-hand
-    addLog(pi, 'card', `Recall: recovered ${best.name} — play it now for free!`);
-    discardCard(pi, idx); selectedCard = null; countCardPlayed(pi);
-    // The recovered card is now in hand — player can play it on a future turn
-    // (True "play free" would need a free-play flag — simplified for now)
+      discard: p.discard.filter((_, i) => i !== bestIdx)};
+    addLog(pi, 'card', `Recall: recovered ${best.name} — playing it for free!`);
+    discardCard(pi, idx); selectedCard = { id: 'CH9', idx: -1, _dejaVuQueued: dvQueued }; countCardPlayed(pi);
+    selectedCard = null;
+    // Free-play the recovered card
+    freePlayCard(pi, best);
     if (isTurnDone()) gameState.phase = 'end_turn';
-    renderAll(); showStatus(`Recall: ${best.name} recovered!`, 'success'); return;
+    renderAll(); showStatus(`Recall: ${best.name} played for free!`, 'success'); return;
   }
 
-  // ── CH11: Infinite Recursion — copy last 3 cards played ──
+  // ── CH11: Infinite Recursion — copy last 3 cards played, play all free ──
   if (card.id === 'CH11') {
     const history = gameState._cardHistory || [];
     const last3 = history.slice(-3);
     if (!last3.length) {
       addLog(pi, 'card', 'Infinite Recursion: no card history to copy');
-    } else {
-      // Add copies to hand (as many as hand size allows)
-      const copies = last3.map(id => ({...CARDS[id]})).filter(Boolean);
-      const p = gameState.players[pi];
-      gameState.players[pi] = {...p,
-        hand: [...p.hand, ...copies].slice(0, p.champion.handSize + copies.length)};
-      addLog(pi, 'card', `Infinite Recursion: copied ${copies.map(c=>c.name).join(', ')} from game history`);
+      discardCard(pi, idx); selectedCard = null; countCardPlayed(pi);
+      if (isTurnDone()) gameState.phase = 'end_turn';
+      renderAll(); showStatus('Infinite Recursion: no history!', 'error'); return;
     }
+    const copies = last3.map(id => ({...CARDS[id]})).filter(Boolean);
+    addLog(pi, 'card', `Infinite Recursion: copied ${copies.map(c=>c.name).join(', ')} — playing all for free!`);
     discardCard(pi, idx); selectedCard = null; countCardPlayed(pi);
+    // Free-play all copied cards sequentially
+    // Walls placed by these copies belong to the caster (pi)
+    for (const copy of copies) {
+      if (gameState.winner !== null) break;
+      freePlayCard(pi, copy);
+    }
     if (isTurnDone()) gameState.phase = 'end_turn';
-    renderAll(); showStatus('Infinite Recursion: cards copied!', 'success'); return;
+    renderAll(); showStatus(`Infinite Recursion: ${copies.length} cards played!`, 'success'); return;
   }
 
   // ── CH12: Déjà Vu — next card resolves twice ──
   if (card.id === 'CH12') {
     gameState._dejaVu = pi;
-    gameState._dejaVuTurnsLeft = 1;
+    gameState._dejaVuTurnsLeft = 2; // survives end of this turn, expires end of next turn if unused
     addLog(pi, 'card', 'Déjà Vu: your next card play will resolve twice!');
     discardCard(pi, idx); selectedCard = null; countCardPlayed(pi);
     if (isTurnDone()) gameState.phase = 'end_turn';
