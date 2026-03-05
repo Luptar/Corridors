@@ -2907,6 +2907,7 @@ function performDraw() {
 
   // AI's turn
   if (pi === AI_PLAYER) {
+    console.log('[AI] performDraw: scheduling runAI for AI_PLAYER. phase:', gameState.phase, 'hand size:', gameState.players[pi].hand.length);
     aiThinking = true;
     setTimeout(runAI, 600);
   }
@@ -4414,9 +4415,12 @@ function markProbedWalls() {
 }
 
 async function runAI() {
+  console.log('[AI] runAI called. phase:', gameState.phase, 'activePlayer:', gameState.activePlayer, 'AI_PLAYER:', AI_PLAYER);
   if (gameState.phase !== 'action' || gameState.activePlayer !== AI_PLAYER) {
+    console.log('[AI] Early exit — wrong phase or player');
     aiThinking = false; return;
   }
+  console.log('[AI] Starting AI turn. Hand:', gameState.players[AI_PLAYER].hand.map(c => c?.id || '?').join(','));
   // Global AI turn timeout: if AI hasn't finished in 5 seconds, force-end
   const _aiTurnTimeout = setTimeout(() => {
     if (aiThinking && gameState?.activePlayer === AI_PLAYER) {
@@ -5009,6 +5013,7 @@ async function runAI() {
   }
 
   // ══════════════════════════════════════════════════════════════════
+  console.log('[AI] Phase 1 complete. bestCardAction:', bestCardAction?.kind, bestCardAction?.subkind || '', bestCardAction?.card?.id || 'none');
   // PHASE 2 — choose the MOVE action
   // ══════════════════════════════════════════════════════════════════
   // Simulate post-card wall state, then find best move
@@ -5116,6 +5121,7 @@ async function runAI() {
   }
 
   // ══════════════════════════════════════════════════════════════════
+  console.log('[AI] Phase 2 complete. bestMoveDest:', bestMoveDest);
   // PHASE 3 — execute card action (if any)
   // ══════════════════════════════════════════════════════════════════
   if (bestCardAction) {
@@ -5286,6 +5292,7 @@ async function runAI() {
   }
 
   // ══════════════════════════════════════════════════════════════════
+  console.log('[AI] Phase 3 complete. phase:', gameState.phase, 'uiMode:', uiMode);
   // PHASE 4 — execute move (skip if Binding Wall effect active)
   // ══════════════════════════════════════════════════════════════════
   const isAIBound = (gameState.players[AI_PLAYER].statusEffects || []).some(e => e.type === 'skip_move' && e.turnsRemaining > 0);
@@ -5317,6 +5324,7 @@ async function runAI() {
     }
   }
 
+  console.log('[AI] Phase 4 complete. phase:', gameState.phase, 'activePlayer:', gameState.activePlayer, 'hasMoved:', hasMoved);
   // ── If turn still not done, force-end (safety net) ─────────────────
   if (gameState.phase === 'action' && gameState.activePlayer === AI_PLAYER) {
     gameState.phase = 'end_turn';
