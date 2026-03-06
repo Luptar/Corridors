@@ -2241,7 +2241,7 @@ const FACTION_AI = {
 const CHAMPIONS = {
   // Architects: maze-building, indestructible walls, double-card passive
   magnus: {
-    id:'magnus', name:'Magnus', title:'Stoneweaver', faction:'Architects',
+    id:'magnus', simplicity:2, name:'Magnus', title:'Stoneweaver', faction:'Architects',
     wallLimit:10, handSize:6, cardDraw:5, moveSpeed:1,
     ultimateCost:5, ultimateName:'Living Blueprint',
     passiveName:'Master Mason',
@@ -2251,7 +2251,7 @@ const CHAMPIONS = {
 
   // Pathfinders: speed, mobility, racing
   soren: {
-    id:'soren', name:'Soren', title:'Swiftstride', faction:'Pathfinders',
+    id:'soren', simplicity:2, name:'Soren', title:'Swiftstride', faction:'Pathfinders',
     wallLimit:7, handSize:4, cardDraw:2, moveSpeed:1,
     ultimateCost:6, ultimateName:'Stormpath',
     passiveName:'Fleetfoot',
@@ -2261,7 +2261,7 @@ const CHAMPIONS = {
 
   // Wardens: disruption, hand control, wall repositioning
   thorne: {
-    id:'thorne', name:'Thorne', title:'the Lockmaster', faction:'Wardens',
+    id:'thorne', simplicity:1, name:'Thorne', title:'the Lockmaster', faction:'Wardens',
     wallLimit:5, handSize:5, cardDraw:4, moveSpeed:1,
     ultimateCost:7, ultimateName:'Total Reordering',
     passiveName:"Warden's Stare",
@@ -2271,7 +2271,7 @@ const CHAMPIONS = {
 
   // Phantoms: illusions, bluffing, misdirection
   nyx: {
-    id:'nyx', name:'Nyx', title:'the Mirage', faction:'Phantoms',
+    id:'nyx', simplicity:3, name:'Nyx', title:'the Mirage', faction:'Phantoms',
     wallLimit:7, handSize:5, cardDraw:3, moveSpeed:1,
     ultimateCost:3, ultimateName:'Veil of Shadows',
     passiveName:'Illusory Trail',
@@ -2281,7 +2281,7 @@ const CHAMPIONS = {
 
   // Pushers: displacement, body-checking, forced movement
   pushaman: {
-    id:'pushaman', name:'Pushaman', title:'the Breacher', faction:'Pushers',
+    id:'pushaman', simplicity:3, name:'Pushaman', title:'the Breacher', faction:'Pushers',
     wallLimit:6, handSize:5, cardDraw:4, moveSpeed:1,
     ultimateCost:6, ultimateName:'Breach',
     passiveName:'Chad Aura',
@@ -2291,7 +2291,7 @@ const CHAMPIONS = {
 
   // Trappers: invisible traps on tiles, area denial
   shade: {
-    id:'shade', name:'Shade', title:'the Stalker', faction:'Trappers',
+    id:'shade', simplicity:3, name:'Shade', title:'the Stalker', faction:'Trappers',
     wallLimit:8, handSize:5, cardDraw:3, moveSpeed:1,
     ultimateCost:5, ultimateName:'Killing Field',
     passiveName:'Trapsmith',
@@ -2301,7 +2301,7 @@ const CHAMPIONS = {
 
   // Chronists: tempo manipulation, replay, delayed effects
   vex: {
-    id:'vex', name:'Vex', title:'the Reweaver', faction:'Chronists',
+    id:'vex', simplicity:4, name:'Vex', title:'the Reweaver', faction:'Chronists',
     wallLimit:7, handSize:6, cardDraw:3, moveSpeed:1,
     ultimateCost:4, ultimateName:'Temporal Fold',
     passiveName:'Echo Chamber',
@@ -3137,8 +3137,8 @@ function executeMove(to) {
         const r = executeForceMove(oppPi, pushDir, 1);
         if (r.spacesMoved > 0) addLog(pi, 'card', `Shoulder Check: pushed opponent away!`);
       } else {
-        addStatusEffect(pi, 'skip_move', 1);
-        addLog(pi, 'card', 'Shoulder Check: missed! Exhausted — movement skipped next turn');
+        addStatusEffect(pi, 'skip_move', 2);
+        addLog(pi, 'card', 'Shoulder Check: missed! Exhausted — movement skipped for 2 turns');
       }
     }
 
@@ -3181,7 +3181,9 @@ function executeMove(to) {
           addLog(pi, 'card', 'Wrecking Ball: opponent not in approach direction — no push');
         }
       } else if (!isAdj) {
-        addLog(pi, 'card', 'Wrecking Ball: not adjacent to opponent after move — no push');
+        // Wrecking Ball penalty: 3-turn bound if player doesn't land adjacent to opponent
+        addStatusEffect(pi, 'skip_move', 3);
+        addLog(pi, 'card', 'Wrecking Ball: missed! Bound for 3 turns');
       }
     }
   }
@@ -3352,7 +3354,8 @@ function executePlaceWall(anchor, orientation, length, isPhantom=false, isDurabl
   // Phantoms count toward wall limit — they use a slot on the board
   // For redirects (_redirectOwner set), the wall was already counted — don't increment
   const isRedirectPlace = (selectedCard?._redirectOwner !== undefined);
-  if (!isRedirectPlace) {
+  const isFreePhantom = !!(selectedCard?._freePhantom);
+  if (!isRedirectPlace && !isFreePhantom) {
     gameState.players[wallOwner] = {...gameState.players[wallOwner],
       wallsInPlay: gameState.players[wallOwner].wallsInPlay + 1};
   }
@@ -5622,6 +5625,13 @@ function showChampionSelect() {
       </div>
       <div class="cs-ult-name">&#9889; ${champ.ultimateName}</div>
       <div class="cs-ult-desc">${champ.ultimateDesc || ''}</div>
+      <div style="margin-top:8px;display:flex;align-items:center;gap:6px;">
+        <span style="font-size:9px;letter-spacing:.12em;color:var(--text-dim);text-transform:uppercase;">COMPLEXITY</span>
+        <span style="display:flex;gap:2px;">${Array.from({length:4},(_,i)=>
+          '<span style="width:8px;height:8px;border-radius:50%;border:1px solid '+(i<(champ.simplicity||2)?'var(--amber)':'var(--border)')+';background:'+(i<(champ.simplicity||2)?'var(--amber)':'transparent')+'"></span>'
+        ).join('')}</span>
+        <span style="font-size:9px;color:var(--text-dim)">${['','Simple','Easy','Medium','Complex'][champ.simplicity||2]}</span>
+      </div>
     </div>`;
   }).join('');
 
@@ -5866,6 +5876,28 @@ function handleWallClick(anchor, orientation, length, isPhantom, isDurable) {
     showStatus('Illegal — would block a path', 'error'); return;
   }
 
+  // Corner Block adjacency enforcement: 2nd wall must share at least one endpoint with the first wall
+  if (selectedCard && selectedCard.id === 'CB_second' && gameState._cornerFirstWall) {
+    const fw = gameState._cornerFirstWall;
+    // Get tile positions occupied by each wall
+    function wallTiles(a, o, len) {
+      const tiles = [];
+      for (let i = 0; i < len; i++) {
+        tiles.push(o === 'H' ? {row: a.row, col: a.col + i} : {row: a.row + i, col: a.col});
+      }
+      return tiles;
+    }
+    const firstTiles = wallTiles(fw.anchor, fw.orientation, fw.length);
+    const secondTiles = wallTiles(anchor, orientation, length);
+    // Check adjacency: any second wall tile must be orthogonally adjacent to any first wall tile
+    const adjacent = secondTiles.some(st => firstTiles.some(ft =>
+      (Math.abs(st.row - ft.row) + Math.abs(st.col - ft.col)) <= 1
+    ));
+    if (!adjacent) {
+      showStatus('Corner Block: 2nd wall must be adjacent to the first wall', 'error'); return;
+    }
+  }
+
   // Discard the card that triggered wall mode
   // idx === -1 means this is a chained placement (T2 phantom, G4 second wall, etc.)
   // — the original card was already discarded; don't try to discard again
@@ -5930,6 +5962,17 @@ function isTurnDone() {
     return false;
   }
 
+  // ALL champions: if ultimate is charged and unused, don't auto-end the turn
+  // so the player has a chance to activate it before ending.
+  // Exception: Vex has special handling via _vexTemporalFold flag
+  if (p.ultimateReady && !p.ultimateUsed) {
+    if (champId === 'vex' && gameState._vexTemporalFold) {
+      // Vex already used temporal fold — allow turn to end
+    } else {
+      return false;
+    }
+  }
+
   // Magnus (Master Mason): play 2 cards (any type, incl. wall) OR move + play 1 card
   if (champId === 'magnus') {
     if (cardsPlayedThisTurn >= 2) return true;                           // played 2 cards
@@ -5945,17 +5988,6 @@ function isTurnDone() {
     if (hasMoved && cardsPlayedThisTurn >= 1) return true;               // moved + played card
     if (p.hand.length === 0 && hasMoved) return true;                    // hand empty, moved
     return false;
-  }
-
-  // All champions: if ultimate is charged and unused, don't auto-end the turn
-  // so the player has a chance to activate it before ending.
-  // Exception: Vex has special handling via _vexTemporalFold flag
-  if (p.ultimateReady && !p.ultimateUsed) {
-    if (champId === 'vex' && gameState._vexTemporalFold) {
-      // Vex already used temporal fold — allow turn to end
-    } else {
-      return false;
-    }
   }
 
   // All other champions: move + play 1 card (or just move if hand empty)
@@ -6428,7 +6460,8 @@ function onWallPlaced(pi, fromCardId, _wasDelayedCard) {
   const isChainedWall = selectedCard && (
     selectedCard.id === 'CB_second' ||
     selectedCard.id === 'PH3_real' ||
-    (selectedCard.id === 'PH4' && gameState._veilCount >= 2)
+    (selectedCard.id === 'PH4' && gameState._veilCount >= 2) ||
+    (selectedCard.id === 'PH10' && gameState._doppelgangerCount >= 1)
   );
   if (!isT2Phantom && !isSeizureChain && !isDelayedWall && !isChainedWall) countCardPlayed(pi);
   gameState._t2phantomPending = false;
@@ -6479,15 +6512,32 @@ function onWallPlaced(pi, fromCardId, _wasDelayedCard) {
     gameState._veilCount = 0;
   }
 
+  // PH10 Doppelganger Wall: place 2 phantom walls (one costs a slot, one is free)
+  if (fromCardId === 'PH10') {
+    if (!gameState._doppelgangerCount) gameState._doppelgangerCount = 0;
+    gameState._doppelgangerCount++;
+    if (gameState._doppelgangerCount < 2) {
+      // Second phantom wall is free (no wall slot cost) — use _freePhantom flag
+      selectedCard = { id:'PH10', idx:-1, length:2, isPhantom:true, isDurable:false, _freePhantom:true };
+      uiMode = 'wall';
+      renderAll(); showStatus('Doppelganger Wall: place the 2nd phantom wall (free slot)', 'active'); return;
+    }
+    gameState._doppelgangerCount = 0;
+  }
+
   // CB / S4 Corner Piece: after first 2-tile wall, enter perpendicular 2-tile placement
   if ((fromCardId === 'CB' || fromCardId === 'S4') && !gameState._cornerSecond) {
     gameState._cornerSecond = true;
+    // Store first wall info so we can enforce adjacency on the second wall
+    const firstWall = gameState.walls[gameState.walls.length - 1];
+    gameState._cornerFirstWall = firstWall ? { anchor: firstWall.anchor, orientation: firstWall.orientation, length: firstWall.length } : null;
     wallOrientation = (wallOrientation === 'H') ? 'V' : 'H';
     selectedCard = { id:'CB_second', idx:-1, length:2, isPhantom:false, isDurable:false };
     uiMode = 'wall';
-    renderAll(); showStatus('Corner Block: now place the perpendicular 2-tile wall', 'active'); return;
+    renderAll(); showStatus('Corner Block: now place the perpendicular 2-tile wall (must be adjacent)', 'active'); return;
   }
   gameState._cornerSecond = false;
+  gameState._cornerFirstWall = null;
 
   // AR5 Labyrinth Core: all your walls adjacent to the just-placed wall gain Reinforce
   if (fromCardId === 'AR5') {
@@ -6717,11 +6767,13 @@ function isAdjacentToExistingWall(wall, others) {
   return false;
 }
 
-function drawCards(pi, n) {
+function drawCards(pi, n, ignoreLimit) {
   const p = gameState.players[pi];
   const maxHand = p.champion.handSize;
-  const available = Math.max(0, maxHand - p.hand.length);
-  n = Math.min(n, available); // never draw above hand limit
+  if (!ignoreLimit) {
+    const available = Math.max(0, maxHand - p.hand.length);
+    n = Math.min(n, available); // never draw above hand limit
+  }
   if (n <= 0) return;
   let deck = [...p.deck], discard = [...p.discard];
   const drawn = [];
@@ -7130,19 +7182,42 @@ async function applyDisruptionCard(pi, card, idx) {
     if (!oppHand.length) {
       addLog(pi, 'card', 'Subpoena: opponent hand is empty');
     } else {
-      // AI: bottom-deck the opponent's best card
-      const target = isHumanSeat(pi) ? oppHand[0] : oppHand.reduce((a, b) =>
-        ((b.overrideSpeed||0) + (b.wallLen||0)*2) > ((a.overrideSpeed||0) + (a.wallLen||0)*2) ? b : a);
-      const targetIdx = oppHand.indexOf(target);
-      const newHand = oppHand.filter((_, i) => i !== targetIdx);
-      const newDeck = [...gameState.players[opp].deck, target];
-      gameState.players[opp] = {...gameState.players[opp], hand: newHand, deck: newDeck};
-      if (gameMode === 'mp') gameState._mpOppHandDirty = true;
-      addLog(pi, 'card', `Subpoena: sent ${target.name} to bottom of opponent's deck`);
+      if (!isHumanSeat(pi)) {
+        // AI: bottom-deck the opponent's best card
+        const target = oppHand.reduce((a, b) =>
+          ((b.overrideSpeed||0) + (b.wallLen||0)*2 + (b.rarity==='Rare'?3:0) + (b.rarity==='Legendary'?6:0)) >
+          ((a.overrideSpeed||0) + (a.wallLen||0)*2 + (a.rarity==='Rare'?3:0) + (a.rarity==='Legendary'?6:0)) ? b : a);
+        const targetIdx = oppHand.indexOf(target);
+        const newHand = oppHand.filter((_, i) => i !== targetIdx);
+        const newDeck = [...gameState.players[opp].deck, target];
+        gameState.players[opp] = {...gameState.players[opp], hand: newHand, deck: newDeck};
+        if (gameMode === 'mp') gameState._mpOppHandDirty = true;
+        addLog(pi, 'card', `Subpoena: sent ${target.name} to bottom of opponent's deck`);
+        discardCard(pi, idx); selectedCard = null; countCardPlayed(pi);
+        if (isTurnDone()) gameState.phase = 'end_turn';
+        renderAll(); showStatus('Subpoena resolved!', 'success'); return;
+      }
+      // Human: show card picker to choose which card to bottom-deck
+      showCardPicker(pi, [...oppHand], 'Subpoena — choose 1 opponent card to send to bottom of their deck', (pickedCard) => {
+        const ci = gameState.players[opp].hand.findIndex(c => c.id === pickedCard.id && c.name === pickedCard.name);
+        if (ci !== -1) {
+          const target = gameState.players[opp].hand[ci];
+          const newHand = gameState.players[opp].hand.filter((_, i) => i !== ci);
+          const newDeck = [...gameState.players[opp].deck, target];
+          gameState.players[opp] = {...gameState.players[opp], hand: newHand, deck: newDeck};
+          if (gameMode === 'mp') gameState._mpOppHandDirty = true;
+          addLog(pi, 'card', `Subpoena: sent ${target.name} to bottom of opponent's deck`);
+        }
+        discardCard(pi, idx); selectedCard = null; countCardPlayed(pi);
+        if (isTurnDone()) gameState.phase = 'end_turn';
+        renderAll(); showStatus('Subpoena resolved!', 'success');
+      });
+      return;
     }
+    // Opponent hand empty — still consume the card
     discardCard(pi, idx); selectedCard = null; countCardPlayed(pi);
     if (isTurnDone()) gameState.phase = 'end_turn';
-    renderAll(); showStatus('Subpoena resolved!', 'success'); return;
+    renderAll(); showStatus('Subpoena: opponent hand was empty', 'success'); return;
   }
 
   // ── WD8: Embargo — lock out a card type (player chooses) for 2 turns ──
@@ -7191,7 +7266,7 @@ async function applyDisruptionCard(pi, card, idx) {
   // ── WD12: Conscription — draw 2, opponent draws 1 ──
   if (card.id === 'WD12') {
     discardCard(pi, idx); selectedCard = null; countCardPlayed(pi);
-    drawCards(pi, 2);
+    drawCards(pi, 2, true); // ignoreLimit: Conscription always draws 2
     // In MP: we can't reliably draw from opponent's private deck.
     // Instead, flag that they should get a bonus draw on their next turn.
     if (gameMode === 'mp') {
@@ -7789,29 +7864,36 @@ async function applyDisruptionCard(pi, card, idx) {
         ((a.overrideSpeed||0) + (a.wallLen||0)*2 + (a.rarity==='Rare'?3:0) + (a.rarity==='Legendary'?6:0)) ? b : a);
       const bestIdx = op.hand.indexOf(best);
       const stolen = op.hand[bestIdx];
+      // Discard Tax Notice FIRST so it doesn't count toward hand limit
+      discardCard(pi, idx); selectedCard = null;
       gameState.players[opp] = {...gameState.players[opp], hand: op.hand.filter((_, i) => i !== bestIdx)};
-      gameState.players[pi] = {...gameState.players[pi],
-        hand: [...gameState.players[pi].hand, stolen].slice(0, gameState.players[pi].champion.handSize)};
+      const myHand = [...gameState.players[pi].hand, stolen];
+      gameState.players[pi] = {...gameState.players[pi], hand: myHand.slice(0, gameState.players[pi].champion.handSize)};
       if (gameMode === 'mp') gameState._mpOppHandDirty = true;
       addLog(pi, 'card', `Tax Notice: stole ${stolen.name} from opponent!`);
-      discardCard(pi, idx); selectedCard = null; countCardPlayed(pi);
+      countCardPlayed(pi);
       if (isTurnDone()) gameState.phase = 'end_turn';
       renderAll(); return;
     }
     // Human: show hand picker to choose which card to steal
+    // Capture idx before async callback since hand may shift
+    const _taxIdx = idx;
     showHandPicker(op.hand, 'TAX NOTICE', 'Choose 1 opponent card to STEAL:', 1, (chosen) => {
       const stolen = chosen[0];
       const ci = gameState.players[opp].hand.findIndex(x => x === stolen);
+      // Discard Tax Notice FIRST so it doesn't count toward hand limit
+      discardCard(pi, _taxIdx); selectedCard = null;
       if (ci !== -1) {
         const newOppHand = [...gameState.players[opp].hand];
         newOppHand.splice(ci, 1);
         gameState.players[opp] = {...gameState.players[opp], hand: newOppHand};
-        gameState.players[pi] = {...gameState.players[pi],
-          hand: [...gameState.players[pi].hand, stolen].slice(0, gameState.players[pi].champion.handSize)};
+        // Now add stolen card — Tax Notice is already out of hand
+        const myHand = [...gameState.players[pi].hand, stolen];
+        gameState.players[pi] = {...gameState.players[pi], hand: myHand.slice(0, gameState.players[pi].champion.handSize)};
       }
       if (gameMode === 'mp') gameState._mpOppHandDirty = true;
       addLog(pi, 'card', `Tax Notice: stole ${stolen.name} from opponent!`);
-      discardCard(pi, idx); selectedCard = null; countCardPlayed(pi);
+      countCardPlayed(pi);
       if (isTurnDone()) gameState.phase = 'end_turn';
       renderAll(); showStatus(`Tax Notice: stole ${stolen.name}!`, 'success');
     }, () => {
@@ -8418,7 +8500,9 @@ function renderPanels() {
     setText(`${prefix}-hand-count`, `${p.hand.length}/${def.handSize}`);
     setText(`${prefix}-speed`, def.moveSpeed);
     setText(`${prefix}-draw`, def.cardDraw);
-    setText(`${prefix}-deck-count`, `(deck: ${p.deck.length})`);
+    const deckCount = (gameMode === 'mp' && p.deck.length === 0 && gameState._deckCounts)
+      ? gameState._deckCounts[pi] : p.deck.length;
+    setText(`${prefix}-deck-count`, `(deck: ${deckCount})`);
     setText(`${prefix}-ult-name`, def.ultimateName);
     setText(`${prefix}-passive-name`, def.passiveName);
     setText(`${prefix}-passive-desc`, def.passiveDesc);
@@ -10281,6 +10365,7 @@ function mpScrubHands(state) {
   const scrubbed = {
     ...state,
     _handCounts: [state.players[0].hand.length, state.players[1].hand.length],
+    _deckCounts: [state.players[0].deck.length, state.players[1].deck.length],
     players: state.players.map(p => ({ ...p, hand: [], deck: [] })),
     // Remove all trap tokens from shared state — stored privately per player
     trapTokens: [],
