@@ -1302,6 +1302,8 @@
     width: 7px; height: 7px; border-radius: 50%;
     margin-right: 4px; vertical-align: middle;
   }
+  /* Rarity color variables for filter buttons */
+  :root { --rarity-common: #505a60; --rarity-uncommon: #50a060; --rarity-rare: #4a80d0; --rarity-legendary: #c0a030; }
   .rarity-dot-Common::before    { background: #505a60; }
   .rarity-dot-Uncommon::before  { background: #50a060; }
   .rarity-dot-Rare::before      { background: #4a80d0; }
@@ -6421,7 +6423,14 @@ function onWallPlaced(pi, fromCardId, _wasDelayedCard) {
   const isSeizureChain = !!(gameState._seizureWalls !== undefined && gameState._seizureWalls !== null);
   // Delayed cards are free — they were already "paid for" by the Delay card on the previous turn
   const isDelayedWall = !!_wasDelayedCard;
-  if (!isT2Phantom && !isSeizureChain && !isDelayedWall) countCardPlayed(pi);
+  // Chained wall placements (Corner Block 2nd wall, Veil Lattice 2nd wall, Echo Strike mirror)
+  // are part of the SAME card play — don't count again
+  const isChainedWall = selectedCard && (
+    selectedCard.id === 'CB_second' ||
+    selectedCard.id === 'PH3_real' ||
+    (selectedCard.id === 'PH4' && gameState._veilCount >= 2)
+  );
+  if (!isT2Phantom && !isSeizureChain && !isDelayedWall && !isChainedWall) countCardPlayed(pi);
   gameState._t2phantomPending = false;
 
   // Clear eviction state now that the wall has been placed
@@ -11418,7 +11427,7 @@ function collSwitchTab(tab) {
 }
 
 // ── COLLECTION TAB ────────────────────────────────────────────────────
-function renderCollectionTab(container, filterFaction = 'All', filterType = 'All', ownedOnly = false) {
+function renderCollectionTab(container, filterFaction = 'All', filterType = 'All', ownedOnly = false, filterRarity = 'All') {
   const factions = ['All', 'Basic', 'Architects', 'Pathfinders', 'Wardens', 'Phantoms', 'Pushers', 'Trappers', 'Chronists'];
   const types    = ['All', 'Wall', 'Movement', 'Disruption'];
 
@@ -11431,6 +11440,7 @@ function renderCollectionTab(container, filterFaction = 'All', filterType = 'All
   let cards = Object.values(CARDS);
   if (filterFaction !== 'All') cards = cards.filter(c => c.faction === filterFaction);
   if (filterType    !== 'All') cards = cards.filter(c => c.type    === filterType);
+  if (filterRarity  !== 'All') cards = cards.filter(c => c.rarity  === filterRarity);
   if (ownedOnly)               cards = cards.filter(c => getOwnedCount(c.id) > 0);
 
   const rarityOrder = { Common:0, Uncommon:1, Rare:2, Legendary:3 };
@@ -11444,7 +11454,7 @@ function renderCollectionTab(container, filterFaction = 'All', filterType = 'All
       <div class="coll-filter-group">
         ${factions.map(f => `
           <button class="coll-filter-btn ${filterFaction===f?'active':''}"
-                  onclick="renderCollectionTab(document.getElementById('coll-content'),'${f}','${filterType}',${ownedOnly})"
+                  onclick="renderCollectionTab(document.getElementById('coll-content'),'${f}','${filterType}',${ownedOnly},'${filterRarity}')"
                   style="${f!=='All'&&f!=='Basic'?`color:${factionColors[f]};`:''}">
             ${f}
           </button>`).join('')}
@@ -11452,13 +11462,19 @@ function renderCollectionTab(container, filterFaction = 'All', filterType = 'All
       <div class="coll-filter-group">
         ${types.map(t => `
           <button class="coll-filter-btn ${filterType===t?'active':''}"
-                  onclick="renderCollectionTab(document.getElementById('coll-content'),'${filterFaction}','${t}',${ownedOnly})">
+                  onclick="renderCollectionTab(document.getElementById('coll-content'),'${filterFaction}','${t}',${ownedOnly},'${filterRarity}')">
             ${t}
           </button>`).join('')}
         <button class="coll-filter-btn ${ownedOnly?'active':''}"
-                onclick="renderCollectionTab(document.getElementById('coll-content'),'${filterFaction}','${filterType}',${!ownedOnly})">
+                onclick="renderCollectionTab(document.getElementById('coll-content'),'${filterFaction}','${filterType}',${!ownedOnly},'${filterRarity}')">
           OWNED
         </button>
+      </div>
+      <div class="coll-filter-group">
+        ${['All','Common','Uncommon','Rare','Legendary'].map(r => `
+          <button class="coll-filter-btn ${filterRarity===r?'active':''}"
+                  onclick="renderCollectionTab(document.getElementById('coll-content'),'${filterFaction}','${filterType}',${ownedOnly},'${r}')"
+                  style="${r!=='All'?`color:var(--rarity-${r.toLowerCase()}, var(--text-dim));`:''}">${r}</button>`).join('')}
       </div>
     </div>
 
@@ -11889,27 +11905,35 @@ function closeDeckBuilder() {
   showCollectionScreen('decks');
 }
 
-function dbGetValidPool(championId, typeFilter = 'All') {
+function dbGetValidPool(championId, typeFilter = 'All', rarityFilter = 'All') {
   const champ = CHAMPIONS[championId];
   return Object.values(CARDS).filter(card => {
     // Faction filter
     if (card.faction !== 'Basic' && card.faction !== champ.faction) return false;
     // Type filter
     if (typeFilter !== 'All' && card.type !== typeFilter) return false;
+    // Rarity filter
+    if (rarityFilter !== 'All' && card.rarity !== rarityFilter) return false;
     return true;
   });
 }
 
-function dbRenderPool(typeFilter = 'All') {
+function dbRenderPool(typeFilter = 'All', rarityFilter = 'All') {
   const { championId, cards } = _deckBuilderState;
-  const pool = dbGetValidPool(championId, typeFilter);
+  const pool = dbGetValidPool(championId, typeFilter, rarityFilter);
   const types = ['All', 'Wall', 'Movement', 'Disruption'];
+  const rarities = ['All', 'Common', 'Uncommon', 'Rare', 'Legendary'];
 
   const filtersEl = document.getElementById('db-pool-filters');
   if (filtersEl) {
     filtersEl.innerHTML = types.map(t => `
       <button class="coll-filter-btn ${typeFilter===t?'active':''}"
-              onclick="dbRenderPool('${t}')">${t}</button>`).join('');
+              onclick="dbRenderPool('${t}','${rarityFilter}')">${t}</button>`).join('')
+      + '<span style="width:12px"></span>'
+      + rarities.map(r => `
+      <button class="coll-filter-btn ${rarityFilter===r?'active':''}"
+              onclick="dbRenderPool('${typeFilter}','${r}')"
+              style="${r!=='All'?`color:var(--rarity-${r.toLowerCase()}, var(--text-dim));`:''}">${r}</button>`).join('');
   }
 
   // Count current copies in deck
@@ -11932,7 +11956,7 @@ function dbRenderPool(typeFilter = 'All') {
     const notOwned   = owned === 0;
     const atDeckLimit = inDeck >= limit;          // hit per-card deck copy limit
     const atOwnedCap  = inDeck >= owned;          // can't add more than you own
-    const deckFull    = _deckBuilderState.cards.length >= 10;
+    const deckFull    = _deckBuilderState.cards.length >= 20;
     const blocked     = notOwned || atDeckLimit || atOwnedCap || deckFull;
     const blockReason = notOwned    ? 'NOT OWNED'
                       : atDeckLimit ? 'LIMIT REACHED'
