@@ -2251,7 +2251,7 @@ const CHAMPIONS = {
 
   // Pathfinders: speed, mobility, racing
   soren: {
-    id:'soren', simplicity:2, name:'Soren', title:'Swiftstride', faction:'Pathfinders',
+    id:'soren', simplicity:1, name:'Soren', title:'Swiftstride', faction:'Pathfinders',
     wallLimit:7, handSize:4, cardDraw:2, moveSpeed:1,
     ultimateCost:6, ultimateName:'Stormpath',
     passiveName:'Fleetfoot',
@@ -2261,7 +2261,7 @@ const CHAMPIONS = {
 
   // Wardens: disruption, hand control, wall repositioning
   thorne: {
-    id:'thorne', simplicity:1, name:'Thorne', title:'the Lockmaster', faction:'Wardens',
+    id:'thorne', simplicity:3, name:'Thorne', title:'the Lockmaster', faction:'Wardens',
     wallLimit:5, handSize:5, cardDraw:4, moveSpeed:1,
     ultimateCost:7, ultimateName:'Total Reordering',
     passiveName:"Warden's Stare",
@@ -2281,7 +2281,7 @@ const CHAMPIONS = {
 
   // Pushers: displacement, body-checking, forced movement
   pushaman: {
-    id:'pushaman', simplicity:3, name:'Pushaman', title:'the Breacher', faction:'Pushers',
+    id:'pushaman', simplicity:2, name:'Pushaman', title:'the Breacher', faction:'Pushers',
     wallLimit:6, handSize:5, cardDraw:4, moveSpeed:1,
     ultimateCost:6, ultimateName:'Breach',
     passiveName:'Chad Aura',
@@ -3355,7 +3355,8 @@ function executePlaceWall(anchor, orientation, length, isPhantom=false, isDurabl
   // For redirects (_redirectOwner set), the wall was already counted — don't increment
   const isRedirectPlace = (selectedCard?._redirectOwner !== undefined);
   const isFreePhantom = !!(selectedCard?._freePhantom);
-  if (!isRedirectPlace && !isFreePhantom) {
+  const isFreeWall = !!(selectedCard?._freeWall);
+  if (!isRedirectPlace && !isFreePhantom && !isFreeWall) {
     gameState.players[wallOwner] = {...gameState.players[wallOwner],
       wallsInPlay: gameState.players[wallOwner].wallsInPlay + 1};
   }
@@ -5867,7 +5868,20 @@ function handleWallClick(anchor, orientation, length, isPhantom, isDurable) {
   const wallOwnerState = gameState.players[wallOwnerPi];
   const isRedirectPlace = (selectedCard?._redirectOwner !== undefined);
   // Skip limit check for redirected walls (wall was already counted, just moving it)
-  if (!isRedirectPlace && wallOwnerState.wallsInPlay >= wallOwnerState.wallLimitCurrent) {
+  // Also skip for free walls (Corner Block 2nd wall, Doppelganger 2nd phantom)
+  const isFreeWallPlace = !!(selectedCard?._freeWall) || !!(selectedCard?._freePhantom);
+  if (!isRedirectPlace && !isFreeWallPlace && wallOwnerState.wallsInPlay >= wallOwnerState.wallLimitCurrent) {
+    // Doppelganger: if 2nd wall can't be placed, remove the free 1st wall too
+    if (selectedCard && selectedCard.id === 'PH10' && gameState._doppelgangerCount >= 1) {
+      const lastWall = gameState.walls[gameState.walls.length - 1];
+      if (lastWall && lastWall.isPhantom) {
+        gameState.walls = gameState.walls.filter(w => w.id !== lastWall.id);
+        // First wall was free, so no wallsInPlay to decrement
+      }
+      gameState._doppelgangerCount = 0;
+      uiMode = 'idle'; selectedCard = null;
+      renderAll(); showStatus('Doppelganger Wall cancelled — wall limit reached', 'error'); return;
+    }
     const who = wallOwnerPi === pi ? 'Your' : "Opponent's";
     showStatus(`${who} wall limit reached!`, 'error'); return;
   }
@@ -6143,6 +6157,8 @@ function selectCard(cardId, idx) {
     const isDurable = !!(card.durable);
     const length    = getCardWallLength(card.id);
     selectedCard = { ...selectedCard, length, isPhantom, isDurable,  };
+    // Doppelganger Wall: first wall is free (doesn't cost a wall slot)
+    if (card.special === 'doppelganger') selectedCard._freePhantom = true;
     uiMode = 'wall';
     renderAll();
     if (card.id === 'PH4') {
@@ -6517,10 +6533,10 @@ function onWallPlaced(pi, fromCardId, _wasDelayedCard) {
     if (!gameState._doppelgangerCount) gameState._doppelgangerCount = 0;
     gameState._doppelgangerCount++;
     if (gameState._doppelgangerCount < 2) {
-      // Second phantom wall is free (no wall slot cost) — use _freePhantom flag
-      selectedCard = { id:'PH10', idx:-1, length:2, isPhantom:true, isDurable:false, _freePhantom:true };
+      // Second phantom wall costs a wall slot (first was free)
+      selectedCard = { id:'PH10', idx:-1, length:2, isPhantom:true, isDurable:false };
       uiMode = 'wall';
-      renderAll(); showStatus('Doppelganger Wall: place the 2nd phantom wall (free slot)', 'active'); return;
+      renderAll(); showStatus('Doppelganger Wall: place the 2nd phantom wall', 'active'); return;
     }
     gameState._doppelgangerCount = 0;
   }
@@ -6532,7 +6548,7 @@ function onWallPlaced(pi, fromCardId, _wasDelayedCard) {
     const firstWall = gameState.walls[gameState.walls.length - 1];
     gameState._cornerFirstWall = firstWall ? { anchor: firstWall.anchor, orientation: firstWall.orientation, length: firstWall.length } : null;
     wallOrientation = (wallOrientation === 'H') ? 'V' : 'H';
-    selectedCard = { id:'CB_second', idx:-1, length:2, isPhantom:false, isDurable:false };
+    selectedCard = { id:'CB_second', idx:-1, length:2, isPhantom:false, isDurable:false, _freeWall:true };
     uiMode = 'wall';
     renderAll(); showStatus('Corner Block: now place the perpendicular 2-tile wall (must be adjacent)', 'active'); return;
   }
