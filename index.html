@@ -660,6 +660,27 @@
     opacity: 0.5;
   }
 
+  /* ── Infinite Recursion instant-once card glow ──────────────── */
+  .card-instant-once {
+    border-color: var(--wall-chro, #a78bfa) !important;
+    box-shadow: 0 0 12px rgba(167, 139, 250, 0.4), inset 0 0 8px rgba(167, 139, 250, 0.1) !important;
+    position: relative;
+  }
+  .instant-badge {
+    display: block;
+    text-align: center;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: .15em;
+    color: var(--wall-chro, #a78bfa);
+    padding: 2px 0;
+    margin: -2px 0 2px 0;
+    animation: instantPulse 1.5s ease-in-out infinite;
+  }
+  @keyframes instantPulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+  }
   /* ── Trap placement highlighting ─────────────────────────────── */
   /* ── Pathfinder's Instinct reveal cards ── */
   .instinct-card {
@@ -683,7 +704,7 @@
   .instinct-mov-tag { display:block;margin-top:6px;font-size:9px;color:var(--wall-path,#22c55e);font-weight:700;letter-spacing:.08em; }
   .instinct-other-tag { display:block;margin-top:6px;font-size:9px;color:var(--text-dim);letter-spacing:.08em; }
 
-  /* ── Killing Field 2×2 hover preview ── */
+  /* ── Killing Field 3×3 hover preview ── */
   .cell.kf-preview {
     background: rgba(220, 40, 40, 0.22) !important;
     box-shadow: 0 0 0 2px rgba(220,40,40,0.6) inset;
@@ -2085,14 +2106,14 @@
     </span>
     <div class="turn-badge" id="header-turn">TURN 1</div>
     <span id="header-winner" style="display:none; color:var(--amber); font-family:'Teko',sans-serif; font-size:16px; letter-spacing:0.2em;"></span>
-    <button onclick="showMultiplayerLobby()" style="
+    <button onclick="menuReturnToLanding()" style="
       padding:5px 14px; background:transparent; border:1px solid var(--border-hi);
       color:var(--text-dim); font-family:'JetBrains Mono',monospace; font-size:10px;
       letter-spacing:.15em; text-transform:uppercase; cursor:pointer;
       transition:all 0.15s;
     " onmouseover="this.style.color='var(--amber)';this.style.borderColor='var(--amber)'"
        onmouseout="this.style.color='var(--text-dim)';this.style.borderColor='var(--border-hi)'">
-      ⟳ ASYNC PvP
+      ☰ MENU
     </button>
   </div>
 </header>
@@ -2404,7 +2425,7 @@ const CARDS = {
   B12:{ id:'B12', name:'Scavenge',         faction:'Basic', rarity:'Uncommon', type:'Disruption',
         desc:'Look at the top 3 cards of your deck. Keep 1, put the other 2 on the bottom.' },
   B13:{ id:'B13', name:'Desperation Sprint', faction:'Basic', rarity:'Rare',   type:'Movement',
-        desc:'Move up to 4 spaces. Skip your entire next turn (no card play AND no movement).', overrideSpeed:4, special:'desperation' },
+        desc:'Move up to 3 spaces. Bound next turn — no movement or movement cards allowed (may still play other cards).', overrideSpeed:3, special:'desperation' },
   B14:{ id:'B14', name:'Deadlock Breaker', faction:'Basic', rarity:'Rare',     type:'Disruption',
         desc:'Remove any 1 wall from the board (yours or opponent, including reinforced). Cannot target Legendary walls.' },
 
@@ -2436,21 +2457,21 @@ const CARDS = {
   PF2: { id:'PF2', name:'Leap',         faction:'Pathfinders', rarity:'Rare',       type:'Movement',
          desc:'Gain +1 move and may jump over the opponent even if not adjacent.', overrideSpeed:2 },
   PF3: { id:'PF3', name:'Shortcut',     faction:'Pathfinders', rarity:'Uncommon', type:'Movement',
-         desc:'Move up to 3 spaces this turn ignoring diagonal restrictions.', overrideSpeed:3, diagonal:true },
+         desc:'Move 1 space diagonally. May slip through the crack between two adjacent walls.', overrideSpeed:1, special:'shortcut' },
   PF4: { id:'PF4', name:'Eternal Path', faction:'Pathfinders', rarity:'Uncommon',     type:'Movement',
          desc:'Move up to 4 spaces this turn.', overrideSpeed:4 },
   PF5: { id:'PF5', name:'Wall Vault',   faction:'Pathfinders', rarity:'Rare',     type:'Movement',
-         desc:'Move up to 2 spaces this turn and may pass through one wall of any kind.', overrideSpeed:2, tunnelThrough:true },
+         desc:'Move up to 2 spaces. May pass through one non-reinforced wall.', overrideSpeed:2, tunnelThrough:true, special:'wallVault' },
   PF7: { id:'PF7', name:'Trail Blaze',     faction:'Pathfinders', rarity:'Common',   type:'Movement',
          desc:'Move up to 2 spaces. If you end further toward goal, draw 1 card.', overrideSpeed:2, special:'trailBlaze' },
   PF8: { id:'PF8', name:'Vaulting Strike', faction:'Pathfinders', rarity:'Uncommon', type:'Movement',
          desc:'Move 1 space. May pass through non-reinforced walls. If you cross an opponent wall, you may shrink it by 1 tile. Cannot cross reinforced walls.', overrideSpeed:1, tunnelThrough:true, special:'vaultStrike' },
   PF10:{ id:'PF10',name:'Grapple Hook',   faction:'Pathfinders', rarity:'Rare',     type:'Movement',
-         desc:'Choose a cardinal direction. Fire up to 4 spaces; land on the first tile beside a perpendicular opponent wall. Landing on the opponent Binds them for 1 turn.', special:'grappleHook' },
+         desc:'Choose a cardinal direction. Fire up to 4 spaces; land beside a perpendicular opponent wall, or one tile before an opponent (Binding them for 1 turn). Cancellable before confirming.', special:'grappleHook' },
   PF11:{ id:'PF11',name:'Pathfinder\'s Instinct', faction:'Pathfinders', rarity:'Common', type:'Disruption',
-         desc:'Reveal top 2 cards of your deck. Add the first Movement card to hand; return the other to the bottom.' },
+         desc:'Reveal top 2 cards of your deck. Add all Movement cards to hand; non-Movement cards go to the bottom.' },
   PF12:{ id:'PF12',name:'Slipstream',     faction:'Pathfinders', rarity:'Common',   type:'Movement',
-         desc:'Move 1 space (incl. diagonal), ignoring non-reinforced walls. Cannot slip through wall corner gaps. +1 bonus move if landing adjacent to an opponent wall. Cannot be played after moving.', overrideSpeed:1, diagonal:true, special:'slipstream' },
+         desc:'Move 1 space in any direction (including diagonal). +1 bonus move if you land adjacent to an opponent wall.', overrideSpeed:1, diagonal:true, special:'slipstream' },
   PF13:{ id:'PF13',name:'Wall Ride',       faction:'Pathfinders', rarity:'Rare',     type:'Movement',
          desc:'Move up to 2 spaces. If you do not land adjacent to an opponent wall, you are Exhausted — skip your next movement.', overrideSpeed:2, special:'wallRide' },
   PF14:{ id:'PF14',name:'Trailblazer\'s Mark', faction:'Pathfinders', rarity:'Uncommon', type:'Disruption',
@@ -2565,14 +2586,14 @@ const CARDS = {
          desc:'Place 2-tile wall. Exists 2 turns then vanishes. Does NOT count toward wall limit.', wallLen:2, special:'temporalWall' },
   CH6: { id:'CH6', name:'Time Loop',       faction:'Chronists', rarity:'Uncommon', type:'Disruption',
          desc:'Return the last card you played (previous turn) from discard to hand.' },
-  CH8: { id:'CH8', name:'Paradox Wall',    faction:'Chronists', rarity:'Uncommon', type:'Wall',
+  CH8: { id:'CH8', name:'Paradox Wall',    faction:'Chronists', rarity:'Rare', type:'Wall',
          desc:'Place 2-tile wall. Spins around its center axis each turn if the rotation is legal.', wallLen:2, special:'paradoxWall' },
   CH9: { id:'CH9', name:'Recall',          faction:'Chronists', rarity:'Rare',     type:'Disruption',
          desc:'Return any discard pile card to hand. Play it immediately for free.' },
   CH10:{ id:'CH10',name:'Temporal Maze',   faction:'Chronists', rarity:'Rare',     type:'Wall',
          desc:'Place 2-tile wall. For 3 turns, place free 1-tile wall at turn start. Bonus walls vanish after 2 turns.', wallLen:2, special:'temporalMaze' },
   CH11:{ id:'CH11',name:'Infinite Recursion', faction:'Chronists', rarity:'Legendary', type:'Disruption',
-         desc:'Copy last 3 cards played this game (either player). Play all 3 free. Walls belong to you.' },
+         desc:'All cards in your hand become Instants until end of turn — each may be played once without using your card play.' },
   CH12:{ id:'CH12',name:'Déjà Vu',        faction:'Chronists', rarity:'Common',   type:'Disruption',
          desc:'Next turn, you may play one extra card.' },
   CH13:{ id:'CH13',name:'Revert',          faction:'Chronists', rarity:'Uncommon', type:'Disruption',
@@ -2738,12 +2759,9 @@ function buildBlockedEdges(walls, moverPi) {
   // Phantom walls: BOTH players can physically move through them (walking through removes them).
   // They only serve as a visual bluff. So phantoms are never blocking for movement purposes.
   // When moverPi is undefined (BFS path-guarantee checks), phantoms are also ignored.
-  // Slipstream: non-reinforced walls are also passable.
-  const slipstream = !!(gameState && gameState._slipstreamActive);
   const blocked = new Set();
   for (const wall of walls) {
     if (wall.isPhantom) continue; // phantoms are always passable
-    if (slipstream && !wall.reinforced) continue; // Slipstream ignores non-reinforced walls
     for (const e of wallEdges(wall)) blocked.add(edgeKey(e.a, e.b));
   }
   return blocked;
@@ -2787,8 +2805,8 @@ function getLegalMoves(state, pIdx, overrideSpeed, tunnelThrough, diagonal, ownW
   // - tunnelThrough / stormpath: ignore ALL walls (unless _vaultStrike: reinforced still block)
   // - ownWallsPassthrough: ignore only the mover's own walls
   let effectiveWalls;
-  if (gameState._vaultStrike) {
-    // Vaulting Strike: pass through non-reinforced only; reinforced walls still block
+  if (gameState._wallVaultActive || gameState._vaultStrike) {
+    // Wall Vault / Vaulting Strike: pass through non-reinforced only; reinforced walls still block
     effectiveWalls = (player.stormpath || tunnelThrough) ? state.walls.filter(w => w.reinforced) : state.walls;
   } else if (gameState._unstoppableCharge) {
     // Unstoppable Charge: pass through non-reinforced only; reinforced walls still block
@@ -3147,6 +3165,23 @@ function executeMove(to) {
     showStatus('Breach complete!', 'success');
     return;
   }
+  // Shortcut: direct diagonal move (already discarded/counted)
+  if (gameState._shortcutTargets) {
+    gameState._shortcutTargets = null;
+    gameState.players[pi] = {...gameState.players[pi], position: to};
+    hasMoved = true;
+    selectedCard = null;
+    uiMode = 'idle';
+    addLog(pi, 'card', `Shortcut: moved diagonally to (${to.row},${to.col})`);
+    const goalRow = pi === 0 ? 0 : BOARD_SIZE - 1;
+    if (to.row === goalRow) {
+      gameState.winner = pi; gameState.phase = 'ended';
+      addLog(pi, 'system', `PLAYER ${pi} WINS via Shortcut!`);
+      renderAll(); showVictory(pi); return;
+    }
+    if (isTurnDone()) gameState.phase = 'end_turn';
+    renderAll(); showStatus('Shortcut: moved!', 'success'); return;
+  }
   if (gameState.players[pi]?.champion?.id !== 'nyx') addLog(pi, 'move', `Moved (${from.row},${from.col}) → (${to.row},${to.col})`);
   // If a movement card was pending, resolve it now (discard + count)
   if (selectedCard && selectedCard._pendingMove) {
@@ -3255,14 +3290,10 @@ function executeMove(to) {
     }
   }
 
-  const wasStormpath = !!(gameState.players[pi].stormpath);
-  if (gameState.players[pi].stormpath) {
-    gameState.players[pi] = {...gameState.players[pi], stormpath: false};
-    countCardPlayed(pi); // counts the ultimate usage
-  }
-  // Movement cards and Stormpath (ultimate) don't consume the free move.
+  // Stormpath: stays active until end of turn, only makes walls invisible
+  // Movement cards don't consume the free move.
   const wasCardMove = !!(selectedCard && selectedCard._pendingMove);
-  if (!wasCardMove && !wasStormpath) {
+  if (!wasCardMove) {
     hasMoved = true;
     consumeBonusMove(pi); // consume bonus move token if this was the bonus move
   }
@@ -3375,11 +3406,11 @@ function executeMove(to) {
     }
   }
 
-  // B13 Desperation Sprint: skip entire next turn after moving
+  // B13 Desperation Sprint: bound next turn (no movement or movement cards, may still play other cards)
   if (gameState._desperationSprint) {
     gameState._desperationSprint = false;
-    addStatusEffect(pi, 'skip_full_turn', 2);
-    addLog(pi, 'card', 'Desperation Sprint: exhausted — skipping next turn');
+    addStatusEffect(pi, 'bound', 2);
+    addLog(pi, 'card', 'Desperation Sprint: bound next turn — no movement allowed');
   }
 
   // PF12 Slipstream: check if landing adjacent to any opponent-owned wall → bonus move
@@ -3402,25 +3433,24 @@ function executeMove(to) {
     }
   }
 
+  // Emergency Barrier: consume bonus move targets and mark as moved
+  if (gameState._emergencyBarrierBonusTargets) {
+    gameState._emergencyBarrierBonusTargets = null;
+    // This move was the bonus move — consume it
+  }
+  // PF5 Wall Vault: clear flag after move
+  if (gameState._wallVaultActive) gameState._wallVaultActive = false;
   // PF8 Vaulting Strike: check if an opponent wall was crossed; if so enter wallShrink for it
   if (gameState._vaultStrike) {
     gameState._vaultStrike = false;
     const opp = 1 - pi;
-    // Collect all steps in path from→to and find non-reinforced opponent walls whose edges were crossed
-    const allSteps = [from, ...(() => {
-      // Build a simple step list from BFS path (from + intermediate + to)
-      const mid = reconstructBFSPath(from, to, pi);
-      return [...mid, to];
-    })()];
+    // Vaulting Strike is always 1 step, so directly check the edge from→to
+    const ek = edgeKey(from, to);
     const crossedOppWalls = [];
-    for (let s = 0; s < allSteps.length - 1; s++) {
-      const a = allSteps[s], b = allSteps[s+1];
-      const ek = edgeKey(a, b);
-      for (const w of gameState.walls) {
-        if (w.owner !== opp || w.isPhantom || w.reinforced) continue;
-        if (wallEdges(w).some(e => edgeKey(e.a, e.b) === ek)) {
-          if (!crossedOppWalls.find(x => x.id === w.id)) crossedOppWalls.push(w);
-        }
+    for (const w of gameState.walls) {
+      if (w.owner !== opp || w.isPhantom || w.reinforced) continue;
+      if (wallEdges(w).some(e => edgeKey(e.a, e.b) === ek)) {
+        if (!crossedOppWalls.find(x => x.id === w.id)) crossedOppWalls.push(w);
       }
     }
     if (crossedOppWalls.length > 0) {
@@ -4151,7 +4181,9 @@ function resolveDelayedCards(pi) {
         const speed = card.overrideSpeed || 1;
         selectedCard = { id: card.id, idx: -1, overrideSpeed: speed,
           tunnelThrough: !!card.tunnelThrough, diagonal: !!card.diagonal,
-          ownWallsPassthrough: !!card.ownWallsPassthrough, _pendingMove: true, _delayed: true };
+          ownWallsPassthrough: !!card.ownWallsPassthrough,
+          lateralOnly: !!(card.special === 'flanking'),
+          _pendingMove: true, _delayed: true };
         uiMode = 'move'; // runAI will call executeMove, which will resolve this
         continue;
       }
@@ -4159,8 +4191,12 @@ function resolveDelayedCards(pi) {
       const speed = card.overrideSpeed || 1;
       selectedCard = { id: card.id, idx: -1, overrideSpeed: speed,
         tunnelThrough: !!card.tunnelThrough, diagonal: !!card.diagonal,
-        ownWallsPassthrough: !!card.ownWallsPassthrough, _pendingMove: true, _delayed: true,
+        ownWallsPassthrough: !!card.ownWallsPassthrough,
+        lateralOnly: !!(card.special === 'flanking'),
+        _pendingMove: true, _delayed: true,
         _freePlay: true };
+      // Flanking Path delayed: restrict to lateral only
+      if (card.special === 'flanking') selectedCard.lateralOnly = true;
       uiMode = 'move';
       renderAll();
       showStatus(`Delayed ${card.name} — move now (${speed} step${speed > 1 ? 's' : ''})`, 'active');
@@ -4319,9 +4355,14 @@ function handleTrapPlaceClick(row, col) {
   if (!_trapPlaceState || uiMode !== 'trapPlace') return;
   const { pi, idx, card, trapType, duration, opts, maxTraps } = _trapPlaceState;
 
-  // ── 2×2 block placement (Killing Field) ──────────────────────────
-  if (_trapPlaceState.mode === '2x2') {
-    const block = [{row,col},{row,col:col+1},{row:row+1,col},{row:row+1,col:col+1}];
+  // ── 3×3 block placement (Killing Field) ──────────────────────────
+  if (_trapPlaceState.mode === '3x3') {
+    const block = [];
+    for (let dr = -1; dr <= 1; dr++) {
+      for (let dc = -1; dc <= 1; dc++) {
+        block.push({row: row+dr, col: col+dc});
+      }
+    }
     let placed = 0;
     for (const t of block) {
       if (t.row<0||t.row>=BOARD_SIZE||t.col<0||t.col>=BOARD_SIZE) continue;
@@ -5267,6 +5308,9 @@ async function runAI() {
       }
     }
 
+    // Bound: AI cannot play movement cards
+    if (card.type === 'Movement' && (gameState.players[pi].statusEffects || []).some(e => e.type === 'bound' && e.turnsRemaining > 0)) continue;
+
     // PF11 Pathfinder's Instinct: deck search — moderate value
     if (card.id === 'PF11') {
       const s = 2.5;
@@ -5752,7 +5796,7 @@ async function runAI() {
   console.log('[AI] Phase 3 complete. phase:', gameState.phase, 'uiMode:', uiMode);
   // PHASE 4 — execute move (skip if Binding Wall effect active)
   // ══════════════════════════════════════════════════════════════════
-  const isAIBound = (gameState.players[AI_PLAYER].statusEffects || []).some(e => e.type === 'skip_move' && e.turnsRemaining > 0);
+  const isAIBound = (gameState.players[AI_PLAYER].statusEffects || []).some(e => (e.type === 'skip_move' || e.type === 'bound') && e.turnsRemaining > 0);
   if (bestMoveDest && !hasMoved && !isAIBound) {
     // Phantom probe moves target a cell through a (suspected) phantom wall edge.
     // executeMove's phantom-detection will dissolve the wall if it IS phantom.
@@ -6070,7 +6114,7 @@ function enterMoveMode() {
   const pi = gameState.activePlayer;
   const champId = gameState.players[pi].champion.id;
   // Check for Binding Wall skip effect
-  const isBound = (gameState.players[pi].statusEffects || []).some(e => e.type === 'skip_move' && e.turnsRemaining > 0);
+  const isBound = (gameState.players[pi].statusEffects || []).some(e => (e.type === 'skip_move' || e.type === 'bound') && e.turnsRemaining > 0);
   if (isBound) {
     showStatus('Bound! A Binding Wall prevents your move this turn', 'error');
     return;
@@ -6190,13 +6234,20 @@ function handleWallClick(anchor, orientation, length, isPhantom, isDurable) {
     }
   }
 
-  // Emergency Barrier: enforce placement within 2 Manhattan tiles of champion
+  // Emergency Barrier: enforce ALL wall tiles within 2 Manhattan tiles of champion
   if (gameState._emergencyBarrierMode) {
     const myPos = gameState.players[pi].position;
-    // Anchor must be within Manhattan distance 2 of the champion
-    const dist = Math.abs(anchor.row - myPos.row) + Math.abs(anchor.col - myPos.col);
-    if (dist > 2) {
-      showStatus('Emergency Barrier: must place within 2 tiles of your champion', 'error');
+    // Check every tile the wall occupies
+    const wallTiles = [];
+    for (let i = 0; i < length; i++) {
+      if (orientation === 'H') wallTiles.push({row: anchor.row, col: anchor.col + i});
+      else wallTiles.push({row: anchor.row + i, col: anchor.col});
+    }
+    const allClose = wallTiles.every(t =>
+      Math.abs(t.row - myPos.row) + Math.abs(t.col - myPos.col) <= 2
+    );
+    if (!allClose) {
+      showStatus('Emergency Barrier: entire wall must be within 2 tiles of your champion', 'error');
       return;
     }
   }
@@ -6210,10 +6261,62 @@ function handleWallClick(anchor, orientation, length, isPhantom, isDurable) {
   if (_isEmergencyBarrier) gameState._emergencyBarrierMode = false; // consume before place
   if (selectedCard && selectedCard.idx >= 0) discardCard(pi, selectedCard.idx);
   executePlaceWall(anchor, orientation, length, isPhantom, isDurable, fromCardId);
-  // Emergency Barrier: grant +1 bonus move after placing the wall
+  // Emergency Barrier: grant restricted bonus move adjacent to the placed wall
   if (_isEmergencyBarrier) {
-    grantBonusMove(pi);
-    addLog(pi, 'card', 'Emergency Barrier: bonus move granted!');
+    // Calculate tiles adjacent to the wall (taking cover behind it)
+    const wallTiles = [];
+    for (let i = 0; i < length; i++) {
+      if (orientation === 'H') wallTiles.push({row: anchor.row, col: anchor.col + i});
+      else wallTiles.push({row: anchor.row + i, col: anchor.col});
+    }
+    // For H walls, adjacent cells are one row above/below each wall tile
+    // For V walls, adjacent cells are one col left/right of each wall tile
+    // Also include orthogonal adjacencies to wall endpoints
+    const adjSet = new Set();
+    const dirs = [{r:-1,c:0},{r:1,c:0},{r:0,c:-1},{r:0,c:1}];
+    for (const wt of wallTiles) {
+      // Wall tiles occupy edges between rows. For a H wall at anchor (r,c):
+      // the wall edge is between row r and row r+1, at columns c..c+len-1
+      // Adjacent movement tiles: row r and row r+1 on each side
+      for (const d of dirs) {
+        const nr = wt.row + d.r, nc = wt.col + d.c;
+        if (nr < 0 || nr >= BOARD_SIZE || nc < 0 || nc >= BOARD_SIZE) continue;
+        const oppPos = gameState.players[1-pi].position;
+        if (nr === oppPos.row && nc === oppPos.col) continue;
+        adjSet.add(`${nr},${nc}`);
+      }
+    }
+    // Also add the tiles just beyond the wall edges
+    if (orientation === 'H') {
+      // H wall at (r,c) blocks between row r and row r+1
+      for (let i = 0; i < length; i++) {
+        adjSet.add(`${anchor.row},${anchor.col+i}`);
+        adjSet.add(`${anchor.row+1},${anchor.col+i}`);
+      }
+    } else {
+      // V wall at (r,c) blocks between col c and col c+1
+      for (let i = 0; i < length; i++) {
+        adjSet.add(`${anchor.row+i},${anchor.col}`);
+        adjSet.add(`${anchor.row+i},${anchor.col+1}`);
+      }
+    }
+    // Filter to in-bounds tiles not occupied by players, and not the current position
+    const myPos = gameState.players[pi].position;
+    const oppPos = gameState.players[1-pi].position;
+    const bonusTargets = [...adjSet].map(k => {
+      const [r,c] = k.split(',').map(Number);
+      return {row:r, col:c};
+    }).filter(t =>
+      t.row >= 0 && t.row < BOARD_SIZE && t.col >= 0 && t.col < BOARD_SIZE &&
+      !(t.row === oppPos.row && t.col === oppPos.col)
+    );
+    if (bonusTargets.length > 0) {
+      gameState._emergencyBarrierBonusTargets = bonusTargets;
+      hasMoved = false;
+      addLog(pi, 'card', 'Emergency Barrier: take cover! Move to a tile adjacent to the wall.');
+    } else {
+      addLog(pi, 'card', 'Emergency Barrier: no adjacent tiles available for bonus move');
+    }
   }
 
   renderAll();
@@ -6329,6 +6432,9 @@ function resetTurnState() {
   gameState._slipstreamActive = false;      // Clear Slipstream wall-ignore flag
   gameState._wallRide = false;              // Clear Wall Ride flag
   gameState._grappleState = null;           // Clear Grapple Hook state
+  gameState._shortcutTargets = null;          // Clear Shortcut targets
+  gameState._emergencyBarrierBonusTargets = null; // Clear Emergency Barrier bonus targets
+  gameState._wallVaultActive = false;        // Clear Wall Vault flag
   gameState._vaultStrike = false;           // Clear Vaulting Strike flag
   gameState._vaultShrinkWalls = null;       // Clear Vaulting Strike wall filter
   gameState._unstoppableCharge = false;     // Clear Unstoppable Charge flag
@@ -6434,6 +6540,15 @@ function selectCard(cardId, idx) {
     hasPlayedCard = cardsPlayedThisTurn > 0;
     selectedCard = null; uiMode = 'idle';
   }
+  // Grapple Hook cancel: clicking a different card or the same card cancels
+  if (selectedCard && selectedCard.id === 'PF10' && (uiMode === 'grappleDir' || uiMode === 'grappleTarget')) {
+    gameState._grappleState = null;
+    selectedCard = null;
+    uiMode = 'idle';
+    renderAll();
+    showStatus('Grapple Hook cancelled', '');
+    return;
+  }
   // Different card clicked while a wall/pick mode is pending: cancel (wall budget not yet counted).
   // Exception: Eviction locks out cancel once a wall has been picked (_evictionInProgress).
   if (selectedCard && (uiMode === 'wall' || uiMode === 'wallPick' || uiMode === 'wallRedirect' || uiMode === 'wallSeal' || uiMode === 'wallPunch' || uiMode === 'wallReconstruct' || uiMode === 'wallRepossess' || uiMode === 'wallShrink' || uiMode === 'wallFortify') && selectedCard.idx >= 0) {
@@ -6456,6 +6571,10 @@ function selectCard(cardId, idx) {
     if (emb.turnsRemaining > 0 && card.type === emb.type) {
       showStatus(`Embargo! ${emb.type} cards are blocked this turn`, 'error'); return;
     }
+  }
+  // Bound: cannot play Movement cards
+  if (card.type === 'Movement' && (gameState.players[pi].statusEffects || []).some(e => e.type === 'bound' && e.turnsRemaining > 0)) {
+    showStatus('Bound! Movement cards are blocked this turn', 'error'); return;
   }
   // Skip card phase (Warden's Decree, skip_full_turn, pit trap)
   if (isCardPhaseSkipped(pi)) {
@@ -6490,7 +6609,8 @@ function selectCard(cardId, idx) {
     const isPhantom = !!(card.phantom);
     const isDurable = !!(card.durable);
     const length    = getCardWallLength(card.id);
-    selectedCard = { ...selectedCard, length, isPhantom, isDurable,  };
+    const _io = !!(card._instantOnce);
+    selectedCard = { ...selectedCard, length, isPhantom, isDurable, _instantOnce: _io || (selectedCard && selectedCard._instantOnce) };
     // Doppelganger Wall: first wall is free (doesn't cost a wall slot)
     if (card.special === 'doppelganger') selectedCard._freePhantom = true;
     // Emergency Barrier: restrict placement to within 2 tiles of champion
@@ -6506,10 +6626,19 @@ function selectCard(cardId, idx) {
     }
   } else if (card.type === 'Movement') {
     trackCategory('Movement');
-    // Store dejaVu flag before applyMovementCard overwrites selectedCard
+    // Preserve _instantOnce flag from Infinite Recursion
+    if (card._instantOnce) {
+      selectedCard = selectedCard || {};
+      selectedCard._instantOnce = true;
+    }
     applyMovementCard(pi, card, idx);
   } else if (card.type === 'Disruption') {
     trackCategory('Disruption');
+    // Preserve _instantOnce flag from Infinite Recursion
+    if (card._instantOnce) {
+      selectedCard = selectedCard || {};
+      selectedCard._instantOnce = true;
+    }
     applyDisruptionCard(pi, card, idx);
   } else {
     discardCard(pi, idx);
@@ -6528,10 +6657,15 @@ function countCardPlayed(pi) {
     || gameState._freePlayActive;
   // Skip counting for Instant cards (they don't consume the card-play budget)
   const isInstant = selectedCard && CARDS[selectedCard.id] && CARDS[selectedCard.id].instant;
+  // CH11 Infinite Recursion: cards marked _instantOnce don't cost a card play (first use only)
+  const isInstantOnce = selectedCard && selectedCard._instantOnce;
   if (isFreePlay) {
     console.log('[countCardPlayed] Skipping count — free/delayed/dejaVu replay. freePlayActive=', gameState._freePlayActive);
   } else if (isInstant) {
     console.log('[countCardPlayed] Skipping count — Instant card:', selectedCard.id);
+  } else if (isInstantOnce) {
+    console.log('[countCardPlayed] Skipping count — Infinite Recursion instant-once:', selectedCard.id);
+    // Remove _instantOnce from the card (already discarded at this point, but clear the flag)
   } else {
     cardsPlayedThisTurn++;
     hasPlayedCard = true;
@@ -7184,6 +7318,42 @@ function applyMovementCard(pi, card, idx) {
   let speed = card.overrideSpeed !== undefined ? card.overrideSpeed : 1;
 
 
+  // PF3 Shortcut: 1 diagonal step, can slip through wall-corner cracks
+  if (card.special === 'shortcut') {
+    const myPos = gameState.players[pi].position;
+    const oppPos = gameState.players[1-pi].position;
+    const blocked = buildBlockedEdges(gameState.walls, pi);
+    const diagDirs = [{r:-1,c:-1},{r:-1,c:1},{r:1,c:-1},{r:1,c:1}];
+    const targets = [];
+    for (const d of diagDirs) {
+      const nb = {row: myPos.row+d.r, col: myPos.col+d.c};
+      if (nb.row < 0 || nb.row >= BOARD_SIZE || nb.col < 0 || nb.col >= BOARD_SIZE) continue;
+      if (nb.row === oppPos.row && nb.col === oppPos.col) continue;
+      // Check the two orthogonal edges that form this diagonal's corner
+      const adj1 = {row: myPos.row+d.r, col: myPos.col};
+      const adj2 = {row: myPos.row, col: myPos.col+d.c};
+      const e1 = isEdgeBlocked(myPos, adj1, blocked);
+      const e2 = isEdgeBlocked(myPos, adj2, blocked);
+      // Normal diagonal: blocked if both edges are blocked (fully walled corner)
+      // Shortcut special: can slip through even if both edges are blocked (wall crack)
+      // Only blocked if the diagonal itself is physically impossible (out of bounds handled above)
+      // Shortcut allows passage through wall cracks — always allow diagonal
+      targets.push(nb);
+    }
+    if (targets.length === 0) {
+      showStatus('Shortcut: no diagonal moves available', 'error'); return;
+    }
+    discardCard(pi, idx);
+    countCardPlayed(pi);
+    selectedCard = { id: card.id, idx: -1, overrideSpeed: 1, diagonal: true, _pendingMove: true, _shortcutTargets: targets };
+    // Enter move mode with restricted targets
+    gameState._shortcutTargets = targets;
+    uiMode = 'move';
+    renderAll();
+    showStatus('Shortcut — click a diagonal tile to move (slips through wall cracks)', 'active');
+    return;
+  }
+
   // PH15 Ethereal Plane: random teleport within 3-tile radius, ignoring walls
   if (card.id === 'PH15') {
     const myPos = gameState.players[pi].position;
@@ -7230,6 +7400,8 @@ function applyMovementCard(pi, card, idx) {
   // PF7 Trail Blaze: flag for conditional draw on forward progress
   if (card.id === 'PF7') gameState._trailBlazeFrom = gameState.players[pi].position.row;
 
+  // PF5 Wall Vault: block reinforced walls
+  if (card.id === 'PF5') gameState._wallVaultActive = true;
   // PF8 Vaulting Strike: flag for wall shrink on tunnel
   if (card.id === 'PF8') gameState._vaultStrike = true;
 
@@ -7240,23 +7412,17 @@ function applyMovementCard(pi, card, idx) {
   if (card.id === 'PF15') gameState._unstoppableCharge = true;
 
   // PF10 Grapple Hook: direction-picker UI — does not use normal move flow
+  // Card is NOT discarded yet — cancellable until confirmed
   if (card.id === 'PF10') {
-    discardCard(pi, idx);
-    countCardPlayed(pi);
-    selectedCard = { id: 'PF10', idx: -1, _pendingMove: false };
-    gameState._grappleState = { pi };
+    selectedCard = { id: 'PF10', idx, _pendingMove: false, _grappleCardIdx: idx };
+    gameState._grappleState = { pi, cardIdx: idx };
     uiMode = 'grappleDir';
     renderAll();
-    showStatus('Grapple Hook — click a direction arrow (N/S/W/E)', 'active');
+    showStatus('Grapple Hook — click a direction arrow (N/S/W/E), or click the card to cancel', 'active');
     return;
   }
 
-  // PF12 Slipstream: cannot be played after a normal move (only usable before moving or during a bonus move)
-  if (card.id === 'PF12' && hasMoved && !gameState._bonusMoveActive) {
-    showStatus('Slipstream: must be played before moving', 'error');
-    return;
-  }
-  // PF12 Slipstream: flag so getLegalMoves can apply wall-ignore + diagonal
+  // PF12 Slipstream: flag for post-move bonus-move check (no wall phasing)
   if (card.id === 'PF12') gameState._slipstreamActive = true;
 
   // Mark the card play as consumed immediately on activation (countCardPlayed increments
@@ -7291,7 +7457,18 @@ function grappleFireDir(dir) {
   for (let step = 1; step <= 4; step++) {
     const r = myPos.row + d.r*step, c = myPos.col + d.c*step;
     if (r<0||r>=BOARD_SIZE||c<0||c>=BOARD_SIZE) break;
-    if (r===oppPos.row && c===oppPos.col) { target={row:r,col:c}; bindOpp=true; break; }
+    if (r===oppPos.row && c===oppPos.col) {
+      // Land one tile BEFORE the opponent
+      const landR = r - d.r, landC = c - d.c;
+      if (landR === myPos.row && landC === myPos.col) {
+        // Already adjacent to opponent — can't grapple closer
+        target = null;
+      } else {
+        target = {row: landR, col: landC};
+      }
+      bindOpp = true;
+      break;
+    }
     const hasPerpWall = gameState.walls.some(w => {
       if (w.isPhantom||w.owner!==opp||w.orientation!==perpOrient) return false;
       return wallEdges(w).some(e => (e.a.row===r&&e.a.col===c)||(e.b.row===r&&e.b.col===c));
@@ -7305,7 +7482,7 @@ function grappleFireDir(dir) {
     if (isTurnDone()) gameState.phase='end_turn';
     renderAll(); showStatus('Grapple Hook: no target in that direction','error'); return;
   }
-  gameState._grappleState = { pi, target, bindOpp };
+  gameState._grappleState = { pi, target, bindOpp, cardIdx: gameState._grappleState?.cardIdx };
   uiMode = 'grappleTarget';
   renderAll();
   showStatus(`Grapple Hook — click the glowing tile to launch${bindOpp?' (opponent will be Bound!)':''}`, 'active');
@@ -7314,8 +7491,13 @@ function grappleFireDir(dir) {
 function grappleExecute() {
   const pi = gameState.activePlayer;
   if (!gameState._grappleState?.target) return;
-  const { target, bindOpp } = gameState._grappleState;
+  const { target, bindOpp, cardIdx } = gameState._grappleState;
   const opp = 1-pi;
+  // NOW discard the card and count the play (deferred from selection)
+  if (cardIdx !== undefined && cardIdx >= 0) {
+    discardCard(pi, cardIdx);
+    countCardPlayed(pi);
+  }
   gameState.players[pi] = {...gameState.players[pi], position: target};
   hasMoved = true;
   addLog(pi,'card',`Grapple Hook: fired to (${target.row},${target.col})`);
@@ -7588,7 +7770,7 @@ async function applyDisruptionCard(pi, card, idx) {
     renderAll(); showStatus('Mortar Bond: walls merged!', 'success'); return;
   }
 
-  // ── PF11: Pathfinder's Instinct — reveal top 2, keep Movement ──
+  // ── PF11: Pathfinder's Instinct — reveal top 2, keep all Movement cards ──
   if (card.id === 'PF11') {
     const p = gameState.players[pi];
     let deck = [...p.deck];
@@ -7597,31 +7779,40 @@ async function applyDisruptionCard(pi, card, idx) {
       gameState.players[pi] = {...gameState.players[pi], deck, discard: []};
     }
     const top2 = deck.slice(0, 2);
-    const movCard  = top2.find(c => c.type === 'Movement');
-    const otherCard = top2.find(c => c !== movCard);
+    const movCards = top2.filter(c => c.type === 'Movement');
+    const nonMovCards = top2.filter(c => c.type !== 'Movement');
 
-    // Helper: apply the resolution (used by both human confirm and AI auto-resolve)
+    // Helper: apply the resolution
     function resolveInstinct() {
-      if (movCard) {
-        // Move card to hand; return the other to bottom
-        const newDeck = [...deck.slice(top2.length), ...(otherCard ? [otherCard] : [])];
+      const remaining = deck.slice(top2.length);
+      if (movCards.length === 2) {
+        // Both are movement — add both to hand
+        const p2 = gameState.players[pi];
+        gameState.players[pi] = {...p2,
+          deck: remaining,
+          hand: [...p2.hand, ...movCards].slice(0, p2.champion.handSize)};
+        addLog(pi, 'card', `Pathfinder's Instinct: drew ${movCards[0].name} and ${movCards[1].name}!`);
+      } else if (movCards.length === 1) {
+        // One movement, one not — movement to hand, other to bottom
+        const newDeck = [...remaining, nonMovCards[0]];
         const p2 = gameState.players[pi];
         gameState.players[pi] = {...p2,
           deck: newDeck,
-          hand: [...p2.hand, movCard].slice(0, p2.champion.handSize)};
-        addLog(pi, 'card', `Pathfinder's Instinct: drew ${movCard.name}, returned ${otherCard?.name||'nothing'} to bottom`);
+          hand: [...p2.hand, movCards[0]].slice(0, p2.champion.handSize)};
+        addLog(pi, 'card', `Pathfinder's Instinct: drew ${movCards[0].name}, returned ${nonMovCards[0].name} to bottom`);
       } else {
-        const newDeck = [...deck.slice(top2.length), ...top2];
+        // Neither is movement — both to bottom
+        const newDeck = [...remaining, ...top2];
         gameState.players[pi] = {...gameState.players[pi], deck: newDeck};
-        addLog(pi, 'card', "Pathfinder's Instinct: no Movement card — both sent to bottom");
+        addLog(pi, 'card', "Pathfinder's Instinct: no Movement cards — both sent to bottom");
       }
       discardCard(pi, idx); selectedCard = null; countCardPlayed(pi);
       if (isTurnDone()) gameState.phase = 'end_turn';
       renderAll();
-      showStatus(movCard ? `Instinct: drew ${movCard.name}!` : "Instinct: no Movement card found", movCard ? 'success' : 'active');
+      showStatus(movCards.length > 0 ? `Instinct: drew ${movCards.map(c=>c.name).join(' & ')}!` : "Instinct: no Movement cards found", movCards.length > 0 ? 'success' : 'active');
     }
 
-    // AI resolves immediately without modal
+    // AI resolves immediately
     if (!isHumanSeat(pi)) { resolveInstinct(); return; }
 
     // Human: show reveal modal
@@ -7633,8 +7824,9 @@ async function applyDisruptionCard(pi, card, idx) {
     function cardHTML(c) {
       if (!c) return '<div class="instinct-card instinct-empty">— empty —</div>';
       const col = factionColors[c.faction] || 'var(--text-dim)';
-      const tag = c.type === 'Movement' ? '<span class="instinct-mov-tag">MOVEMENT → HAND</span>' : '<span class="instinct-other-tag">→ BOTTOM OF DECK</span>';
-      return `<div class="instinct-card ${c.type==='Movement'?'instinct-mov':''}">
+      const isMov = c.type === 'Movement';
+      const tag = isMov ? '<span class="instinct-mov-tag">MOVEMENT \u2192 HAND</span>' : '<span class="instinct-other-tag">\u2192 BOTTOM OF DECK</span>';
+      return `<div class="instinct-card ${isMov?'instinct-mov':''}">
         <div class="instinct-card-faction" style="color:${col}">${c.faction}</div>
         <div class="instinct-card-name">${c.name}</div>
         <div class="instinct-card-type">${c.type}</div>
@@ -7642,27 +7834,29 @@ async function applyDisruptionCard(pi, card, idx) {
         ${tag}
       </div>`;
     }
+    const summaryMsg = movCards.length === 2
+      ? `<span style="color:var(--success)">Both are Movement cards</span> — both will be added to your hand.`
+      : movCards.length === 1
+        ? `<span style="color:var(--success)">${movCards[0].name}</span> will be added to your hand. ${nonMovCards[0].name} goes to the bottom.`
+        : 'No Movement cards found — both go to the bottom of your deck.';
     const modal = document.createElement('div');
     modal.id = 'instinct-modal';
     modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.7);display:flex;align-items:center;justify-content:center;z-index:200;';
     modal.innerHTML = `
       <div style="background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:24px;max-width:420px;width:90%;text-align:center;">
-        <div style="font-family:'JetBrains Mono',monospace;font-size:13px;color:var(--wall-path);letter-spacing:.12em;margin-bottom:16px;">PATHFINDER'S INSTINCT — TOP 2 CARDS</div>
+        <div style="font-family:'JetBrains Mono',monospace;font-size:13px;color:var(--wall-path);letter-spacing:.12em;margin-bottom:16px;">PATHFINDER'S INSTINCT \u2014 TOP 2 CARDS</div>
         <div style="display:flex;gap:12px;justify-content:center;margin-bottom:20px;">
           ${cardHTML(top2[0])}
           ${cardHTML(top2[1])}
         </div>
         <div style="font-size:11px;color:var(--text-dim);margin-bottom:16px;">
-          ${movCard ? `<span style="color:var(--success)">${movCard.name}</span> will be added to your hand.` : 'No Movement card found — both cards go to the bottom of your deck.'}
+          ${summaryMsg}
         </div>
-        <button onclick="document.getElementById('instinct-modal').remove();resolveInstinct();"
-                style="background:var(--wall-path);color:#000;border:none;border-radius:4px;padding:8px 24px;font-family:inherit;font-size:12px;font-weight:700;cursor:pointer;letter-spacing:.1em;">
+        <button style="background:var(--wall-path);color:#000;border:none;border-radius:4px;padding:8px 24px;font-family:inherit;font-size:12px;font-weight:700;cursor:pointer;letter-spacing:.1em;">
           CONFIRM
         </button>
       </div>`;
-    // Expose resolveInstinct on the button's closure via a named global
     window._instinctResolve = resolveInstinct;
-    // Replace inline onclick to use global to avoid scoping issues
     modal.querySelector('button').onclick = () => {
       modal.remove();
       window._instinctResolve && window._instinctResolve();
@@ -8255,23 +8449,21 @@ async function applyDisruptionCard(pi, card, idx) {
     renderAll(); showStatus(`Recall: ${best.name} played for free!`, 'success'); return;
   }
 
-  // ── CH11: Infinite Recursion — copy last 3 cards played, play all free (sequential queue) ──
+  // ── CH11: Infinite Recursion — all hand cards become Instants this turn ──
   if (card.id === 'CH11') {
-    const history = gameState._cardHistory || [];
-    const last3 = history.slice(-3);
-    if (!last3.length) {
-      addLog(pi, 'card', 'Infinite Recursion: no card history to copy');
-      discardCard(pi, idx); selectedCard = null; countCardPlayed(pi);
-      if (isTurnDone()) gameState.phase = 'end_turn';
-      renderAll(); showStatus('Infinite Recursion: no history!', 'error'); return;
-    }
-    const copies = last3.map(id => ({...CARDS[id]})).filter(Boolean);
-    addLog(pi, 'card', `Infinite Recursion: copied ${copies.map(c=>c.name).join(', ')} — playing all for free!`);
+    const p = gameState.players[pi];
+    // Mark every card in hand (except CH11 itself) as _instantOnce
+    const newHand = p.hand.map((c, i) => {
+      if (i === idx) return c; // The CH11 card itself will be discarded
+      return { ...c, _instantOnce: true };
+    });
+    gameState.players[pi] = { ...gameState.players[pi], hand: newHand };
+    gameState._infiniteRecursionActive = pi; // track which player has it active
+    addLog(pi, 'card', 'Infinite Recursion: all hand cards are now Instants this turn!');
     discardCard(pi, idx); selectedCard = null; countCardPlayed(pi);
-    // Queue all copies; advanceFreePlayQueue will play them one at a time,
-    // waiting for UI interaction between each Wall/Movement card.
-    gameState._freePlayQueue = [...copies];
-    advanceFreePlayQueue(pi);
+    if (isTurnDone()) gameState.phase = 'end_turn';
+    renderAll();
+    showStatus('Infinite Recursion — all cards in hand are Instants this turn!', 'success');
     return;
   }
 
@@ -8737,8 +8929,8 @@ function applyUltimate(pi, champId) {
       // Stormpath: ignore all walls this turn (set a flag, check in getLegalMoves)
       gameState.players[pi] = { ...gameState.players[pi], stormpath: true };
       hasMoved = false; // grant a fresh move
-      addLog(pi,'ultimate','Stormpath: ignore all walls this turn — move freely!');
-      showStatus('Stormpath — walls are meaningless this turn!','success');
+      addLog(pi,'ultimate','Stormpath: all walls are invisible this turn (does not grant extra movement).');
+      showStatus('Stormpath — walls are invisible this turn! Use your normal move.','success');
       renderAll(); return; // skip countCardPlayed; handled when move completes
 
     case 'thorne': {
@@ -8804,22 +8996,21 @@ function applyUltimate(pi, champId) {
     }
 
     case 'shade': {
-      // Killing Field: player chooses a 2×2 anchor tile; 4 snare traps placed
+      // Killing Field: player chooses center tile; 3×3 snare trap grid
       const fakeCard = { id: 'KILLING_FIELD', name: 'Killing Field' };
-      // Use trapPlace mode with mode:'2x2' — anchor click places all 4
       _trapPlaceState = {
         pi, idx: -1, card: fakeCard, trapType: 'snare', duration: 4,
-        opts: {}, range: 4, maxTraps: 1, placed: 0, mode: '2x2',
+        opts: {}, range: 4, maxTraps: 1, placed: 0, mode: '3x3',
         callback: (n) => {
           gameState.players[pi] = {...gameState.players[pi], ultimateUsed: true};
-          addLog(pi, 'ultimate', `Killing Field: 2×2 snare field deployed!`);
-          showStatus('Killing Field — 4 traps set!', 'success');
+          addLog(pi, 'ultimate', `Killing Field: 3×3 snare field deployed!`);
+          showStatus('Killing Field — traps set!', 'success');
         }
       };
       uiMode = 'trapPlace';
       renderAll();
-      showStatus('Killing Field — click a tile to place 2×2 snare field (within 4 spaces)', 'active');
-      return; // Don't break — execution continues when player clicks
+      showStatus('Killing Field — click a center tile to place 3×3 snare field (within 4 spaces)', 'active');
+      return;
     }
 
     case 'vex': {
@@ -8868,6 +9059,21 @@ function maybeAIUltimate(pi) {
   if (p.wallLimitCurrent > p.champion.wallLimit)
     gameState.players[pi] = { ...gameState.players[pi], wallLimitCurrent: p.champion.wallLimit };
   if (pi !== 0) opponentLastPlayedWall = cardsPlayedThisTurn > 0;
+  // Clear Infinite Recursion instant flags at end of turn
+  if (gameState._infiniteRecursionActive !== undefined) {
+    const irPi = gameState._infiniteRecursionActive;
+    if (irPi !== null) {
+      const irP = gameState.players[irPi];
+      if (irP) {
+        const cleanHand = irP.hand.map(c => {
+          if (c._instantOnce) { const {_instantOnce, ...rest} = c; return rest; }
+          return c;
+        });
+        gameState.players[irPi] = {...irP, hand: cleanHand};
+      }
+    }
+    gameState._infiniteRecursionActive = undefined;
+  }
   // Clear stormpath at end of turn (safety)
   if (gameState.players[pi].stormpath)
     gameState.players[pi] = {...gameState.players[pi], stormpath: false};
@@ -8949,7 +9155,7 @@ function updateActionBar() {
     const champId = isHuman && gameState.players[pi] ? gameState.players[pi].champion.id : null;
     // Soren can take a second move if no card played yet and hasn't used second move
     const sorenCanMoveAgain = champId === 'soren' && hasMoved && cardsPlayedThisTurn === 0 && !gameState._sorenSecondMove;
-    const isBound = isHuman && (gameState.players[pi]?.statusEffects || []).some(e => e.type === 'skip_move' && e.turnsRemaining > 0);
+    const isBound = isHuman && (gameState.players[pi]?.statusEffects || []).some(e => (e.type === 'skip_move' || e.type === 'bound') && e.turnsRemaining > 0);
     btnMove.disabled = !isAction || (hasMoved && !sorenCanMoveAgain) || isBound || (gameMode === 'mp' ? gameState.activePlayer !== mp_localSeat : (!isHuman || aiThinking));
     const moveBtnColour = (gameMode === 'mp' && gameState.activePlayer === 1) ? 'primary-p1' : 'primary';
     btnMove.className = `action-btn ${moveBtnColour}${uiMode==='move' ? ' active' : ''}`;
@@ -9117,12 +9323,15 @@ function renderPanels() {
 function renderCard(card, idx, pi, interactive) {
   const isSel = selectedCard && selectedCard.idx === idx;
   const isEchoPick = gameState._vexEchoPending && pi === gameState.activePlayer && interactive;
-  const cls = `card${isSel?' selected':''}${!interactive?' card-disabled':''}${isEchoPick?' echo-pick':''}`;
+  const isInstantOnce = !!card._instantOnce;
+  const cls = `card${isSel?' selected':''}${!interactive?' card-disabled':''}${isEchoPick?' echo-pick':''}${isInstantOnce?' card-instant-once':''}`;
+  const instantBadge = isInstantOnce ? '<span class="instant-badge">⚡ INSTANT</span>' : '';
   return `<div class="${cls}" onclick="${interactive?`selectCard('${card.id}',${idx})`:''}">
     <div class="card-header">
       <span class="card-name"><span class="rarity-dot rarity-${card.rarity}"></span>${card.name}</span>
       <span class="card-type-badge type-${card.type}">${card.type}</span>
     </div>
+    ${instantBadge}
     <div class="card-desc">${card.desc}</div>
   </div>`;
 }
@@ -9170,6 +9379,14 @@ function renderBoard() {
   if (gameState._breachTargets && selectedCard && selectedCard._breach) {
     legalMoves = gameState._breachTargets;
   }
+  // Shortcut override: show only diagonal crack targets
+  if (gameState._shortcutTargets && selectedCard && selectedCard.id === 'PF3') {
+    legalMoves = gameState._shortcutTargets;
+  }
+  // Emergency Barrier bonus: show only tiles adjacent to placed wall
+  if (gameState._emergencyBarrierBonusTargets && uiMode !== 'wall') {
+    legalMoves = gameState._emergencyBarrierBonusTargets;
+  }
   const legalSet = new Set(legalMoves.map(m=>`${m.row},${m.col}`));
 
   // Grapple Hook landing target (single tile)
@@ -9184,19 +9401,6 @@ function renderBoard() {
     for (let c=0; c<BOARD_SIZE; c++) {
       const isLegal = legalSet.has(`${r},${c}`);
       const isTrapTarget = trapTargetSet.has(`${r},${c}`);
-      // Killing Field 2×2 hover preview
-      if (isTrapTarget && _trapPlaceState?.mode === '2x2') {
-        cell.addEventListener('mouseenter', () => {
-          document.querySelectorAll('.kf-preview').forEach(el => el.classList.remove('kf-preview'));
-          [[r,c],[r,c+1],[r+1,c],[r+1,c+1]].forEach(([pr,pc]) => {
-            const t = document.querySelector(`.cell[data-row="${pr}"][data-col="${pc}"]`);
-            if (t) t.classList.add('kf-preview');
-          });
-        });
-        cell.addEventListener('mouseleave', () => {
-          document.querySelectorAll('.kf-preview').forEach(el => el.classList.remove('kf-preview'));
-        });
-      }
       const cell = document.createElement('div');
       // Check for Trailblazer's Mark on this tile
       const isTrailMark = !!(gameState._trailMarks && gameState._trailMarks.some(m => m.tile.row===r && m.tile.col===c));
@@ -9207,6 +9411,21 @@ function renderBoard() {
         cell.setAttribute('data-trail-owner', owner);
       }
       cell.dataset.row = r; cell.dataset.col = c;
+      // Killing Field 3×3 hover preview (after cell is created)
+      if (isTrapTarget && _trapPlaceState?.mode === '3x3') {
+        cell.addEventListener('mouseenter', () => {
+          document.querySelectorAll('.kf-preview').forEach(el => el.classList.remove('kf-preview'));
+          for (let dr = -1; dr <= 1; dr++) {
+            for (let dc = -1; dc <= 1; dc++) {
+              const t = document.querySelector(`.cell[data-row="${r+dr}"][data-col="${c+dc}"]`);
+              if (t) t.classList.add('kf-preview');
+            }
+          }
+        });
+        cell.addEventListener('mouseleave', () => {
+          document.querySelectorAll('.kf-preview').forEach(el => el.classList.remove('kf-preview'));
+        });
+      }
       // Breach: show stun AoE on hover
       if (isLegal && gameState._breachTargets && selectedCard && selectedCard._breach) {
         const oppPos = gameState.players[1 - gameState.activePlayer].position;
@@ -10141,6 +10360,9 @@ function showVictory(winner) {
 
   const overlay = document.getElementById('victory-overlay');
   if (!overlay) return;
+  // Clean up any stale reward banners and summary HTML from previous games
+  document.getElementById('sp-reward-banner')?.remove();
+  document.getElementById('postgame-summary')?.remove();
   overlay.style.display = 'flex';
 
   const title    = document.getElementById('victory-title');
@@ -10464,6 +10686,17 @@ function showMultiplayerLobby(tab = 'home', prefillCode = null) {
   } else {
     mpShowTab(tab);
   }
+}
+
+function menuReturnToLanding() {
+  // Menu button: return to landing screen with confirmation if game in progress
+  if (gameState && gameState.winner === null && gameState.turnNumber > 0) {
+    if (!confirm('Leave current game and return to menu?')) return;
+  }
+  // Clean up game state
+  const overlay = document.getElementById('victory-overlay');
+  if (overlay) overlay.style.display = 'none';
+  showLandingScreen();
 }
 
 function closeMpLobby(silent = false) {
