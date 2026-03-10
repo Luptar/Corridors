@@ -2406,7 +2406,7 @@ const CARDS = {
         desc:'Move 1 space diagonally. Blocked by a single wall; can slip through corner gaps where two walls meet.', overrideSpeed:1, diagonal:true },
   SW: { id:'SW', name:'Swift Leap',       faction:'Basic', rarity:'Rare',     type:'Movement',
         desc:'Gain +1 move and may jump over the opponent this turn.', overrideSpeed:2 },
-  WS: { id:'WS', name:'Wind Sprint',      faction:'Basic', rarity:'Uncommon',     type:'Movement',
+  WS: { id:'WS', name:'Wind Sprint',      faction:'Pathfinders', rarity:'Uncommon',     type:'Movement',
         desc:'Move up to 2 spaces this turn. May pass through your own walls.', overrideSpeed:2, ownWallsPassthrough:true },
   B07:{ id:'B07', name:'Undermine',       faction:'Basic', rarity:'Uncommon', type:'Disruption',
         desc:'Shrink one opponent wall by 1 tile (from either end). If reduced to 0 tiles, the wall is removed entirely.', special:'wallShrink' },
@@ -2421,7 +2421,7 @@ const CARDS = {
   B10:{ id:'B10', name:'Flanking Path',    faction:'Basic', rarity:'Uncommon', type:'Movement',
         desc:'Move up to 3 spaces laterally only (left/right). Ignores walls on lateral moves.', overrideSpeed:3, special:'flanking' },
   B11:{ id:'B11', name:'Emergency Barrier', faction:'Basic', rarity:'Uncommon', type:'Wall',
-        desc:'Place a 2-tile wall within 2 tiles of your champion. Gain +1 movement this turn.', wallLen:2, special:'emergencyBarrier' },
+        desc:'Place a 2-tile wall within 1 tile of your champion. Then move 1 tile adjacent to the wall.', wallLen:2, special:'emergencyBarrier' },
   B12:{ id:'B12', name:'Scavenge',         faction:'Basic', rarity:'Uncommon', type:'Disruption',
         desc:'Look at the top 3 cards of your deck. Keep 1, put the other 2 on the bottom.' },
   B13:{ id:'B13', name:'Desperation Sprint', faction:'Basic', rarity:'Rare',   type:'Movement',
@@ -2467,14 +2467,14 @@ const CARDS = {
   PF8: { id:'PF8', name:'Vaulting Strike', faction:'Pathfinders', rarity:'Uncommon', type:'Movement',
          desc:'Move 1 space. May pass through non-reinforced walls. If you cross an opponent wall, you may shrink it by 1 tile. Cannot cross reinforced walls.', overrideSpeed:1, tunnelThrough:true, special:'vaultStrike' },
   PF10:{ id:'PF10',name:'Grapple Hook',   faction:'Pathfinders', rarity:'Rare',     type:'Movement',
-         desc:'Choose a cardinal direction. Fire up to 4 spaces; land beside a perpendicular opponent wall, or one tile before an opponent (Binding them for 1 turn). Cancellable before confirming.', special:'grappleHook' },
+         desc:'Choose a cardinal direction. Fire up to 4 spaces; land beside a perpendicular opponent wall, or one tile before an opponent (Binding them for 1 turn). Consumes your movement for the turn. Cancellable before confirming.', special:'grappleHook' },
   PF11:{ id:'PF11',name:'Pathfinder\'s Instinct', faction:'Pathfinders', rarity:'Common', type:'Disruption',
          desc:'Reveal top 2 cards of your deck. Add all Movement cards to hand; non-Movement cards go to the bottom.' },
   PF12:{ id:'PF12',name:'Slipstream',     faction:'Pathfinders', rarity:'Common',   type:'Movement',
          desc:'Move 1 space in any direction (including diagonal). +1 bonus move if you land adjacent to an opponent wall.', overrideSpeed:1, diagonal:true, special:'slipstream' },
   PF13:{ id:'PF13',name:'Wall Ride',       faction:'Pathfinders', rarity:'Rare',     type:'Movement',
          desc:'Move up to 2 spaces. If you do not land adjacent to an opponent wall, you are Exhausted — skip your next movement.', overrideSpeed:2, special:'wallRide' },
-  PF14:{ id:'PF14',name:'Trailblazer\'s Mark', faction:'Pathfinders', rarity:'Uncommon', type:'Disruption',
+  PF14:{ id:'PF14',name:'Trailblazer\'s Mark', faction:'Pathfinders', rarity:'Uncommon', type:'Disruption', instant:true,
          desc:'Place a mark on a random tile exactly 2 steps away. If you reach it within 2 turns, gain a bonus move on that turn. Mark is shown on the board.' },
   PF15:{ id:'PF15',name:'Unstoppable Charge', faction:'Pathfinders', rarity:'Legendary', type:'Movement',
          desc:'Move up to 3 spaces. Cannot cross reinforced walls. All non-reinforced walls you pass through are destroyed. Destroyed walls return their slot to their owner.', overrideSpeed:3, tunnelThrough:true, special:'unstoppableCharge' },
@@ -2518,7 +2518,7 @@ const CARDS = {
          desc:'Place a Phantom Wall on your side of the board and simultaneously place a real mirrored wall on the opponent\'s side at no extra cost.', wallLen:2, phantom:true, special:'echoStrike' },
   PH4: { id:'PH4', name:'Veil Lattice',  faction:'Phantoms', rarity:'Uncommon',     type:'Wall',
          desc:'Place 1 Phantom Wall and 1 real wall anywhere on the board. The Phantom Wall does not auto-expire — it persists until walked through.', wallLen:2, phantom:true, special:'veilLattice' },
-  PH5: { id:'PH5', name:'Compel Storm',  faction:'Phantoms', rarity:'Uncommon',     type:'Disruption',
+  PH5: { id:'PH5', name:'Compel Storm',  faction:'Phantoms', rarity:'Rare',     type:'Disruption',
          desc:'Force the opponent\'s champion to move up to 3 spaces in directions of your choice. Real walls block individual steps. Phantom Walls do not trigger removal.' },
   PH8: { id:'PH8', name:'Phase Walk',     faction:'Phantoms', rarity:'Uncommon', type:'Movement',
          desc:'Move up to 2 spaces. Phantom walls don\'t block you and aren\'t removed.', overrideSpeed:2, special:'phaseWalk' },
@@ -2812,7 +2812,7 @@ function getLegalMoves(state, pIdx, overrideSpeed, tunnelThrough, diagonal, ownW
     // Unstoppable Charge: pass through non-reinforced only; reinforced walls still block
     effectiveWalls = (player.stormpath || tunnelThrough) ? state.walls.filter(w => w.reinforced && !w.isPhantom) : state.walls;
   } else if (player.stormpath || tunnelThrough) {
-    effectiveWalls = [];
+    effectiveWalls = state.walls.filter(w => w.reinforced);
   } else if (ownWallsPassthrough) {
     effectiveWalls = state.walls.filter(w => w.owner !== pIdx);
   } else {
@@ -2820,7 +2820,7 @@ function getLegalMoves(state, pIdx, overrideSpeed, tunnelThrough, diagonal, ownW
   }
   const blocked = buildBlockedEdges(effectiveWalls, pIdx);
   // For diagonal wall-corner checks we always need the full wall set
-  const blockedFull = (player.stormpath || tunnelThrough) ? new Set() : buildBlockedEdges(state.walls, pIdx);
+  const blockedFull = (player.stormpath || tunnelThrough) ? buildBlockedEdges(state.walls.filter(w => w.reinforced), pIdx) : buildBlockedEdges(state.walls, pIdx);
   const pos = player.position;
   const speed = (overrideSpeed !== undefined && overrideSpeed !== null) ? overrideSpeed : player.champion.moveSpeed;
   const opPos = opponent.position;
@@ -2855,26 +2855,38 @@ function getLegalMoves(state, pIdx, overrideSpeed, tunnelThrough, diagonal, ownW
   }
 
   if (diagonal) {
-    // Diagonal-only BFS (Quick Step). One step, 8-directional.
-    // A diagonal is blocked only if BOTH orthogonal edges crossing that corner are blocked
-    // (i.e. both walls meeting at the corner are present — fully walled corner).
+    // Diagonal-only BFS. One step, 4 diagonal directions.
+    // Quick Step (QS): blocked by ANY wall on either crossing edge — no corner passage.
+    // Slipstream (PF12): also includes orthogonal moves (handled below after this block).
     const diagDirs = [{r:-1,c:-1},{r:-1,c:1},{r:1,c:-1},{r:1,c:1}];
     for (const d of diagDirs) {
       const nb = {row:pos.row+d.r, col:pos.col+d.c};
       if (nb.row<0||nb.row>=BOARD_SIZE||nb.col<0||nb.col>=BOARD_SIZE) continue;
       const k = key(nb);
       if (k === key(opPos)) continue;
-      // A diagonal from pos to nb passes through the gap between cellA and cellB.
-      // The two crossing edges are cellA→nb and cellB→nb.
-      // - Neither blocked: open space → allow
-      // - Both blocked: the two walls END at that corner, creating a diagonal gap → allow
-      // - Exactly one blocked: a single wall cuts across the path → block
       const cellA = {row:pos.row+d.r, col:pos.col};
       const cellB = {row:pos.row,     col:pos.col+d.c};
       const crossA = blockedFull.has(edgeKey(cellA, nb));
       const crossB = blockedFull.has(edgeKey(cellB, nb));
-      if (crossA !== crossB) continue; // exactly one wall = blocked
+      // Also check edges from current pos to the two adjacent cells
+      const edgeA = blocked.has(edgeKey(pos, cellA));
+      const edgeB = blocked.has(edgeKey(pos, cellB));
+      // Block if ANY wall is present on any of the four edges forming the diagonal corner
+      if (crossA || crossB || edgeA || edgeB) continue;
       reachable.push(nb);
+    }
+    // Slipstream: also include orthogonal moves (1 step, 4 cardinal directions)
+    if (gameState._slipstreamCard) {
+      const orthoDirs = [{r:-1,c:0},{r:1,c:0},{r:0,c:-1},{r:0,c:1}];
+      for (const d of orthoDirs) {
+        const nb = {row:pos.row+d.r, col:pos.col+d.c};
+        if (nb.row<0||nb.row>=BOARD_SIZE||nb.col<0||nb.col>=BOARD_SIZE) continue;
+        const k = key(nb);
+        if (k === key(opPos)) continue;
+        if (visited.has(k)) continue;
+        if (isEdgeBlocked(pos, nb, blocked)) continue;
+        reachable.push(nb);
+      }
     }
     return reachable;
   }
@@ -3092,7 +3104,7 @@ function reconstructBFSPath(from, to, pi) {
   if (from.row === to.row && from.col === to.col) return [];
   const state = gameState;
   const player = state.players[pi];
-  const effectiveWalls = player.stormpath ? [] : state.walls;
+  const effectiveWalls = player.stormpath ? state.walls.filter(w => w.reinforced) : state.walls;
   const blocked = buildBlockedEdges(effectiveWalls, pi);
   const opPos = state.players[1-pi].position;
   const key = p => `${p.row},${p.col}`;
@@ -3414,22 +3426,39 @@ function executeMove(to) {
   }
 
   // PF12 Slipstream: check if landing adjacent to any opponent-owned wall → bonus move
+  // A wall edge runs between two tiles (e.a and e.b). If either equals the destination,
+  // the wall touches that tile's border — the player is adjacent to the wall.
   if (gameState._slipstreamActive) {
     gameState._slipstreamActive = false;
+    gameState._slipstreamCard = false;
     const opp = 1 - pi;
-    const cardinalDirs = [{r:-1,c:0},{r:1,c:0},{r:0,c:-1},{r:0,c:1}];
     const adjOppWall = gameState.walls.some(w => {
       if (w.isPhantom || w.owner !== opp) return false;
       return wallEdges(w).some(e =>
-        cardinalDirs.some(d =>
-          (e.a.row === to.row+d.r && e.a.col === to.col+d.c) ||
-          (e.b.row === to.row+d.r && e.b.col === to.col+d.c)
-        )
+        (e.a.row === to.row && e.a.col === to.col) ||
+        (e.b.row === to.row && e.b.col === to.col)
       );
     });
     if (adjOppWall) {
       addLog(pi, 'card', 'Slipstream: landed adjacent to opponent wall — bonus move!');
       grantBonusMove(pi);
+    }
+  }
+
+  // TR5 Trapper's Stride: auto-place snare trap on a tile the player moved through
+  if (gameState._trapperStrideFrom) {
+    const strideFrom = gameState._trapperStrideFrom;
+    gameState._trapperStrideFrom = null;
+    // Reconstruct BFS path from strideFrom to 'to' — intermediate tiles only
+    const pathTiles = reconstructBFSPath(strideFrom, to, pi);
+    // Place snare on the first intermediate tile (or the starting tile if no intermediates)
+    const trapTile = pathTiles.length > 0 ? pathTiles[0] : strideFrom;
+    // Only place if tile is not occupied by a player
+    const oppPos = gameState.players[1-pi].position;
+    if (!(trapTile.row === to.row && trapTile.col === to.col) &&
+        !(trapTile.row === oppPos.row && trapTile.col === oppPos.col)) {
+      placeTrap(pi, trapTile, 'snare', 3);
+      addLog(pi, 'card', `Trapper's Stride: snare trap placed at (${trapTile.row},${trapTile.col})`);
     }
   }
 
@@ -3834,6 +3863,25 @@ function showDirectionPicker(directions, callback, title, subtitle, onCancel) {
       callback(chosen);
     });
   });
+
+  // Cancel button: bind click handler if onCancel callback was provided
+  if (onCancel) {
+    const cancelEl = overlay.querySelector('#dir-cancel-btn');
+    if (cancelEl) {
+      cancelEl.addEventListener('mouseover', () => {
+        cancelEl.style.background = 'rgba(220,60,60,0.12)';
+        cancelEl.style.borderColor = 'var(--danger)';
+      });
+      cancelEl.addEventListener('mouseout', () => {
+        cancelEl.style.background = 'transparent';
+        cancelEl.style.borderColor = 'var(--danger)';
+      });
+      cancelEl.addEventListener('click', () => {
+        overlay.remove();
+        onCancel();
+      });
+    }
+  }
 
   document.body.appendChild(overlay);
 }
@@ -6412,6 +6460,10 @@ function isTurnDone() {
       'hand=', p.hand.length, 'ult ready=', p.ultimateReady, 'ult used=', p.ultimateUsed,
       'temporalFold=', gameState._vexTemporalFold);
   }
+  // Infinite Recursion: don't end turn while _instantOnce cards remain in hand
+  if (gameState._infiniteRecursionActive === pi && p.hand.some(c => c._instantOnce)) {
+    return false;
+  }
   const _dvT=(p.statusEffects||[]).some(e=>e.type==='deja_vu'&&e.turnsRemaining>0);
   if (p.hand.length === 0) return hasMoved;
   return hasMoved && cardsPlayedThisTurn >= (_dvT?2:1);
@@ -6430,6 +6482,8 @@ function resetTurnState() {
   gameState._freePlayQueue = null;     // Clear any pending Infinite Recursion queue
   gameState._emergencyBarrierMode = false;  // Clear Emergency Barrier placement flag
   gameState._slipstreamActive = false;      // Clear Slipstream wall-ignore flag
+  gameState._slipstreamCard = false;        // Clear Slipstream orthogonal-move flag
+  gameState._trapperStrideFrom = null;      // Clear Trapper's Stride tracking
   gameState._wallRide = false;              // Clear Wall Ride flag
   gameState._grappleState = null;           // Clear Grapple Hook state
   gameState._shortcutTargets = null;          // Clear Shortcut targets
@@ -6590,7 +6644,8 @@ function selectCard(cardId, idx) {
   const _dvB=(gameState.players[pi].statusEffects||[]).some(e=>e.type==='deja_vu'&&e.turnsRemaining>0)?1:0;
   const maxCards=((champId==='magnus')?2:rule.cardPlays)+_dvB;
   // Instant cards bypass the card-budget check — they are always free to play
-  const isInstantCard = !!(card && card.instant);
+  // Also includes _instantOnce from Infinite Recursion (CH11)
+  const isInstantCard = !!(card && (card.instant || card._instantOnce));
   if (!isInstantCard && cardsPlayedThisTurn >= maxCards) {
     showStatus('Card budget for this turn used up', 'error'); return;
   }
@@ -7334,10 +7389,10 @@ function applyMovementCard(pi, card, idx) {
       const adj2 = {row: myPos.row, col: myPos.col+d.c};
       const e1 = isEdgeBlocked(myPos, adj1, blocked);
       const e2 = isEdgeBlocked(myPos, adj2, blocked);
-      // Normal diagonal: blocked if both edges are blocked (fully walled corner)
-      // Shortcut special: can slip through even if both edges are blocked (wall crack)
-      // Only blocked if the diagonal itself is physically impossible (out of bounds handled above)
-      // Shortcut allows passage through wall cracks — always allow diagonal
+      // Shortcut: move through GAPS between two walls (both edges blocked = gap between endpoints)
+      // Block if exactly one edge is blocked (single wall cuts across diagonal)
+      // Allow if neither blocked (open space) or both blocked (gap between two wall ends)
+      if (e1 !== e2) continue; // exactly one wall = blocked
       targets.push(nb);
     }
     if (targets.length === 0) {
@@ -7423,7 +7478,9 @@ function applyMovementCard(pi, card, idx) {
   }
 
   // PF12 Slipstream: flag for post-move bonus-move check (no wall phasing)
-  if (card.id === 'PF12') gameState._slipstreamActive = true;
+  if (card.id === 'PF12') { gameState._slipstreamActive = true; gameState._slipstreamCard = true; }
+  // TR5 Trapper's Stride: record starting position for auto-trap placement after move
+  if (card.id === 'TR5') { gameState._trapperStrideFrom = gameState.players[pi].position; }
 
   // Mark the card play as consumed immediately on activation (countCardPlayed increments
   // cardsPlayedThisTurn so cancellation can decrement it back symmetrically).
@@ -7469,11 +7526,12 @@ function grappleFireDir(dir) {
       bindOpp = true;
       break;
     }
-    const hasPerpWall = gameState.walls.some(w => {
-      if (w.isPhantom||w.owner!==opp||w.orientation!==perpOrient) return false;
+    // Grapple Hook catches on ANY wall face (edge) adjacent to the scanned tile
+    const hasWallFace = gameState.walls.some(w => {
+      if (w.isPhantom||w.owner!==opp) return false;
       return wallEdges(w).some(e => (e.a.row===r&&e.a.col===c)||(e.b.row===r&&e.b.col===c));
     });
-    if (hasPerpWall) { target={row:r,col:c}; break; }
+    if (hasWallFace) { target={row:r,col:c}; break; }
   }
 
   if (!target) {
