@@ -2458,7 +2458,7 @@ const CARDS = {
          desc:'Gain +1 move and may jump over the opponent even if not adjacent.', overrideSpeed:2 },
   PF3: { id:'PF3', name:'Shortcut',     faction:'Pathfinders', rarity:'Uncommon', type:'Movement',
          desc:'Move 1 space diagonally. May slip through the crack between two adjacent walls.', overrideSpeed:1, special:'shortcut' },
-  PF4: { id:'PF4', name:'Eternal Path', faction:'Pathfinders', rarity:'Uncommon',     type:'Movement',
+  PF4: { id:'PF4', name:'Eternal Path', faction:'Pathfinders', rarity:'Rare',     type:'Movement',
          desc:'Move up to 4 spaces this turn.', overrideSpeed:4 },
   PF5: { id:'PF5', name:'Wall Vault',   faction:'Pathfinders', rarity:'Rare',     type:'Movement',
          desc:'Move up to 2 spaces. May pass through one non-reinforced wall.', overrideSpeed:2, tunnelThrough:true, special:'wallVault' },
@@ -2470,8 +2470,8 @@ const CARDS = {
          desc:'Choose a cardinal direction. Fire up to 4 spaces; land beside a perpendicular opponent wall, or one tile before an opponent (Binding them for 1 turn). Consumes your movement for the turn.', special:'grappleHook' },
   PF11:{ id:'PF11',name:'Pathfinder\'s Instinct', faction:'Pathfinders', rarity:'Common', type:'Disruption',
          desc:'Reveal top 2 cards of your deck. Add all Movement cards to hand; non-Movement cards go to the bottom.' },
-  PF12:{ id:'PF12',name:'Slipstream',     faction:'Pathfinders', rarity:'Common',   type:'Movement',
-         desc:'Move 1 space in any direction (including diagonal). +1 bonus move if you land adjacent to an opponent wall.', overrideSpeed:1, diagonal:true, special:'slipstream' },
+  PF12:{ id:'PF12',name:'Slipstream',     faction:'Pathfinders', rarity:'Rare',   type:'Movement',
+         desc:'Move 1 space in any direction (including diagonal). Restores your normal movement if you land adjacent to an opponent wall.', overrideSpeed:1, diagonal:true, special:'slipstream' },
   PF13:{ id:'PF13',name:'Wall Ride',       faction:'Pathfinders', rarity:'Rare',     type:'Movement',
          desc:'Move up to 2 spaces. If you do not land adjacent to an opponent wall, you are Exhausted — skip your next movement.', overrideSpeed:2, special:'wallRide' },
   PF14:{ id:'PF14',name:'Trailblazer\'s Mark', faction:'Pathfinders', rarity:'Uncommon', type:'Disruption', instant:true,
@@ -3453,8 +3453,10 @@ function executeMove(to) {
       return oppBlocked.has(edgeKey(to, nb));
     });
     if (adjOppWall) {
-      addLog(pi, 'card', 'Slipstream: landed adjacent to opponent wall — bonus move!');
-      grantBonusMove(pi);
+      hasMoved = false; // Restore the player's normal movement
+      addLog(pi, 'card', 'Slipstream: landed adjacent to opponent wall — movement restored!');
+      renderAll();
+      showStatus('Slipstream: movement restored! Click MOVE to take your normal move.', 'active');
     }
   }
 
@@ -3772,9 +3774,14 @@ function executeForceMove(targetPi, direction, maxSpaces, opts = {}) {
     spacesMoved++;
   }
 
-  // Apply final position
+  // Apply final position and check for traps
   if (spacesMoved > 0) {
     gameState.players[targetPi] = { ...gameState.players[targetPi], position: pos };
+    // Forced movement triggers traps at the landing tile
+    if (typeof getTrapAtTile === 'function') {
+      const trap = getTrapAtTile(pos, targetPi);
+      if (trap) triggerTrap(trap, targetPi);
+    }
   }
 
   return { spacesMoved, finalPos: pos, stoppedBy };
@@ -3987,6 +3994,9 @@ function triggerTrap(trap, targetPi) {
 
   // Visual trigger animation (brief flash at tile)
   showTrapTriggerAnimation(trap.tile);
+  // Show prominent UI notification
+  const _trapNames = {snare:'SNARE TRAP',pit:'PIT TRAP',root:'TANGLEROOT',spring:'SPRING TRAP',mine:'PROXIMITY MINE'};
+  showTrapNotification(_trapNames[trap.type] || 'TRAP', trap.type);
 
   let effect = '';
 
@@ -4088,6 +4098,21 @@ function tickTraps(currentPi) {
 }
 
 // Show a brief trigger animation at a tile
+function showTrapNotification(name, type) {
+  document.getElementById('trap-notification')?.remove();
+  const colors = {snare:'#e74c3c',pit:'#9b59b6',root:'#27ae60',spring:'#f39c12',mine:'#e67e22'};
+  const msgs = {snare:'Movement stopped!',pit:'Card play lost!',root:'Rooted next turn!',spring:'Launched away!',mine:'Wall damaged!'};
+  const el = document.createElement('div');
+  el.id = 'trap-notification';
+  el.style.cssText = `position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:500;
+    padding:24px 48px;text-align:center;background:rgba(0,0,0,0.92);border:2px solid ${colors[type]||'#e74c3c'};
+    font-family:'Teko',sans-serif;pointer-events:none;`;
+  el.innerHTML = `<div style="font-size:28px;letter-spacing:.3em;color:${colors[type]||'#e74c3c'};">⚠ ${name} ⚠</div>
+    <div style="font-size:14px;color:var(--text-dim);letter-spacing:.15em;">${msgs[type]||'Trap triggered!'}</div>`;
+  document.body.appendChild(el);
+  setTimeout(() => el.parentNode && el.remove(), 2000);
+}
+
 function showTrapTriggerAnimation(tile) {
   const grid = document.getElementById('board-grid');
   if (!grid) return;
@@ -4601,9 +4626,14 @@ function resolveTurnStartEffects(pi) {
 
 function discardCard(pi, idx) {
   const p = gameState.players[pi];
-  if (idx < 0 || idx >= p.hand.length) return null; // guard invalid index
-  const card = p.hand[idx];
+  if (idx < 0 || idx >= p.hand.length) return null;
+  let card = p.hand[idx];
   if (!card) return null;
+  // Strip _instantOnce so it doesn't persist if card returns to hand
+  if (card._instantOnce) {
+    const {_instantOnce, ...clean} = card;
+    card = clean;
+  }
   gameState.players[pi] = {
     ...p,
     hand: p.hand.filter((_,i) => i!==idx),
@@ -6393,18 +6423,39 @@ function handleWallClick(anchor, orientation, length, isPhantom, isDurable) {
       t.row >= 0 && t.row < BOARD_SIZE && t.col >= 0 && t.col < BOARD_SIZE &&
       !(t.row === oppPos.row && t.col === oppPos.col)
     );
-    // Auto-move the player behind the barrier (random adjacent tile)
+    // Auto-move the player to the wall-adjacent tile closest to their current position
+    // Must be reachable without crossing any walls
     const myPosNow = gameState.players[pi].position;
+    const allBlocked = buildBlockedEdges(gameState.walls, pi);
+    // BFS from current position to find reachable tiles
+    const bfsVisited = new Set([`${myPosNow.row},${myPosNow.col}`]);
+    let bfsFrontier = [myPosNow];
+    for (let s = 0; s < BOARD_SIZE * 2; s++) {
+      const next = [];
+      for (const cur of bfsFrontier) {
+        for (const d of [{r:-1,c:0},{r:1,c:0},{r:0,c:-1},{r:0,c:1}]) {
+          const nb = {row:cur.row+d.r, col:cur.col+d.c};
+          const k = `${nb.row},${nb.col}`;
+          if (bfsVisited.has(k)||nb.row<0||nb.row>=BOARD_SIZE||nb.col<0||nb.col>=BOARD_SIZE) continue;
+          if (isEdgeBlocked(cur, nb, allBlocked)) continue;
+          bfsVisited.add(k); next.push(nb);
+        }
+      }
+      if (!next.length) break;
+      bfsFrontier = next;
+    }
     const reachableEB = bonusTargets.filter(t =>
-      !(t.row === myPosNow.row && t.col === myPosNow.col)
+      !(t.row === myPosNow.row && t.col === myPosNow.col) && bfsVisited.has(`${t.row},${t.col}`)
+    ).sort((a, b) =>
+      (Math.abs(a.row-myPosNow.row)+Math.abs(a.col-myPosNow.col)) -
+      (Math.abs(b.row-myPosNow.row)+Math.abs(b.col-myPosNow.col))
     );
     if (reachableEB.length > 0) {
-      const pick = reachableEB[Math.floor(Math.random() * reachableEB.length)];
-      gameState.players[pi] = {...gameState.players[pi], position: pick};
+      gameState.players[pi] = {...gameState.players[pi], position: reachableEB[0]};
       hasMoved = true;
       addLog(pi, 'card', `Emergency Barrier: took cover behind wall`);
     } else {
-      addLog(pi, 'card', 'Emergency Barrier: no adjacent tiles available');
+      addLog(pi, 'card', 'Emergency Barrier: no reachable tiles behind wall');
     }
   }
 
@@ -7168,11 +7219,12 @@ function onWallPlaced(pi, fromCardId, _wasDelayedCard) {
   gameState._cornerSecond = false;
   gameState._cornerFirstWall = null;
 
-  // PH12 Nightmare Maze: after placing the phantom wall, convert ALL existing phantoms to real
+  // PH12 Nightmare Maze: convert all EXISTING phantoms to real (exclude the one just placed)
   if (fromCardId === 'PH12') {
+    const justPlacedId = gameState.walls[gameState.walls.length - 1]?.id;
     let converted = 0;
     gameState.walls = gameState.walls.map(w => {
-      if (w.isPhantom && w.owner === pi) {
+      if (w.isPhantom && w.owner === pi && w.id !== justPlacedId) {
         converted++;
         return {...w, isPhantom: false, permanent: true, reinforced: false};
       }
@@ -7788,8 +7840,8 @@ async function applyDisruptionCard(pi, card, idx) {
   if (card.id === 'B14') {
     const breakable = gameState.walls.filter(w => !w.isPhantom);
     if (!breakable.length) { showStatus('No walls on the board', 'error'); return; }
-    discardCard(pi, idx); countCardPlayed(pi);
     if (!isHumanSeat(pi)) {
+      discardCard(pi, idx); countCardPlayed(pi); selectedCard = null;
       // AI: remove the wall that most blocks the AI's path
       const aiPos = gameState.players[pi].position;
       let bestTarget = null, bestGain = -Infinity;
@@ -7811,11 +7863,13 @@ async function applyDisruptionCard(pi, card, idx) {
       if (isTurnDone()) gameState.phase = 'end_turn';
       renderAll(); return;
     }
-    selectedCard = { id: 'B14', idx: -1 };
-    uiMode = 'wallPunch'; // reuse punch mode but allow reinforced
-    gameState._deadlockBreaker = true; // flag to override reinforced check
+    // Human: defer discard — card is cancellable until a wall is picked
+    gameState._punchCardIdx = idx;
+    selectedCard = { id: 'B14', idx };
+    uiMode = 'wallPunch';
+    gameState._deadlockBreaker = true;
     renderAll();
-    showStatus('Deadlock Breaker — click any wall to destroy it', 'active');
+    showStatus('Deadlock Breaker — click any wall to destroy it (click card to cancel)', 'active');
     return;
   }
 
@@ -9759,7 +9813,7 @@ function renderWalls() {
     // Eviction (WD3) can target any non-reinforced opponent wall, including phantoms & binding walls
     const isRedirect    = uiMode === 'wallRedirect'  && wall.owner === (1-_activePi) && !wall.reinforced && !wall.immune;
     const isSealable    = uiMode === 'wallSeal'      && wall.owner === _activePi && !wall.isPhantom && !wall.permanent;
-    const isPunchable   = uiMode === 'wallPunch'     && !wall.isPhantom && !wall.permanent && !wall.reinforced && !wall.immune;
+    const isPunchable   = uiMode === 'wallPunch'     && !wall.isPhantom && (gameState._deadlockBreaker || (!wall.permanent && !wall.reinforced && !wall.immune));
     const isReinforceable = uiMode === 'wallReinforce' && wall.owner === gameState.activePlayer && !wall.isPhantom && !wall.reinforced;
     const isReconstructable = uiMode === 'wallReconstruct' && wall.owner === gameState.activePlayer && !wall.isPhantom;
     const isRepossessable   = uiMode === 'wallRepossess'   && wall.owner !== gameState.activePlayer && !wall.isPhantom && !wall.reinforced && !wall.immune;
@@ -10037,10 +10091,12 @@ function pickTileForPunch(wall, tileIndex) {
 
   discardCard(pi, cardIdx);
   gameState._punchCardIdx = null;
+  gameState._deadlockBreaker = false;
   selectedCard = null;
   countCardPlayed(pi);
   uiMode = 'idle';
   if (isTurnDone()) gameState.phase = 'end_turn';
+  if (gameMode === 'mp') mpPushState();
   renderAll();
 }
 
