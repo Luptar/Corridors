@@ -2419,9 +2419,9 @@ const CARDS = {
   B09:{ id:'B09', name:'Brace',            faction:'Basic', rarity:'Rare',     type:'Disruption',
         desc:'Your walls cannot be moved or destroyed by the opponent until start of your next turn.' },
   B10:{ id:'B10', name:'Flanking Path',    faction:'Basic', rarity:'Uncommon', type:'Movement',
-        desc:'Move up to 3 spaces laterally only (left/right). Ignores walls on lateral moves.', overrideSpeed:3, special:'flanking' },
+        desc:'Move up to 3 spaces laterally only (left/right). Walls block movement.', overrideSpeed:3, special:'flanking' },
   B11:{ id:'B11', name:'Emergency Barrier', faction:'Basic', rarity:'Uncommon', type:'Wall',
-        desc:'Place a 2-tile wall within 1 tile of your champion. Then move 1 tile adjacent to the wall.', wallLen:2, special:'emergencyBarrier' },
+        desc:'Place a 2-tile wall within 2 tiles of your champion. Automatically take cover behind the barrier.', wallLen:2, special:'emergencyBarrier' },
   B12:{ id:'B12', name:'Scavenge',         faction:'Basic', rarity:'Uncommon', type:'Disruption',
         desc:'Look at the top 3 cards of your deck. Keep 1, put the other 2 on the bottom.' },
   B13:{ id:'B13', name:'Desperation Sprint', faction:'Basic', rarity:'Rare',   type:'Movement',
@@ -2467,7 +2467,7 @@ const CARDS = {
   PF8: { id:'PF8', name:'Vaulting Strike', faction:'Pathfinders', rarity:'Uncommon', type:'Movement',
          desc:'Move 1 space. May pass through non-reinforced walls. If you cross an opponent wall, you may shrink it by 1 tile. Cannot cross reinforced walls.', overrideSpeed:1, tunnelThrough:true, special:'vaultStrike' },
   PF10:{ id:'PF10',name:'Grapple Hook',   faction:'Pathfinders', rarity:'Rare',     type:'Movement',
-         desc:'Choose a cardinal direction. Fire up to 4 spaces; land beside a perpendicular opponent wall, or one tile before an opponent (Binding them for 1 turn). Consumes your movement for the turn. Cancellable before confirming.', special:'grappleHook' },
+         desc:'Choose a cardinal direction. Fire up to 4 spaces; land beside a perpendicular opponent wall, or one tile before an opponent (Binding them for 1 turn). Consumes your movement for the turn.', special:'grappleHook' },
   PF11:{ id:'PF11',name:'Pathfinder\'s Instinct', faction:'Pathfinders', rarity:'Common', type:'Disruption',
          desc:'Reveal top 2 cards of your deck. Add all Movement cards to hand; non-Movement cards go to the bottom.' },
   PF12:{ id:'PF12',name:'Slipstream',     faction:'Pathfinders', rarity:'Common',   type:'Movement',
@@ -2523,7 +2523,7 @@ const CARDS = {
   PH8: { id:'PH8', name:'Phase Walk',     faction:'Phantoms', rarity:'Uncommon', type:'Movement',
          desc:'Move up to 2 spaces. Phantom walls don\'t block you and aren\'t removed.', overrideSpeed:2, special:'phaseWalk' },
   PH9: { id:'PH9', name:'Haunting Presence', faction:'Phantoms', rarity:'Uncommon', type:'Disruption',
-         desc:'Place invisible haunt on a tile. For 1 turn, opponent stepping through it stops.' },
+         desc:'Place invisible haunt on a random tile adjacent to the opponent. Stepping on it stops movement. Lasts 2 turns.' },
   PH10:{ id:'PH10',name:'Doppelganger Wall', faction:'Phantoms', rarity:'Common',   type:'Wall',
          desc:'Place 2 phantom walls. One costs a slot, one is free. Both appear real.', wallLen:2, phantom:true, special:'doppelganger' },
   PH12:{ id:'PH12',name:'Nightmare Maze', faction:'Phantoms', rarity:'Rare',     type:'Wall',
@@ -2843,7 +2843,8 @@ function getLegalMoves(state, pIdx, overrideSpeed, tunnelThrough, diagonal, ownW
           const k = key(nb);
           if (visited.has(k)) continue;
           if (k === key(opPos)) continue;
-          // Flanking Path ignores walls on lateral moves
+          // Flanking Path respects walls on lateral moves
+          if (isEdgeBlocked(cur, nb, blocked)) continue;
           visited.add(k);
           nextFrontier.push(nb);
           reachable.push(nb);
@@ -2993,10 +2994,12 @@ function wallsConflict(a, b) {
 
 function isWallLegal(anchor, orientation, length, walls, p0pos, p1pos, isPhantom=false) {
   if (!wallInBounds(anchor, orientation, length)) return false;
-  // Can't overlap with existing real walls
+  // Can't overlap with existing walls (real OR phantom — treating phantoms as occupied
+  // prevents the opponent from deducing which walls are phantom by seeing valid placements)
   const proposed = {id:'__test__',owner:0,anchor,orientation,length,isPhantom:false,durable:false,durableHits:0,immune:false,reinforced:false,temporary:false,turnsRemaining:null,placedOnTurn:0};
   for (const w of walls) {
-    if (!w.isPhantom && wallsConflict(proposed, w)) return false;
+    const wForCheck = w.isPhantom ? {...w, isPhantom: false} : w;
+    if (wallsConflict(proposed, wForCheck)) return false;
   }
   if (isPhantom) {
     // Phantom walls: must not cut off EITHER player's path (same rule as real walls).
@@ -3177,9 +3180,13 @@ function executeMove(to) {
     showStatus('Breach complete!', 'success');
     return;
   }
-  // Shortcut: direct diagonal move (already discarded/counted)
+  // Shortcut: diagonal move — discard and count now that tile is confirmed
   if (gameState._shortcutTargets) {
     gameState._shortcutTargets = null;
+    if (selectedCard && selectedCard._shortcutCardIdx >= 0) {
+      discardCard(pi, selectedCard._shortcutCardIdx);
+      countCardPlayed(pi);
+    }
     gameState.players[pi] = {...gameState.players[pi], position: to};
     hasMoved = true;
     selectedCard = null;
@@ -3426,18 +3433,18 @@ function executeMove(to) {
   }
 
   // PF12 Slipstream: check if landing adjacent to any opponent-owned wall → bonus move
-  // A wall edge runs between two tiles (e.a and e.b). If either equals the destination,
-  // the wall touches that tile's border — the player is adjacent to the wall.
+  // Check if any border edge of the destination tile is blocked by an opponent wall.
   if (gameState._slipstreamActive) {
     gameState._slipstreamActive = false;
     gameState._slipstreamCard = false;
     const opp = 1 - pi;
-    const adjOppWall = gameState.walls.some(w => {
-      if (w.isPhantom || w.owner !== opp) return false;
-      return wallEdges(w).some(e =>
-        (e.a.row === to.row && e.a.col === to.col) ||
-        (e.b.row === to.row && e.b.col === to.col)
-      );
+    const oppWalls = gameState.walls.filter(w => !w.isPhantom && w.owner === opp);
+    const oppBlocked = buildBlockedEdges(oppWalls, undefined);
+    const cardDirs = [{r:-1,c:0},{r:1,c:0},{r:0,c:-1},{r:0,c:1}];
+    const adjOppWall = cardDirs.some(d => {
+      const nb = {row: to.row+d.r, col: to.col+d.c};
+      if (nb.row<0||nb.row>=BOARD_SIZE||nb.col<0||nb.col>=BOARD_SIZE) return false;
+      return oppBlocked.has(edgeKey(to, nb));
     });
     if (adjOppWall) {
       addLog(pi, 'card', 'Slipstream: landed adjacent to opponent wall — bonus move!');
@@ -4511,15 +4518,21 @@ function resolveTurnStartEffects(pi) {
     const tm = gameState._temporalMaze[pi];
     if (tm.turnsRemaining > 0) {
       if (isHumanSeat(pi)) {
-        // Human: enter wall placement mode for a free 1-tile temporary wall
-        gameState._temporalMazePending = true;
-        selectedCard = { id: 'CH10', idx: -1, length: 1, isPhantom: false, isDurable: false,
-                         _temporalMazeWall: true };
-        uiMode = 'wall';
-        renderAll();
-        showStatus(`Temporal Maze (${tm.turnsRemaining} left) — place a free 1-tile wall anywhere`, 'active');
-        // Don't decrement yet — will be decremented in onWallPlaced when the wall is placed
-        return; // pause further resolution until wall is placed
+        if (gameMode === 'mp') {
+          // MP: flag it so a clickable prompt appears — player activates when ready
+          gameState._temporalMazeReady = pi;
+          // Don't block turn — player clicks "Use Temporal Maze" in the action bar
+        } else {
+          // SP: enter wall placement mode for a free 1-tile temporary wall
+          gameState._temporalMazePending = true;
+          selectedCard = { id: 'CH10', idx: -1, length: 1, isPhantom: false, isDurable: false,
+                           _temporalMazeWall: true };
+          uiMode = 'wall';
+          renderAll();
+          showStatus(`Temporal Maze (${tm.turnsRemaining} left) — place a free 1-tile wall anywhere`, 'active');
+          // Don't decrement yet — will be decremented in onWallPlaced when the wall is placed
+          return; // pause further resolution until wall is placed
+        }
       } else {
         // AI: auto-place near opponent
         const opp = 1 - pi;
@@ -6358,12 +6371,18 @@ function handleWallClick(anchor, orientation, length, isPhantom, isDurable) {
       t.row >= 0 && t.row < BOARD_SIZE && t.col >= 0 && t.col < BOARD_SIZE &&
       !(t.row === oppPos.row && t.col === oppPos.col)
     );
-    if (bonusTargets.length > 0) {
-      gameState._emergencyBarrierBonusTargets = bonusTargets;
-      hasMoved = false;
-      addLog(pi, 'card', 'Emergency Barrier: take cover! Move to a tile adjacent to the wall.');
+    // Auto-move the player behind the barrier (random adjacent tile)
+    const myPosNow = gameState.players[pi].position;
+    const reachableEB = bonusTargets.filter(t =>
+      !(t.row === myPosNow.row && t.col === myPosNow.col)
+    );
+    if (reachableEB.length > 0) {
+      const pick = reachableEB[Math.floor(Math.random() * reachableEB.length)];
+      gameState.players[pi] = {...gameState.players[pi], position: pick};
+      hasMoved = true;
+      addLog(pi, 'card', `Emergency Barrier: took cover behind wall`);
     } else {
-      addLog(pi, 'card', 'Emergency Barrier: no adjacent tiles available for bonus move');
+      addLog(pi, 'card', 'Emergency Barrier: no adjacent tiles available');
     }
   }
 
@@ -6484,6 +6503,7 @@ function resetTurnState() {
   gameState._slipstreamActive = false;      // Clear Slipstream wall-ignore flag
   gameState._slipstreamCard = false;        // Clear Slipstream orthogonal-move flag
   gameState._trapperStrideFrom = null;      // Clear Trapper's Stride tracking
+  gameState._temporalMazeReady = null;      // Clear Temporal Maze MP clickable flag
   gameState._wallRide = false;              // Clear Wall Ride flag
   gameState._grappleState = null;           // Clear Grapple Hook state
   gameState._shortcutTargets = null;          // Clear Shortcut targets
@@ -7016,6 +7036,7 @@ function onWallPlaced(pi, fromCardId, _wasDelayedCard) {
     uiMode = 'idle'; selectedCard = null;
     // Continue with the normal draw/action phase
     gameState.phase = 'action';
+    if (gameMode === 'mp') mpPushState();
     renderAll(); updateActionBar();
     showStatus('Temporal Maze wall placed — now take your turn', 'success');
     return;
@@ -7373,7 +7394,7 @@ function applyMovementCard(pi, card, idx) {
   let speed = card.overrideSpeed !== undefined ? card.overrideSpeed : 1;
 
 
-  // PF3 Shortcut: 1 diagonal step, can slip through wall-corner cracks
+  // PF3 Shortcut: diagonal step through wall gaps
   if (card.special === 'shortcut') {
     const myPos = gameState.players[pi].position;
     const oppPos = gameState.players[1-pi].position;
@@ -7384,28 +7405,31 @@ function applyMovementCard(pi, card, idx) {
       const nb = {row: myPos.row+d.r, col: myPos.col+d.c};
       if (nb.row < 0 || nb.row >= BOARD_SIZE || nb.col < 0 || nb.col >= BOARD_SIZE) continue;
       if (nb.row === oppPos.row && nb.col === oppPos.col) continue;
-      // Check the two orthogonal edges that form this diagonal's corner
-      const adj1 = {row: myPos.row+d.r, col: myPos.col};
-      const adj2 = {row: myPos.row, col: myPos.col+d.c};
-      const e1 = isEdgeBlocked(myPos, adj1, blocked);
-      const e2 = isEdgeBlocked(myPos, adj2, blocked);
-      // Shortcut: move through GAPS between two walls (both edges blocked = gap between endpoints)
-      // Block if exactly one edge is blocked (single wall cuts across diagonal)
-      // Allow if neither blocked (open space) or both blocked (gap between two wall ends)
-      if (e1 !== e2) continue; // exactly one wall = blocked
-      targets.push(nb);
+      // Check all 4 edges at the diagonal corner:
+      // A=myPos, B=(r+dr,c), C=(r,c+dc), D=nb
+      const cellB = {row: myPos.row+d.r, col: myPos.col};
+      const cellC = {row: myPos.row, col: myPos.col+d.c};
+      const eAB = isEdgeBlocked(myPos, cellB, blocked);
+      const eAC = isEdgeBlocked(myPos, cellC, blocked);
+      const eBD = isEdgeBlocked(cellB, nb, blocked);
+      const eCD = isEdgeBlocked(cellC, nb, blocked);
+      const bc = [eAB, eAC, eBD, eCD].filter(Boolean).length;
+      if (bc === 0) { targets.push(nb); continue; } // open space
+      if (bc === 1) continue; // single wall blocks
+      if (bc >= 3) continue; // sealed
+      // 2 blocked: gap only if walls share an intermediate cell (B or C side)
+      if ((eAB && eBD) || (eAC && eCD)) { targets.push(nb); continue; }
+      continue; // L-shape or parallel = blocked
     }
     if (targets.length === 0) {
       showStatus('Shortcut: no diagonal moves available', 'error'); return;
     }
-    discardCard(pi, idx);
-    countCardPlayed(pi);
-    selectedCard = { id: card.id, idx: -1, overrideSpeed: 1, diagonal: true, _pendingMove: true, _shortcutTargets: targets };
-    // Enter move mode with restricted targets
+    // Defer discard — card consumed only when tile is picked
+    selectedCard = { id: card.id, idx, overrideSpeed: 1, diagonal: true, _pendingMove: true, _shortcutTargets: targets, _shortcutCardIdx: idx };
     gameState._shortcutTargets = targets;
     uiMode = 'move';
     renderAll();
-    showStatus('Shortcut — click a diagonal tile to move (slips through wall cracks)', 'active');
+    showStatus('Shortcut — click a diagonal tile to move through wall gaps', 'active');
     return;
   }
 
@@ -7959,8 +7983,9 @@ async function applyDisruptionCard(pi, card, idx) {
     } else {
       addLog(pi, 'card', "Trailblazer's Mark: no valid tiles nearby");
     }
-    discardCard(pi, idx); selectedCard = null; countCardPlayed(pi);
+    discardCard(pi, idx); countCardPlayed(pi); selectedCard = null;
     if (isTurnDone()) gameState.phase = 'end_turn';
+    if (gameMode === 'mp') mpPushState();
     renderAll(); showStatus("Trailblazer's Mark placed! Reach it within 2 turns for a bonus move.", 'success'); return;
   }
 
@@ -8102,20 +8127,24 @@ async function applyDisruptionCard(pi, card, idx) {
     renderAll(); showStatus('Martial Law enacted!', 'success'); return;
   }
 
-  // ── PH9: Haunting Presence — place invisible haunt on a tile ──
+  // ── PH9: Haunting Presence — place invisible haunt randomly adjacent to opponent ──
   if (card.id === 'PH9') {
-    // Place haunt trap that stops movement for 1 turn
     const oppPos = gameState.players[opp].position;
-    const goalRow = opp === 0 ? 0 : BOARD_SIZE - 1;
-    // Place between opponent and their goal
-    const dir = goalRow < oppPos.row ? -1 : 1;
-    const tile = {row: oppPos.row + dir, col: oppPos.col};
-    if (tile.row >= 0 && tile.row < BOARD_SIZE) {
-      placeTrap(pi, tile, 'snare', 1);
-      addLog(pi, 'card', `Haunting Presence: haunt placed at (${tile.row},${tile.col})`);
+    const myPos = gameState.players[pi].position;
+    const dirs = [{r:-1,c:0},{r:1,c:0},{r:0,c:-1},{r:0,c:1}];
+    const candidates = dirs.map(d => ({row: oppPos.row+d.r, col: oppPos.col+d.c}))
+      .filter(t => t.row >= 0 && t.row < BOARD_SIZE && t.col >= 0 && t.col < BOARD_SIZE
+        && !(t.row === myPos.row && t.col === myPos.col));
+    if (candidates.length) {
+      const tile = candidates[Math.floor(Math.random() * candidates.length)];
+      placeTrap(pi, tile, 'snare', 2);
+      addLog(pi, 'card', `Haunting Presence: haunt placed adjacent to opponent`);
+    } else {
+      addLog(pi, 'card', 'Haunting Presence: no valid tiles near opponent');
     }
-    discardCard(pi, idx); selectedCard = null; countCardPlayed(pi);
+    discardCard(pi, idx); countCardPlayed(pi); selectedCard = null;
     if (isTurnDone()) gameState.phase = 'end_turn';
+    if (gameMode === 'mp') mpPushState();
     renderAll(); showStatus('Haunting Presence: haunt placed!', 'success'); return;
   }
 
@@ -8536,7 +8565,6 @@ async function applyDisruptionCard(pi, card, idx) {
 
   // ── CH13: Revert — return the LAST wall placed (by anyone) to its owner's hand ──
   if (card.id === 'CH13') {
-    // Find the most recently placed wall on the board (any owner)
     const sorted = [...gameState.walls]
       .filter(w => !w.isPhantom)
       .sort((a, b) => b.placedOnTurn - a.placedOnTurn);
@@ -8544,15 +8572,28 @@ async function applyDisruptionCard(pi, card, idx) {
     if (!target) { showStatus('No walls on the board to revert', 'error'); return; }
     const wallOwner = target.owner;
     gameState.walls = gameState.walls.filter(w => w.id !== target.id);
-    // Return the wall to its OWNER's hand as a Basic Barrier (if there's room)
+    // In MP, if wall belongs to opponent, fetch their actual hand from Supabase first
+    if (gameMode === 'mp' && wallOwner !== pi) {
+      const sb = mpInit();
+      if (sb) {
+        const oppHandKey = wallOwner === 0 ? 'host_hand' : 'guest_hand';
+        const { data: g } = await sb.from('mp_games').select(oppHandKey).eq('id', mp_gameId).single();
+        if (g) {
+          gameState.players[wallOwner] = {...gameState.players[wallOwner],
+            hand: JSON.parse(g[oppHandKey] || '[]')};
+        }
+      }
+    }
     const ownerState = gameState.players[wallOwner];
     gameState.players[wallOwner] = {...ownerState,
       wallsInPlay: Math.max(0, ownerState.wallsInPlay - 1),
       hand: [...ownerState.hand, {...CARDS['BB']}].slice(0, ownerState.champion.handSize)};
+    if (gameMode === 'mp' && wallOwner !== pi) gameState._mpOppHandDirty = true;
     const whose = wallOwner === pi ? 'your' : "opponent's";
     addLog(pi, 'card', `Revert: returned ${whose} wall to ${wallOwner === pi ? 'your' : "opponent's"} hand as Basic Barrier`);
-    discardCard(pi, idx); selectedCard = null; countCardPlayed(pi);
+    discardCard(pi, idx); countCardPlayed(pi); selectedCard = null;
     if (isTurnDone()) gameState.phase = 'end_turn';
+    if (gameMode === 'mp') mpPushState();
     renderAll(); showStatus(`Revert: ${whose} wall undone!`, 'success'); return;
   }
 
@@ -9200,6 +9241,20 @@ function updateUltimateButton(pi) {
   btn.textContent = p.ultimateUsed ? '⚡ RECHARGING...' : ready ? '⚡ ACTIVATE ULTIMATE' : '⚡ CHARGING...';
 }
 
+// ── Temporal Maze: activate wall placement (MP clickable) ──────────
+function activateTemporalMaze() {
+  const pi = gameState.activePlayer;
+  if (gameState._temporalMazeReady !== pi) return;
+  gameState._temporalMazeReady = null;
+  gameState._temporalMazePending = true;
+  selectedCard = { id: 'CH10', idx: -1, length: 1, isPhantom: false, isDurable: false,
+                   _temporalMazeWall: true };
+  uiMode = 'wall';
+  const tm = gameState._temporalMaze?.[pi];
+  renderAll();
+  showStatus(`Temporal Maze (${tm?.turnsRemaining || '?'} left) — place a free 1-tile wall anywhere`, 'active');
+}
+
 function updateActionBar() {
   const phase = gameState.phase;
   const isAction = phase === 'action';
@@ -9227,6 +9282,28 @@ function updateActionBar() {
       btnEnd.disabled = phase==='draw' || phase==='ended' || gameState.activePlayer !== mp_localSeat;
     } else {
       btnEnd.disabled = phase==='draw' || phase==='ended' || aiThinking || !isHuman;
+    }
+  }
+
+  // ── Temporal Maze clickable button (MP only) ──────────────────────
+  const tmBtn = document.getElementById('btn-temporal-maze');
+  if (tmBtn) tmBtn.remove();
+  if (gameState._temporalMazeReady === gameState.activePlayer &&
+      isHumanSeat(gameState.activePlayer) && gameState.phase === 'action' &&
+      gameMode === 'mp') {
+    const tm = gameState._temporalMaze?.[gameState.activePlayer];
+    if (tm && tm.turnsRemaining > 0) {
+      const bar = document.getElementById('action-bar');
+      if (bar) {
+        const btn = document.createElement('button');
+        btn.id = 'btn-temporal-maze';
+        btn.className = 'action-btn';
+        btn.style.cssText = 'color:var(--wall-chro);border-color:var(--wall-chro);font-size:10px;animation:pulse 1.5s infinite;';
+        btn.textContent = `TEMPORAL MAZE (${tm.turnsRemaining})`;
+        btn.title = 'Place a free 1-tile temporary wall';
+        btn.onclick = () => activateTemporalMaze();
+        bar.insertBefore(btn, bar.lastElementChild);
+      }
     }
   }
 
