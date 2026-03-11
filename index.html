@@ -2413,7 +2413,7 @@ const CARDS = {
   B08:{ id:'B08', name:'Fortify',         faction:'Basic', rarity:'Common',   type:'Disruption',
         desc:'Extend one of your non-reinforced walls by 1 tile (direction of choice). Cannot exceed 3 tiles total.', special:'wallFortify' },
   B01:{ id:'B01', name:'Detour',           faction:'Basic', rarity:'Common',   type:'Movement',
-        desc:'Move 1 space diagonally. If blocked, move 1 space orthogonally instead.', overrideSpeed:1, diagonal:true },
+        desc:'Move 1 space in any direction (including diagonal). Walls block movement.', overrideSpeed:1, diagonal:true },
   B04:{ id:'B04', name:'Salvage Parts',    faction:'Basic', rarity:'Common',   type:'Disruption',
         desc:'Remove one of your own walls. Place a 1-tile wall at any legal location.' },
   B09:{ id:'B09', name:'Brace',            faction:'Basic', rarity:'Rare',     type:'Disruption',
@@ -2421,7 +2421,7 @@ const CARDS = {
   B10:{ id:'B10', name:'Flanking Path',    faction:'Basic', rarity:'Uncommon', type:'Movement',
         desc:'Move up to 3 spaces laterally only (left/right). Walls block movement.', overrideSpeed:3, special:'flanking' },
   B11:{ id:'B11', name:'Emergency Barrier', faction:'Basic', rarity:'Uncommon', type:'Wall',
-        desc:'Place a 2-tile wall within 2 tiles of your champion. Automatically take cover behind the barrier.', wallLen:2, special:'emergencyBarrier' },
+        desc:'Place a 2-tile wall within 3 tiles of your champion. Automatically move behind the barrier.', wallLen:2, special:'emergencyBarrier' },
   B12:{ id:'B12', name:'Scavenge',         faction:'Basic', rarity:'Uncommon', type:'Disruption',
         desc:'Look at the top 3 cards of your deck. Keep 1, put the other 2 on the bottom.' },
   B13:{ id:'B13', name:'Desperation Sprint', faction:'Basic', rarity:'Rare',   type:'Movement',
@@ -2522,12 +2522,12 @@ const CARDS = {
          desc:'Force the opponent\'s champion to move up to 3 spaces in directions of your choice. Real walls block individual steps. Phantom Walls do not trigger removal.' },
   PH8: { id:'PH8', name:'Phase Walk',     faction:'Phantoms', rarity:'Uncommon', type:'Movement',
          desc:'Move up to 2 spaces. Phantom walls don\'t block you and aren\'t removed.', overrideSpeed:2, special:'phaseWalk' },
-  PH9: { id:'PH9', name:'Haunting Presence', faction:'Phantoms', rarity:'Uncommon', type:'Disruption',
-         desc:'Place invisible haunt on a random tile adjacent to the opponent. Stepping on it stops movement. Lasts 2 turns.' },
+  PH9: { id:'PH9', name:'Haunting Presence', faction:'Phantoms', rarity:'Uncommon', type:'Disruption', instant:true,
+         desc:'(Instant) Place invisible haunt on a random tile adjacent to the opponent. Stepping on it stops movement. Lasts 2 turns.' },
   PH10:{ id:'PH10',name:'Doppelganger Wall', faction:'Phantoms', rarity:'Common',   type:'Wall',
          desc:'Place 2 phantom walls. One costs a slot, one is free. Both appear real.', wallLen:2, phantom:true, special:'doppelganger' },
   PH12:{ id:'PH12',name:'Nightmare Maze', faction:'Phantoms', rarity:'Rare',     type:'Wall',
-         desc:'Place 1 phantom wall. Convert 1 existing phantom to a real permanent wall.', wallLen:2, phantom:true, special:'nightmareMaze' },
+         desc:'Place 1 phantom wall. All existing phantom walls become real permanent walls.', wallLen:2, phantom:true, special:'nightmareMaze' },
   PH13:{ id:'PH13',name:'Mind Fog',       faction:'Phantoms', rarity:'Rare',     type:'Disruption',
          desc:'For 2 turns, opponent can only see walls in their direct line of sight. Board dimmed.' },
   PH15:{ id:'PH15',name:'Ethereal Plane', faction:'Phantoms', rarity:'Legendary', type:'Movement',
@@ -3313,8 +3313,14 @@ function executeMove(to) {
   // Movement cards don't consume the free move.
   const wasCardMove = !!(selectedCard && selectedCard._pendingMove);
   if (!wasCardMove) {
-    hasMoved = true;
-    consumeBonusMove(pi); // consume bonus move token if this was the bonus move
+    // If a bonus move is active, consume it WITHOUT setting hasMoved.
+    // This lets the player still take their normal move afterward (bonus stacks).
+    if (gameState._bonusMoveActive && gameState._bonusMovePi === pi) {
+      consumeBonusMove(pi);
+      // hasMoved stays false — normal move still available
+    } else {
+      hasMoved = true;
+    }
   }
   uiMode = 'idle';
   selectedCard = null;
@@ -6305,10 +6311,10 @@ function handleWallClick(anchor, orientation, length, isPhantom, isDurable) {
       else wallTiles.push({row: anchor.row + i, col: anchor.col});
     }
     const allClose = wallTiles.every(t =>
-      Math.abs(t.row - myPos.row) + Math.abs(t.col - myPos.col) <= 2
+      Math.abs(t.row - myPos.row) + Math.abs(t.col - myPos.col) <= 3
     );
     if (!allClose) {
-      showStatus('Emergency Barrier: entire wall must be within 2 tiles of your champion', 'error');
+      showStatus('Emergency Barrier: wall must be within 3 tiles of your champion', 'error');
       return;
     }
   }
@@ -6320,8 +6326,24 @@ function handleWallClick(anchor, orientation, length, isPhantom, isDurable) {
   const _wasDelayedWall = !!(selectedCard && selectedCard._delayed);
   const _isEmergencyBarrier = !!(gameState._emergencyBarrierMode);
   if (_isEmergencyBarrier) gameState._emergencyBarrierMode = false; // consume before place
-  if (selectedCard && selectedCard.idx >= 0) discardCard(pi, selectedCard.idx);
-  executePlaceWall(anchor, orientation, length, isPhantom, isDurable, fromCardId);
+  const wallCountBefore = gameState.walls.length;
+  if (selectedCard && selectedCard.idx >= 0) {
+    // Defer discard: save idx, discard AFTER executePlaceWall confirms success
+    const _savedDiscardIdx = selectedCard.idx;
+    selectedCard = {...selectedCard, idx: -1}; // prevent double-discard
+    executePlaceWall(anchor, orientation, length, isPhantom, isDurable, fromCardId);
+    // Only discard if wall was actually placed
+    if (gameState.walls.length > wallCountBefore) {
+      discardCard(pi, _savedDiscardIdx);
+    } else {
+      // Wall placement failed — restore card idx so player can try again
+      selectedCard = selectedCard ? {...selectedCard, idx: _savedDiscardIdx} : null;
+      return; // Don't proceed with post-placement effects
+    }
+  } else {
+    executePlaceWall(anchor, orientation, length, isPhantom, isDurable, fromCardId);
+    if (gameState.walls.length <= wallCountBefore) return; // placement failed
+  }
   // Emergency Barrier: grant restricted bonus move adjacent to the placed wall
   if (_isEmergencyBarrier) {
     // Calculate tiles adjacent to the wall (taking cover behind it)
@@ -6483,6 +6505,11 @@ function isTurnDone() {
   if (gameState._infiniteRecursionActive === pi && p.hand.some(c => c._instantOnce)) {
     return false;
   }
+  // Don't auto-end turn if player has native instant cards in hand (e.g. Rewind Wall, Haunting Presence)
+  // These can be played at any time during the action phase without consuming card budget.
+  if (p.hand.some(c => c.instant || (CARDS[c.id] && CARDS[c.id].instant))) {
+    return false;
+  }
   const _dvT=(p.statusEffects||[]).some(e=>e.type==='deja_vu'&&e.turnsRemaining>0);
   if (p.hand.length === 0) return hasMoved;
   return hasMoved && cardsPlayedThisTurn >= (_dvT?2:1);
@@ -6606,12 +6633,20 @@ function selectCard(cardId, idx) {
     if (selectedCard._evictionPlacing) { showStatus('Eviction committed — place the wall to finish', 'error'); return; }
     if (selectedCard._pendingMove) { cardsPlayedThisTurn = Math.max(0, cardsPlayedThisTurn - 1); hasPlayedCard = cardsPlayedThisTurn > 0; }
     gameState._shrinkCardIdx = null;
+    gameState._emergencyBarrierMode = false;
+    gameState._desperationSprint = false;
+    gameState._slipstreamActive = false;
+    gameState._slipstreamCard = false;
     selectedCard = null; uiMode = 'idle'; renderAll(); showStatus('Card deselected', ''); return;
   }
   // Different card clicked while a movement card is pending: cancel and restore budget.
   if (selectedCard && selectedCard._pendingMove && uiMode === 'move') {
     cardsPlayedThisTurn = Math.max(0, cardsPlayedThisTurn - 1);
     hasPlayedCard = cardsPlayedThisTurn > 0;
+    gameState._desperationSprint = false;
+    gameState._slipstreamActive = false;
+    gameState._slipstreamCard = false;
+    gameState._trapperStrideFrom = null;
     selectedCard = null; uiMode = 'idle';
   }
   // Grapple Hook cancel: clicking a different card or the same card cancels
@@ -6635,6 +6670,7 @@ function selectCard(cardId, idx) {
     gameState._repossessCardIdx = null;
     gameState._shrinkCardIdx = null;
     gameState._evictionInProgress = false;
+    gameState._emergencyBarrierMode = false;
     selectedCard = null; uiMode = 'idle';
   }
 
@@ -6695,7 +6731,7 @@ function selectCard(cardId, idx) {
     if (card.id === 'PH4') {
       showStatus('Veil Lattice: place the Phantom Wall first, then the real wall', 'active');
     } else if (card.id === 'B11') {
-      showStatus('Emergency Barrier — place wall within 2 tiles of your champion', 'active');
+      showStatus('Emergency Barrier — place wall within 3 tiles of your champion', 'active');
     } else {
       showStatus(card.name + ' — click a wall edge to place', 'active');
     }
@@ -7132,6 +7168,21 @@ function onWallPlaced(pi, fromCardId, _wasDelayedCard) {
   gameState._cornerSecond = false;
   gameState._cornerFirstWall = null;
 
+  // PH12 Nightmare Maze: after placing the phantom wall, convert ALL existing phantoms to real
+  if (fromCardId === 'PH12') {
+    let converted = 0;
+    gameState.walls = gameState.walls.map(w => {
+      if (w.isPhantom && w.owner === pi) {
+        converted++;
+        return {...w, isPhantom: false, permanent: true, reinforced: false};
+      }
+      return w;
+    });
+    if (converted > 0) {
+      addLog(pi, 'card', `Nightmare Maze: ${converted} phantom wall(s) became real!`);
+    }
+  }
+
   // AR5 Labyrinth Core: all your walls adjacent to the just-placed wall gain Reinforce
   if (fromCardId === 'AR5') {
     const coreWall = gameState.walls[gameState.walls.length - 1];
@@ -7417,9 +7468,11 @@ function applyMovementCard(pi, card, idx) {
       if (bc === 0) { targets.push(nb); continue; } // open space
       if (bc === 1) continue; // single wall blocks
       if (bc >= 3) continue; // sealed
-      // 2 blocked: gap only if walls share an intermediate cell (B or C side)
-      if ((eAB && eBD) || (eAC && eCD)) { targets.push(nb); continue; }
-      continue; // L-shape or parallel = blocked
+      // 2 blocked: gap if walls are on OPPOSITE sides (cross pattern = gap between them)
+      // eAB+eCD = vertical walls on left and right sides = gap through middle
+      // eAC+eBD = horizontal walls on top and bottom = gap through middle
+      if ((eAB && eCD) || (eAC && eBD)) { targets.push(nb); continue; }
+      continue; // same-side or L-shape = blocked
     }
     if (targets.length === 0) {
       showStatus('Shortcut: no diagonal moves available', 'error'); return;
@@ -7503,6 +7556,8 @@ function applyMovementCard(pi, card, idx) {
 
   // PF12 Slipstream: flag for post-move bonus-move check (no wall phasing)
   if (card.id === 'PF12') { gameState._slipstreamActive = true; gameState._slipstreamCard = true; }
+  // B01 Detour: allow all 8 directions (diagonal + orthogonal)
+  if (card.id === 'B01') gameState._slipstreamCard = true;
   // TR5 Trapper's Stride: record starting position for auto-trap placement after move
   if (card.id === 'TR5') { gameState._trapperStrideFrom = gameState.players[pi].position; }
 
@@ -8567,7 +8622,12 @@ async function applyDisruptionCard(pi, card, idx) {
   if (card.id === 'CH13') {
     const sorted = [...gameState.walls]
       .filter(w => !w.isPhantom)
-      .sort((a, b) => b.placedOnTurn - a.placedOnTurn);
+      .sort((a, b) => {
+        // Sort by wall ID number (always incrementing) for true placement order
+        const aNum = parseInt(a.id.replace('w', '')) || 0;
+        const bNum = parseInt(b.id.replace('w', '')) || 0;
+        return bNum - aNum;
+      });
     const target = sorted[0];
     if (!target) { showStatus('No walls on the board to revert', 'error'); return; }
     const wallOwner = target.owner;
@@ -10276,12 +10336,37 @@ function showWallPreview(anchor, orientation, length, isPhantom) {
     gameState.players[0].position, gameState.players[1].position, isPhantom);
   previewEl = document.createElement('div');
   previewEl.className = `wall-preview-segment${legal ? '' : ' invalid'}`;
+  // Apply faction-specific wall color for preview
+  const pi = gameState.activePlayer;
+  const faction = gameState.players[pi]?.champion?.faction || '';
+  if (isPhantom) previewEl.style.borderColor = 'var(--wall-phantom)';
+  else if (faction) {
+    const fKey = faction.toLowerCase().slice(0,4);
+    previewEl.style.borderColor = `var(--wall-${fKey}, var(--wall-default))`;
+  }
   Object.assign(previewEl.style, wallVisualPos({anchor, orientation, length}));
   layer.appendChild(previewEl);
+
+  // Echo Strike (PH3): also preview the mirrored real wall on the opponent's side
+  if (selectedCard && (selectedCard.id === 'PH3' || (selectedCard.id === 'PH3' && isPhantom))) {
+    const mirrorAnchor = orientation === 'H'
+      ? {row: BOARD_SIZE - 2 - anchor.row, col: anchor.col}
+      : {row: anchor.row, col: BOARD_SIZE - 2 - anchor.col};
+    if (wallInBounds(mirrorAnchor, orientation, length)) {
+      const mirrorEl = document.createElement('div');
+      mirrorEl.className = 'wall-preview-segment';
+      mirrorEl.id = 'echo-strike-mirror-preview';
+      mirrorEl.style.opacity = '0.5';
+      Object.assign(mirrorEl.style, wallVisualPos({anchor: mirrorAnchor, orientation, length}));
+      layer.appendChild(mirrorEl);
+    }
+  }
 }
 
 function hideWallPreview() {
   if (previewEl) { previewEl.remove(); previewEl = null; }
+  const mirrorPreview = document.getElementById('echo-strike-mirror-preview');
+  if (mirrorPreview) mirrorPreview.remove();
 }
 
 function updateTurnBanner() {
@@ -11594,6 +11679,11 @@ async function mpHandleRemoteUpdate(row, localSeat, myChampId, oppChampId) {
   if (row.active_seat === localSeat && row.status === 'active') {
     const shared = row.state;
 
+    // Safety guard: if a push is currently in flight, ignore the echo
+    if (_mpPushInProgress) {
+      console.log('[MP] Ignoring remote update — push in progress');
+      return;
+    }
     // Safety guard: if our local gameState already has us as activePlayer AND we have
     // already taken action this turn (moved or played a card), this is a stale echo of
     // our own last push — do NOT reset the turn state.
@@ -11833,11 +11923,13 @@ function mpEndTurnLocal() {
 }
 
 // ── Push state to Supabase ───────────────────────────────────────────
+let _mpPushInProgress = false;
+
 async function mpPushState() {
   const sb = mpInit();
   if (!sb || !mp_gameId) return;
 
-  showStatus('⟳ Syncing…', '');
+  _mpPushInProgress = true;
 
   try {
     const nextSeat = gameState.activePlayer;
@@ -11885,10 +11977,12 @@ async function mpPushState() {
     const { error } = await sb.from('mp_games').update(update).eq('id', mp_gameId);
     if (error) throw error;
 
+    _mpPushInProgress = false;
     renderAll();
     mpUpdateTurnState();
     showStatus(`⏱ Waiting for ${mp_opponentName || 'opponent'}…`, '');
   } catch(e) {
+    _mpPushInProgress = false;
     console.error('[MP] pushState error:', e);
     showStatus('Sync error — try ending turn again', 'error');
   }
