@@ -2089,6 +2089,11 @@
     0%, 100% { opacity: 0.5; transform: scale(1); }
     50% { opacity: 0.8; transform: scale(1.1); }
   }
+  @keyframes trapFloatUp {
+    0% { opacity:1; transform:translateX(-50%) translateY(0); }
+    70% { opacity:1; }
+    100% { opacity:0; transform:translateX(-50%) translateY(-40px); }
+  }
   @keyframes trapTrigger {
     0% { transform: scale(0.5); opacity: 1; }
     100% { transform: scale(2.5); opacity: 0; }
@@ -2403,7 +2408,7 @@ const CARDS = {
   AV: { id:'AV', name:'Advance',          faction:'Basic', rarity:'Common',   type:'Movement',
         desc:'Move up to 2 spaces this turn. Cannot pass walls.', overrideSpeed:2 },
   QS: { id:'QS', name:'Quick Step',       faction:'Basic', rarity:'Common', type:'Movement',
-        desc:'Move 1 space diagonally. Blocked by a single wall; can slip through corner gaps where two walls meet.', overrideSpeed:1, diagonal:true },
+        desc:'Move 1 space diagonally. Blocked by walls.', overrideSpeed:1, diagonal:true },
   SW: { id:'SW', name:'Swift Leap',       faction:'Basic', rarity:'Rare',     type:'Movement',
         desc:'Gain +1 move and may jump over the opponent this turn.', overrideSpeed:2 },
   WS: { id:'WS', name:'Wind Sprint',      faction:'Pathfinders', rarity:'Uncommon',     type:'Movement',
@@ -2462,7 +2467,7 @@ const CARDS = {
          desc:'Move up to 4 spaces this turn.', overrideSpeed:4 },
   PF5: { id:'PF5', name:'Wall Vault',   faction:'Pathfinders', rarity:'Rare',     type:'Movement',
          desc:'Move up to 2 spaces. May pass through one non-reinforced wall.', overrideSpeed:2, tunnelThrough:true, special:'wallVault' },
-  PF7: { id:'PF7', name:'Trail Blaze',     faction:'Pathfinders', rarity:'Common',   type:'Movement',
+  PF7: { id:'PF7', name:'Trail Blaze',     faction:'Pathfinders', rarity:'Uncommon',   type:'Movement',
          desc:'Move up to 2 spaces. If you end further toward goal, draw 1 card.', overrideSpeed:2, special:'trailBlaze' },
   PF8: { id:'PF8', name:'Vaulting Strike', faction:'Pathfinders', rarity:'Uncommon', type:'Movement',
          desc:'Move 1 space. May pass through non-reinforced walls. If you cross an opponent wall, you may shrink it by 1 tile. Cannot cross reinforced walls.', overrideSpeed:1, tunnelThrough:true, special:'vaultStrike' },
@@ -2482,8 +2487,8 @@ const CARDS = {
   // ── WARDENS ──────────────────────────────────────────────────────────
   WD1: { id:'WD1', name:'Binding Wall',   faction:'Wardens', rarity:'Uncommon',   type:'Wall',
          desc:'Place a 1-tile Binding Wall. If the opponent ends their turn adjacent to it, they skip their move action next turn (may still play a card).', wallLen:1, binding:true },
-  WD2: { id:'WD2', name:'Tax Notice',     faction:'Wardens', rarity:'Common',   type:'Disruption',
-         desc:'If the opponent has 3+ walls in play, steal 1 card of your choice from their hand.' },
+  WD2: { id:'WD2', name:'Tax Notice',     faction:'Wardens', rarity:'Uncommon',   type:'Disruption',
+         desc:'If the opponent has 2+ walls in play, steal 1 card of your choice from their hand.' },
   WD3: { id:'WD3', name:'Eviction',       faction:'Wardens', rarity:'Uncommon', type:'Disruption',
          desc:'Move 1 non-reinforced opponent wall to any legal location on the board. The opponent cannot respond.' },
   WD4: { id:'WD4', name:'Confiscate',          faction:'Wardens', rarity:'Uncommon',     type:'Disruption',
@@ -3188,7 +3193,8 @@ function executeMove(to) {
       countCardPlayed(pi);
     }
     gameState.players[pi] = {...gameState.players[pi], position: to};
-    hasMoved = true;
+    // Shortcut is a CARD PLAY only — does not consume the champion's normal movement
+    // hasMoved stays false so the player can still take their regular move
     selectedCard = null;
     uiMode = 'idle';
     addLog(pi, 'card', `Shortcut: moved diagonally to (${to.row},${to.col})`);
@@ -4099,18 +4105,22 @@ function tickTraps(currentPi) {
 
 // Show a brief trigger animation at a tile
 function showTrapNotification(name, type) {
-  document.getElementById('trap-notification')?.remove();
+  // Show floating effect text above the status bar (subtle, not intrusive)
   const colors = {snare:'#e74c3c',pit:'#9b59b6',root:'#27ae60',spring:'#f39c12',mine:'#e67e22'};
   const msgs = {snare:'Movement stopped!',pit:'Card play lost!',root:'Rooted next turn!',spring:'Launched away!',mine:'Wall damaged!'};
-  const el = document.createElement('div');
-  el.id = 'trap-notification';
-  el.style.cssText = `position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:500;
-    padding:24px 48px;text-align:center;background:rgba(0,0,0,0.92);border:2px solid ${colors[type]||'#e74c3c'};
-    font-family:'Teko',sans-serif;pointer-events:none;`;
-  el.innerHTML = `<div style="font-size:28px;letter-spacing:.3em;color:${colors[type]||'#e74c3c'};">⚠ ${name} ⚠</div>
-    <div style="font-size:14px;color:var(--text-dim);letter-spacing:.15em;">${msgs[type]||'Trap triggered!'}</div>`;
-  document.body.appendChild(el);
-  setTimeout(() => el.parentNode && el.remove(), 2000);
+  const color = colors[type] || '#e74c3c';
+  // Update the status bar with trap info
+  showStatus(`⚠ ${name}: ${msgs[type] || 'Triggered!'} ⚠`, 'error');
+  // Also show a brief floating text that rises from the status area
+  const float = document.createElement('div');
+  float.style.cssText = `position:fixed;bottom:120px;left:50%;transform:translateX(-50%);z-index:500;
+    padding:6px 18px;background:rgba(0,0,0,0.85);border:1px solid ${color};border-radius:4px;
+    font-family:'Teko',sans-serif;font-size:16px;letter-spacing:.2em;color:${color};
+    pointer-events:none;white-space:nowrap;
+    animation:trapFloatUp 2s ease-out forwards;`;
+  float.textContent = `⚠ ${name}: ${msgs[type] || 'Triggered!'}`;
+  document.body.appendChild(float);
+  setTimeout(() => float.parentNode && float.remove(), 2200);
 }
 
 function showTrapTriggerAnimation(tile) {
@@ -4364,7 +4374,13 @@ function resolveEchoChamber(cardIdx) {
 
   const p = gameState.players[pi];
   if (cardIdx < 0 || cardIdx >= p.hand.length) return;
-  const discarded = p.hand[cardIdx];
+  let discarded = p.hand[cardIdx];
+
+  // Strip _instantOnce flag so it doesn't persist
+  if (discarded && discarded._instantOnce) {
+    const {_instantOnce, ...clean} = discarded;
+    discarded = clean;
+  }
 
   // Discard the chosen card
   gameState.players[pi] = {
@@ -8788,7 +8804,7 @@ async function applyDisruptionCard(pi, card, idx) {
     return;
   }
 
-  // ── WD2: Tax Notice — steal 1 card from opponent's hand if they have 3+ walls ──
+  // ── WD2: Tax Notice — steal 1 card from opponent's hand if they have 2+ walls ──
   if (card.id === 'WD2') {
     // In MP: fetch opponent's hand if not available locally
     if (gameMode === 'mp' && gameState.players[opp].hand.length === 0) {
@@ -8800,8 +8816,8 @@ async function applyDisruptionCard(pi, card, idx) {
       }
     }
     const op = gameState.players[opp];
-    if (gameState.walls.filter(w => w.owner===opp && !w.isPhantom).length < 3) {
-      showStatus('Tax Notice requires opponent to have 3+ walls', 'error'); return;
+    if (gameState.walls.filter(w => w.owner===opp && !w.isPhantom).length < 2) {
+      showStatus('Tax Notice requires opponent to have 2+ walls', 'error'); return;
     }
     if (!op.hand.length) {
       addLog(pi, 'card', 'Tax Notice: opponent hand was empty');
