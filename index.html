@@ -12471,7 +12471,7 @@ async function issueMatchRewards(won) {
 
 // ── Deck builder helper ───────────────────────────────────────────────
 function buildDeckForGame(championId, savedDeckCards) {
-  if (savedDeckCards?.length === 20) {
+  if (savedDeckCards?.length > 0) {
     return shuffle(savedDeckCards.map(id => ({ ...CARDS[id] })).filter(Boolean));
   }
   return buildStarterDeck(CHAMPIONS[championId]?.faction);
