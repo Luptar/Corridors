@@ -838,6 +838,24 @@
     background: rgba(212,144,58,0.15);
     color: var(--amber-hi);
   }
+  .action-btn.btn-available {
+    animation: btnPulse 2s ease-in-out infinite;
+  }
+  @keyframes btnPulse {
+    0%, 100% { box-shadow: none; }
+    50% { box-shadow: 0 0 10px rgba(212,144,58,0.25); }
+  }
+  .action-btn.danger.btn-available {
+    animation: btnPulseDanger 2s ease-in-out infinite;
+  }
+  @keyframes btnPulseDanger {
+    0%, 100% { box-shadow: none; }
+    50% { box-shadow: 0 0 10px rgba(192,64,64,0.25); }
+  }
+  .card.card-playable {
+    border-color: var(--amber-dim);
+    box-shadow: 0 0 6px rgba(212,144,58,0.15);
+  }
 
   /* ── Mode indicator ────────────────────────────────────────────── */
   .mode-indicator {
@@ -2154,6 +2172,7 @@
     <div class="ultimate-section">
       <div class="ultimate-label">ULTIMATE</div>
       <div class="ultimate-name" id="p0-ult-name">The Grand Design</div>
+      <div class="passive-desc" id="p0-ult-desc" style="margin-bottom:4px"></div>
       <div class="charge-bar" id="p0-charge-bar"></div>
       <div class="charge-text" id="p0-charge-text">0 / 5 charges</div>
       <button class="action-btn" id="p0-ult-btn" onclick="activateUltimate(0)"
@@ -2232,6 +2251,7 @@
     <div class="ultimate-section">
       <div class="ultimate-label">ULTIMATE</div>
       <div class="ultimate-name" id="p1-ult-name">Lockdown</div>
+      <div class="passive-desc" id="p1-ult-desc" style="margin-bottom:4px"></div>
       <div class="charge-bar" id="p1-charge-bar"></div>
       <div class="charge-text" id="p1-charge-text">0 / 3 charges</div>
       <button class="action-btn" id="p1-ult-btn" onclick="activateUltimate(1)"
@@ -2402,7 +2422,7 @@ const CARDS = {
   BB: { id:'BB', name:'Basic Barrier',    faction:'Basic', rarity:'Common',   type:'Wall',
         desc:'Place a 2-tile straight wall (H or V). Permanent.', wallLen:2 },
   CB: { id:'CB', name:'Corner Block',     faction:'Basic', rarity:'Common',   type:'Wall',
-        desc:'Place an L-shaped 2-tile wall. Permanent.', wallLen:2, special:'cornerPiece' },
+        desc:'Place two 2-tile walls in an L-shape: the second wall must be perpendicular and adjacent to the first.', wallLen:2, special:'cornerPiece' },
   RC: { id:'RC', name:'Reconstruction',   faction:'Basic', rarity:'Common',   type:'Disruption',
         desc:'Remove one of your own walls anywhere on the board. Draw 1 card.' },
   AV: { id:'AV', name:'Advance',          faction:'Basic', rarity:'Common',   type:'Movement',
@@ -9443,8 +9463,9 @@ function updateActionBar() {
     const sorenCanMoveAgain = champId === 'soren' && hasMoved && cardsPlayedThisTurn === 0 && !gameState._sorenSecondMove;
     const isBound = isHuman && (gameState.players[pi]?.statusEffects || []).some(e => (e.type === 'skip_move' || e.type === 'bound') && e.turnsRemaining > 0);
     btnMove.disabled = !isAction || (hasMoved && !sorenCanMoveAgain) || isBound || (gameMode === 'mp' ? gameState.activePlayer !== mp_localSeat : (!isHuman || aiThinking));
+    const moveAvailable = !btnMove.disabled && uiMode !== 'move';
     const moveBtnColour = (gameMode === 'mp' && gameState.activePlayer === 1) ? 'primary-p1' : 'primary';
-    btnMove.className = `action-btn ${moveBtnColour}${uiMode==='move' ? ' active' : ''}`;
+    btnMove.className = `action-btn ${moveBtnColour}${uiMode==='move' ? ' active' : ''}${moveAvailable ? ' btn-available' : ''}`;
     if (isBound) btnMove.textContent = 'BOUND';
     else if (sorenCanMoveAgain) btnMove.textContent = 'MOVE (2nd)';
     else btnMove.textContent = 'MOVE';
@@ -9456,6 +9477,7 @@ function updateActionBar() {
     } else {
       btnEnd.disabled = phase==='draw' || phase==='ended' || aiThinking || !isHuman;
     }
+    btnEnd.className = `action-btn danger${!btnEnd.disabled ? ' btn-available' : ''}`;
   }
 
   // ── Temporal Maze clickable button (MP only) ──────────────────────
@@ -9575,6 +9597,7 @@ function renderPanels() {
       ? gameState._deckCounts[pi] : p.deck.length;
     setText(`${prefix}-deck-count`, `(deck: ${deckCount})`);
     setText(`${prefix}-ult-name`, def.ultimateName);
+    setText(`${prefix}-ult-desc`, def.ultimateDesc || '');
     setText(`${prefix}-passive-name`, def.passiveName);
     setText(`${prefix}-passive-desc`, def.passiveDesc);
     setText(`${prefix}-charge-text`, `${p.ultimateCharge} / ${def.ultimateCost}`);
@@ -9622,17 +9645,28 @@ function renderPanels() {
         ).join('');
       } else {
         const isActive = pi === gameState.activePlayer && gameState.phase === 'action' && isHumanSeat(pi);
-        handEl.innerHTML = p.hand.map((card,idx) => renderCard(card, idx, pi, isActive)).join('');
+        // Determine if card budget is still available for non-instant cards
+        let canPlayNonInstant = false;
+        if (isActive) {
+          const champId = gameState.players[pi].champion.id;
+          const rule = FACTION_RULES[gameState.players[pi].champion.faction] || {};
+          const _dvB = (gameState.players[pi].statusEffects||[]).some(e=>e.type==='deja_vu'&&e.turnsRemaining>0)?1:0;
+          const maxCards = ((champId==='magnus')?2:(rule.cardPlays||1))+_dvB;
+          canPlayNonInstant = cardsPlayedThisTurn < maxCards && !isCardPhaseSkipped(pi);
+        }
+        handEl.innerHTML = p.hand.map((card,idx) => renderCard(card, idx, pi, isActive, canPlayNonInstant)).join('');
       }
     }
   }
 }
 
-function renderCard(card, idx, pi, interactive) {
+function renderCard(card, idx, pi, interactive, canPlayNonInstant) {
   const isSel = selectedCard && selectedCard.idx === idx;
   const isEchoPick = gameState._vexEchoPending && pi === gameState.activePlayer && interactive;
   const isInstantOnce = !!card._instantOnce;
-  const cls = `card${isSel?' selected':''}${!interactive?' card-disabled':''}${isEchoPick?' echo-pick':''}${isInstantOnce?' card-instant-once':''}`;
+  const isInstant = !!(card.instant || card._instantOnce);
+  const isPlayable = interactive && (isInstant || canPlayNonInstant);
+  const cls = `card${isSel?' selected':''}${!interactive?' card-disabled':''}${isPlayable && !isSel?' card-playable':''}${isEchoPick?' echo-pick':''}${isInstantOnce?' card-instant-once':''}`;
   const instantBadge = isInstantOnce ? '<span class="instant-badge">⚡ INSTANT</span>' : '';
   return `<div class="${cls}" onclick="${interactive?`selectCard('${card.id}',${idx})`:''}">
     <div class="card-header">
