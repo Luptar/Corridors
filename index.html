@@ -2438,7 +2438,7 @@ const CARDS = {
   AR1: { id:'AR1', name:'Reinforced Slab',  faction:'Architects', rarity:'Common',   type:'Wall',
          desc:'Place a 2-tile indestructible wall (H or V). Permanent. Cannot be destroyed or moved.', wallLen:2, reinforced:true },
   AR2: { id:'AR2', name:'Repossess',        faction:'Architects', rarity:'Common',   type:'Disruption',
-         desc:'Seize ownership of one of the opponent\'s walls. It becomes yours — you can move or remove it with your other cards. Cannot target reinforced or phantom walls.' },
+         desc:'Take control of any opponent wall. The wall keeps all its properties (binding, phantom, reinforced, etc.).' },
   AR3: { id:'AR3', name:'Blueprint Shift',  faction:'Architects', rarity:'Common', type:'Disruption',
          desc:'Move one of your non-reinforced walls to any legal location on the board.' },
   AR4: { id:'AR4', name:'Grand Bastion',    faction:'Architects', rarity:'Uncommon',     type:'Wall',
@@ -2492,27 +2492,26 @@ const CARDS = {
   WD3: { id:'WD3', name:'Eviction',       faction:'Wardens', rarity:'Uncommon', type:'Disruption',
          desc:'Move 1 non-reinforced opponent wall to any legal location on the board. The opponent cannot respond.' },
   WD4: { id:'WD4', name:'Confiscate',          faction:'Wardens', rarity:'Uncommon',     type:'Disruption',
-         desc:"Force the opponent to discard 2 random cards from their hand." },
+         desc:"Discard 1 random card from your hand. Force the opponent to discard 2 random cards." },
   WD5: { id:'WD5', name:'Total Seizure',        faction:'Wardens', rarity:'Rare',type:'Disruption',
-         desc:'Move ALL opponent walls currently on the board to any legal locations of your choice. Reinforced walls are not exempt.' },
+         desc:'Move up to 3 opponent non-reinforced walls to any legal locations of your choice.' },
   WD6: { id:'WD6', name:'Condemned Passage',    faction:'Wardens', rarity:'Uncommon',     type:'Wall',
          desc:'Place a 2-tile Binding Wall. Permanent. The opponent cannot jump over it — jump movement through this wall is blocked entirely.', wallLen:2, binding:true, noJump:true },
   WD7: { id:'WD7', name:'Subpoena',       faction:'Wardens', rarity:'Rare',     type:'Disruption',
          desc:'Look at opponent hand. Choose 1 card — placed on bottom of their deck.' },
   WD8: { id:'WD8', name:'Embargo',        faction:'Wardens', rarity:'Common',   type:'Disruption',
          desc:'Name a card type (Wall, Movement, or Disruption). Opponent cannot play that type next turn.' },
-  WD10:{ id:'WD10',name:'Asset Freeze',   faction:'Wardens', rarity:'Uncommon', type:'Disruption',
-         desc:'Freeze 1 opponent wall for 3 turns. They cannot interact with it. Counts against their limit.' },
+  // WD10 Asset Freeze: REMOVED
   WD11:{ id:'WD11',name:'Warden\'s Decree', faction:'Wardens', rarity:'Rare',   type:'Disruption',
          desc:'Opponent skips their card play phase next turn (may still move).' },
   WD12:{ id:'WD12',name:'Conscription',   faction:'Wardens', rarity:'Common',   type:'Disruption',
-         desc:'Draw 2 cards (if below hand limit). Opponent draws 1 (if below their limit).' },
+         desc:'Draw 2 cards (if below hand limit). Opponent draws 1 (if below their limit).', instant: true },
   WD14:{ id:'WD14',name:'Evidence Locker', faction:'Wardens', rarity:'Rare',    type:'Disruption',
          desc:'Exile the top card of opponent discard (removed from game). Draw 1 card.' },
   WD15:{ id:'WD15',name:'Martial Law',    faction:'Wardens', rarity:'Legendary', type:'Disruption',
          desc:'For 2 turns: opponent hand revealed, no Rare/Legendary plays, movement -1 (min 1).' },
-  WD16:{ id:'WD16',name:'Repurposed Barricade', faction:'Wardens', rarity:'Rare', type:'Wall',
-         desc:'Seize one opponent non-reinforced wall. Becomes yours with Binding.', wallLen:0, special:'repurposedBarricade' },
+  WD16:{ id:'WD16',name:'Repurposed Barricade', faction:'Wardens', rarity:'Rare', type:'Disruption',
+         desc:'Take control of one opponent non-reinforced wall. It becomes yours with Binding.' },
 
   // ── PHANTOMS ─────────────────────────────────────────────────────────
   PH1: { id:'PH1', name:'Phantom Wall',  faction:'Phantoms', rarity:'Common',   type:'Wall',
@@ -2639,7 +2638,7 @@ function buildStarterDeck(faction) {
 
 // ── State ───────────────────────────────────────────────────────────
 let gameState = null;
-let uiMode = 'idle';       // 'idle' | 'move' | 'wall' | 'wallPick' | 'wallRedirect' | 'wallSeal' | 'wallPunch' | 'wallReinforce' | 'wallReconstruct' | 'wallRepossess' | 'wallShrink' | 'wallFortify' | 'grappleDir' | 'grappleTarget'
+let uiMode = 'idle';       // 'idle' | 'move' | 'wall' | 'wallPick' | 'wallRedirect' | 'wallSeal' | 'wallPunch' | 'wallReinforce' | 'wallReconstruct' | 'wallRepossess' | 'wallRepurpose' | 'wallShrink' | 'wallFortify' | 'grappleDir' | 'grappleTarget'
 let wallOrientation = 'H';
 let selectedCard = null;   // {id, idx, length, isPhantom, isDurable} or null
 let hasMoved = false;       // whether champion has moved this turn
@@ -2827,7 +2826,12 @@ function getLegalMoves(state, pIdx, overrideSpeed, tunnelThrough, diagonal, ownW
   // For diagonal wall-corner checks we always need the full wall set
   const blockedFull = (player.stormpath || tunnelThrough) ? buildBlockedEdges(state.walls.filter(w => w.reinforced), pIdx) : buildBlockedEdges(state.walls, pIdx);
   const pos = player.position;
-  const speed = (overrideSpeed !== undefined && overrideSpeed !== null) ? overrideSpeed : player.champion.moveSpeed;
+  let speed = (overrideSpeed !== undefined && overrideSpeed !== null) ? overrideSpeed : player.champion.moveSpeed;
+  // Martial Law: reduce regular movement by 1 (min 1) — only affects normal moves, not movement cards
+  if (overrideSpeed === undefined || overrideSpeed === null) {
+    const hasMartialLaw = (player.statusEffects || []).some(e => e.type === 'martial_law' && e.turnsRemaining > 0);
+    if (hasMartialLaw) speed = Math.max(1, speed - 1);
+  }
   const opPos = opponent.position;
   const key = p => `${p.row},${p.col}`;
 
@@ -5236,9 +5240,9 @@ async function runAI() {
       }
     }
 
-    // AR2 Repossess: seize most blocking opponent wall
+    // AR2 Repossess: seize most blocking opponent wall (any type except immune)
     if (card.id === 'AR2') {
-      const targets = st.walls.filter(w => w.owner === 0 && !w.isPhantom && !w.reinforced && !w.immune);
+      const targets = st.walls.filter(w => w.owner === 0 && !w.immune);
       for (const target of targets) {
         const wallsWithout = st.walls.filter(w => w.id !== target.id);
         const aiDistBefore = bfsDistanceFor(st.aiPos, BOARD_SIZE-1, st.walls,     pi);
@@ -5451,14 +5455,7 @@ async function runAI() {
       if (s > bestCardScore) { secondBestCardScore = bestCardScore; secondBestCardAction = bestCardAction; bestCardScore = s; bestCardAction = {kind:'disruption', subkind:'embargo', card}; }
     }
 
-    // WD10 Asset Freeze: freeze opponent wall
-    if (card.id === 'WD10') {
-      const oppWalls = st.walls.filter(w => w.owner===0 && !w.isPhantom);
-      if (oppWalls.length) {
-        const s = 5; // deny wall slot for 3 turns
-        if (s > bestCardScore) { secondBestCardScore = bestCardScore; secondBestCardAction = bestCardAction; bestCardScore = s; bestCardAction = {kind:'disruption', subkind:'assetFreeze', card}; }
-      }
-    }
+    // WD10 Asset Freeze: REMOVED
 
     // WD11 Warden's Decree: skip opponent card phase
     if (card.id === 'WD11') {
@@ -5483,6 +5480,21 @@ async function runAI() {
     if (card.id === 'WD15') {
       const s = 10; // very powerful multi-axis lockdown
       if (s > bestCardScore) { secondBestCardScore = bestCardScore; secondBestCardAction = bestCardAction; bestCardScore = s; bestCardAction = {kind:'disruption', subkind:'martialLaw', card}; }
+    }
+
+    // WD16 Repurposed Barricade: seize opponent wall with binding
+    if (card.id === 'WD16') {
+      const targets = st.walls.filter(w => w.owner === 0 && !w.reinforced && !w.immune);
+      for (const target of targets) {
+        const wallsWithout = st.walls.filter(w => w.id !== target.id);
+        const aiGain = bfsDistanceFor(st.aiPos, BOARD_SIZE-1, st.walls, pi) - bfsDistanceFor(st.aiPos, BOARD_SIZE-1, wallsWithout, pi);
+        const s = aiGain * 5 + 3; // bonus for gaining a binding wall
+        if (s > bestCardScore) {
+          secondBestCardScore = bestCardScore; secondBestCardAction = bestCardAction;
+          bestCardScore = s;
+          bestCardAction = {kind:'disruption', subkind:'repurpose', card, target};
+        }
+      }
     }
 
     // PH9 Haunting Presence: trap placement
@@ -5790,7 +5802,7 @@ async function runAI() {
       } else if (sub === 'repossess') {
         const t = bestCardAction.target;
         const live = gameState.walls.find(w => w.id === t.id);
-        if (live && !live.reinforced && !live.immune && !live.isPhantom) {
+        if (live && !live.immune) {
           gameState.walls = gameState.walls.map(w => w.id === live.id ? {...w, owner: pi} : w);
           gameState.players[0]  = {...gameState.players[0],  wallsInPlay: Math.max(0, gameState.players[0].wallsInPlay - 1)};
           gameState.players[pi] = {...gameState.players[pi], wallsInPlay: gameState.players[pi].wallsInPlay + 1};
@@ -6727,7 +6739,7 @@ function selectCard(cardId, idx) {
   }
   // Different card clicked while a wall/pick mode is pending: cancel (wall budget not yet counted).
   // Exception: Eviction locks out cancel once a wall has been picked (_evictionInProgress).
-  if (selectedCard && (uiMode === 'wall' || uiMode === 'wallPick' || uiMode === 'wallRedirect' || uiMode === 'wallSeal' || uiMode === 'wallPunch' || uiMode === 'wallReconstruct' || uiMode === 'wallRepossess' || uiMode === 'wallShrink' || uiMode === 'wallFortify') && selectedCard.idx >= 0) {
+  if (selectedCard && (uiMode === 'wall' || uiMode === 'wallPick' || uiMode === 'wallRedirect' || uiMode === 'wallSeal' || uiMode === 'wallPunch' || uiMode === 'wallReconstruct' || uiMode === 'wallRepossess' || uiMode === 'wallRepurpose' || uiMode === 'wallShrink' || uiMode === 'wallFortify') && selectedCard.idx >= 0) {
     if (gameState._evictionInProgress || selectedCard._evictionPlacing) {
       showStatus('Eviction committed — place the wall to finish', 'error'); return;
     }
@@ -6735,6 +6747,7 @@ function selectCard(cardId, idx) {
     gameState._redirectCardIdx = null;
     gameState._reconstructCardIdx = null;
     gameState._repossessCardIdx = null;
+    gameState._repurposeCardIdx = null;
     gameState._shrinkCardIdx = null;
     gameState._evictionInProgress = false;
     gameState._emergencyBarrierMode = false;
@@ -7095,7 +7108,7 @@ function showCardPicker(pi, cards, title, onPick) {
 function hasPendingPickCard() {
   return selectedCard !== null && (
     uiMode === 'wallPick' || uiMode === 'wallReconstruct' ||
-    uiMode === 'wallRedirect' || uiMode === 'wallSeal' || uiMode === 'wallRepossess' ||
+    uiMode === 'wallRedirect' || uiMode === 'wallSeal' || uiMode === 'wallRepossess' || uiMode === 'wallRepurpose' ||
     uiMode === 'wallShrink' || uiMode === 'wallFortify'
   );
 }
@@ -8192,19 +8205,7 @@ async function applyDisruptionCard(pi, card, idx) {
     }
   }
 
-  // ── WD10: Asset Freeze — freeze 1 opponent wall ──
-  if (card.id === 'WD10') {
-    const oppWalls = gameState.walls.filter(w => w.owner === opp && !w.isPhantom);
-    if (!oppWalls.length) { showStatus('No opponent walls to freeze', 'error'); return; }
-    // Auto-freeze the most valuable opponent wall
-    const target = oppWalls[oppWalls.length - 1]; // most recent
-    gameState.walls = gameState.walls.map(w =>
-      w.id === target.id ? {...w, immune: true, _frozen: true, _frozenTurns: 3} : w);
-    addLog(pi, 'card', `Asset Freeze: opponent wall frozen for 3 turns`);
-    discardCard(pi, idx); selectedCard = null; countCardPlayed(pi);
-    if (isTurnDone()) gameState.phase = 'end_turn';
-    renderAll(); showStatus('Asset Freeze: wall frozen!', 'success'); return;
-  }
+  // WD10 Asset Freeze: REMOVED
 
   // ── WD11: Warden's Decree — opponent skips card phase next turn ──
   if (card.id === 'WD11') {
@@ -8250,6 +8251,39 @@ async function applyDisruptionCard(pi, card, idx) {
     discardCard(pi, idx); selectedCard = null; countCardPlayed(pi);
     if (isTurnDone()) gameState.phase = 'end_turn';
     renderAll(); showStatus('Martial Law enacted!', 'success'); return;
+  }
+
+  // ── WD16: Repurposed Barricade — seize opponent non-reinforced wall, add binding ──
+  if (card.id === 'WD16') {
+    const opp2 = 1 - pi;
+    const targets = gameState.walls.filter(w => w.owner === opp2 && !w.reinforced && !w.immune);
+    if (!targets.length) { showStatus('No eligible opponent walls to repurpose', 'error'); return; }
+    if (!isHumanSeat(pi)) {
+      // AI: pick the most path-blocking opponent wall
+      let bestWall = targets[0];
+      let bestVal = -Infinity;
+      for (const t of targets) {
+        const wallsWithout = gameState.walls.filter(w => w.id !== t.id);
+        const gain = bfsDistanceFor(gameState.players[pi].position, pi === 0 ? BOARD_SIZE-1 : 0, gameState.walls, pi)
+                   - bfsDistanceFor(gameState.players[pi].position, pi === 0 ? BOARD_SIZE-1 : 0, wallsWithout, pi);
+        if (gain > bestVal) { bestVal = gain; bestWall = t; }
+      }
+      gameState.walls = gameState.walls.map(w =>
+        w.id === bestWall.id ? { ...w, owner: pi, binding: true } : w
+      );
+      gameState.players[opp2] = { ...gameState.players[opp2], wallsInPlay: Math.max(0, gameState.players[opp2].wallsInPlay - 1) };
+      gameState.players[pi]   = { ...gameState.players[pi],   wallsInPlay: gameState.players[pi].wallsInPlay + 1 };
+      discardCard(pi, idx); selectedCard = null; countCardPlayed(pi);
+      addLog(pi, 'card', 'Repurposed Barricade: seized opponent wall with Binding');
+      if (isTurnDone()) gameState.phase = 'end_turn';
+      if (gameMode === 'mp') mpPushState();
+      renderAll(); showStatus('Repurposed Barricade: wall seized!', 'success'); return;
+    }
+    gameState._repurposeCardIdx = idx;
+    uiMode = 'wallRepurpose';
+    selectedCard = { id:'WD16', idx };
+    renderAll();
+    showStatus('Repurposed Barricade — click an opponent non-reinforced wall to seize with Binding', 'active'); return;
   }
 
   // ── PH9: Haunting Presence — place invisible haunt randomly adjacent to opponent ──
@@ -8767,10 +8801,10 @@ async function applyDisruptionCard(pi, card, idx) {
     return;
   }
 
-  // ── AR2: Repossess — seize ownership of one opponent wall ──
+  // ── AR2: Repossess — seize ownership of any opponent wall ──
   if (card.id === 'AR2') {
     const opp2 = 1 - pi;
-    const targets = gameState.walls.filter(w => w.owner === opp2 && !w.isPhantom && !w.reinforced && !w.immune);
+    const targets = gameState.walls.filter(w => w.owner === opp2 && !w.immune);
     if (!targets.length) { showStatus('No eligible opponent walls to repossess', 'error'); return; }
     gameState._repossessCardIdx = idx;
     uiMode = 'wallRepossess';
@@ -8901,16 +8935,25 @@ async function applyDisruptionCard(pi, card, idx) {
     } else {
       addLog(pi, 'card', 'Confiscate: opponent hand was empty');
     }
+    // Also discard 1 random card from the player's own hand (after discarding the Confiscate card itself)
     discardCard(pi, idx); selectedCard = null; countCardPlayed(pi);
+    const myHand = gameState.players[pi].hand;
+    if (myHand.length > 0) {
+      const myRidx = Math.floor(Math.random() * myHand.length);
+      const myDiscarded = myHand[myRidx];
+      const newHand = [...myHand]; newHand.splice(myRidx, 1);
+      gameState.players[pi] = { ...gameState.players[pi], hand: newHand, discard: [...gameState.players[pi].discard, myDiscarded] };
+      addLog(pi, 'card', `Confiscate: you also discarded ${myDiscarded.name}`);
+    }
     if (isTurnDone()) gameState.phase = 'end_turn';
     if (gameMode === 'mp') gameState._mpOppHandDirty = true;
-    renderAll(); showStatus(`Confiscate: opponent discarded ${discardCount} card(s)!`, 'success');
+    renderAll(); showStatus(`Confiscate: opponent discarded ${discardCount} card(s), you discarded 1!`, 'success');
     return;
   }
 
   // ── WD5: Total Seizure — move ALL opponent walls to locations of YOUR choice ──
   if (card.id === 'WD5') {
-    const oppWalls = gameState.walls.filter(w => w.owner===opp && !w.isPhantom);
+    const oppWalls = gameState.walls.filter(w => w.owner===opp && !w.reinforced && !w.immune).slice(0, 3);
     if (!oppWalls.length) {
       addLog(pi, 'card', 'Total Seizure: no opponent walls to seize');
       discardCard(pi, idx); selectedCard = null; countCardPlayed(pi);
@@ -9815,7 +9858,7 @@ function renderWalls() {
   if (!layer) return;
   layer.innerHTML = '';
   // Toggle pick-mode class to enable/disable clicks
-  if (uiMode === 'wallPick' || uiMode === 'wallRedirect' || uiMode === 'wallSeal' || uiMode === 'wallPunch' || uiMode === 'wallReinforce' || uiMode === 'wallReconstruct' || uiMode === 'wallRepossess' || uiMode === 'wallShrink' || uiMode === 'wallFortify') {
+  if (uiMode === 'wallPick' || uiMode === 'wallRedirect' || uiMode === 'wallSeal' || uiMode === 'wallPunch' || uiMode === 'wallReinforce' || uiMode === 'wallReconstruct' || uiMode === 'wallRepossess' || uiMode === 'wallRepurpose' || uiMode === 'wallShrink' || uiMode === 'wallFortify') {
     layer.classList.add('pick-mode');
   } else {
     layer.classList.remove('pick-mode');
@@ -9832,7 +9875,8 @@ function renderWalls() {
     const isPunchable   = uiMode === 'wallPunch'     && !wall.isPhantom && (gameState._deadlockBreaker || (!wall.permanent && !wall.reinforced && !wall.immune));
     const isReinforceable = uiMode === 'wallReinforce' && wall.owner === gameState.activePlayer && !wall.isPhantom && !wall.reinforced;
     const isReconstructable = uiMode === 'wallReconstruct' && wall.owner === gameState.activePlayer && !wall.isPhantom;
-    const isRepossessable   = uiMode === 'wallRepossess'   && wall.owner !== gameState.activePlayer && !wall.isPhantom && !wall.reinforced && !wall.immune;
+    const isRepossessable   = uiMode === 'wallRepossess'   && wall.owner !== gameState.activePlayer && !wall.immune; // AR2: any wall type allowed
+    const isRepurposeable   = uiMode === 'wallRepurpose'   && wall.owner !== gameState.activePlayer && !wall.reinforced && !wall.immune;
     const isShrinkable      = uiMode === 'wallShrink'      && wall.owner !== gameState.activePlayer && !wall.isPhantom && !wall.reinforced && !wall.immune
                               && (!gameState._vaultShrinkWalls || gameState._vaultShrinkWalls.includes(wall.id));
     const isFortifiable     = uiMode === 'wallFortify'     && wall.owner === gameState.activePlayer && !wall.isPhantom && !wall.reinforced && wall.length < 3;
@@ -9854,6 +9898,7 @@ function renderWalls() {
     if (isReinforceable)  cls += ' wall-pickable wall-reinforceable';
     if (isReconstructable) cls += ' wall-pickable wall-reconstructable';
     if (isRepossessable)   cls += ' wall-pickable wall-repossessable';
+    if (isRepurposeable)   cls += ' wall-pickable wall-repossessable';
     if (isShrinkable)       cls += ' wall-pickable wall-shrinkable';
     if (isFortifiable)      cls += ' wall-pickable wall-fortifiable';
     el.className = cls;
@@ -9897,6 +9942,10 @@ function renderWalls() {
     if (isRepossessable) {
       el.style.cursor = 'pointer';
       el.addEventListener('click', () => pickWallForRepossess(wall));
+    }
+    if (isRepurposeable) {
+      el.style.cursor = 'pointer';
+      el.addEventListener('click', () => pickWallForRepurpose(wall));
     }
     if (isShrinkable) {
       // If this specific wall is selected for edge picking, render individual edge tiles
@@ -10138,8 +10187,20 @@ function pickWallForReconstruct(wall) {
   if (uiMode !== 'wallReconstruct') return;
   const pi = gameState.activePlayer;
   const cardIdx = gameState._reconstructCardIdx;
+  const isSalvage = gameState._salvageCardId === 'B04';
   gameState.walls = gameState.walls.filter(w => w.id !== wall.id);
   gameState.players[pi] = {...gameState.players[pi], wallsInPlay: Math.max(0, gameState.players[pi].wallsInPlay - 1)};
+  if (isSalvage) {
+    // Salvage Parts: after removing wall, enter 1-tile wall placement mode
+    gameState._salvageCardId = null;
+    gameState._reconstructCardIdx = null;
+    addLog(pi, 'card', 'Salvage Parts: wall removed — place a 1-tile wall');
+    selectedCard = { id: 'B04', idx: -1, length: 1, isPhantom: false, isDurable: false };
+    uiMode = 'wall';
+    renderAll();
+    showStatus('Salvage Parts — now place a 1-tile wall anywhere legal', 'active');
+    return;
+  }
   drawCards(pi, 1);
   discardCard(pi, cardIdx);
   gameState._reconstructCardIdx = null;
@@ -10171,6 +10232,29 @@ function pickWallForRepossess(wall) {
   if (isTurnDone()) gameState.phase = 'end_turn';
   renderAll();
   showStatus('Repossess: wall is now under your control!', 'success');
+}
+
+// ── Wall Repurpose picker — WD16 Repurposed Barricade ──────────────────
+function pickWallForRepurpose(wall) {
+  if (uiMode !== 'wallRepurpose') return;
+  const pi = gameState.activePlayer;
+  const opp = 1 - pi;
+  const cardIdx = gameState._repurposeCardIdx;
+  gameState.walls = gameState.walls.map(w =>
+    w.id === wall.id ? { ...w, owner: pi, binding: true } : w
+  );
+  gameState.players[opp] = { ...gameState.players[opp], wallsInPlay: Math.max(0, gameState.players[opp].wallsInPlay - 1) };
+  gameState.players[pi]  = { ...gameState.players[pi],  wallsInPlay: gameState.players[pi].wallsInPlay + 1 };
+  discardCard(pi, cardIdx);
+  gameState._repurposeCardIdx = null;
+  selectedCard = null;
+  countCardPlayed(pi);
+  uiMode = 'idle';
+  addLog(pi, 'card', 'Repurposed Barricade: seized opponent wall — now yours with Binding');
+  if (isTurnDone()) gameState.phase = 'end_turn';
+  if (gameMode === 'mp') mpPushState();
+  renderAll();
+  showStatus('Repurposed Barricade: wall seized with Binding!', 'success');
 }
 
 // ── Wall Shrink picker — B07 Undermine ────────────────────────────────
