@@ -2408,6 +2408,108 @@ const GAUNTLET_AI_DECK_DIST = {
   12:{Common:0,Uncommon:1,Rare:9,Legendary:10},
 };
 
+// ── Boss Board Modifiers ────────────────────────────────────────────
+// Bosses have unique board configurations making them harder
+const GAUNTLET_BOSS_BOARDS = {
+  3: [
+    { name:'THE NARROW', desc:'7-wide board', boardWidth:7, boardHeight:9, preWalls:[] },
+    { name:'THE MAZE', desc:'Pre-placed walls block the path', boardWidth:9, boardHeight:9,
+      preWalls:[{anchor:{row:2,col:1},orientation:'H',length:3},{anchor:{row:2,col:5},orientation:'H',length:3},
+               {anchor:{row:5,col:2},orientation:'H',length:2},{anchor:{row:5,col:5},orientation:'H',length:2}] },
+    { name:'THE SPRINT', desc:'Short board — less room to maneuver', boardWidth:9, boardHeight:7, preWalls:[] },
+  ],
+  6: [
+    { name:'THE GAUNTLET', desc:'Narrow corridor with walls', boardWidth:5, boardHeight:9,
+      preWalls:[{anchor:{row:3,col:0},orientation:'H',length:2},{anchor:{row:3,col:3},orientation:'H',length:2},
+               {anchor:{row:5,col:1},orientation:'H',length:2},{anchor:{row:5,col:3},orientation:'H',length:2}] },
+    { name:'THE CAGE', desc:'Trapped corners', boardWidth:9, boardHeight:9,
+      preWalls:[{anchor:{row:1,col:0},orientation:'V',length:3},{anchor:{row:1,col:8},orientation:'V',length:3},
+               {anchor:{row:5,col:0},orientation:'V',length:3},{anchor:{row:5,col:8},orientation:'V',length:3}] },
+    { name:'THE FUNNEL', desc:'Narrow in the middle', boardWidth:9, boardHeight:9,
+      preWalls:[{anchor:{row:3,col:0},orientation:'V',length:3},{anchor:{row:3,col:1},orientation:'V',length:3},
+               {anchor:{row:3,col:7},orientation:'V',length:3},{anchor:{row:3,col:8},orientation:'V',length:3}] },
+  ],
+  9: [
+    { name:'THE PIT', desc:'Tiny arena', boardWidth:7, boardHeight:7, preWalls:[] },
+    { name:'THE LABYRINTH', desc:'Dense walls everywhere', boardWidth:9, boardHeight:9,
+      preWalls:[{anchor:{row:1,col:2},orientation:'H',length:2},{anchor:{row:1,col:5},orientation:'H',length:2},
+               {anchor:{row:3,col:0},orientation:'H',length:2},{anchor:{row:3,col:4},orientation:'H',length:3},
+               {anchor:{row:5,col:2},orientation:'H',length:3},{anchor:{row:5,col:7},orientation:'H',length:2},
+               {anchor:{row:7,col:1},orientation:'H',length:2},{anchor:{row:7,col:5},orientation:'H',length:2}] },
+  ],
+  12: [
+    { name:'THE FINAL CORRIDOR', desc:'Narrow and walled — no room for error', boardWidth:5, boardHeight:9,
+      preWalls:[{anchor:{row:2,col:0},orientation:'H',length:2},{anchor:{row:2,col:3},orientation:'H',length:2},
+               {anchor:{row:4,col:1},orientation:'H',length:3},
+               {anchor:{row:6,col:0},orientation:'H',length:2},{anchor:{row:6,col:3},orientation:'H',length:2}] },
+  ],
+};
+
+// ── Branching Path Map Generator ────────────────────────────────────
+// Node types: battle, elite, rest, event, boss
+const GAUNTLET_NODE_TYPES = {
+  battle: { icon:'⚔', color:'#aaa', label:'Battle' },
+  elite:  { icon:'⚡', color:'#f59e0b', label:'Elite' },
+  rest:   { icon:'🔥', color:'#4ade80', label:'Rest' },
+  event:  { icon:'?', color:'#c084fc', label:'Event' },
+  boss:   { icon:'☠', color:'#e05050', label:'Boss' },
+};
+
+function generateGauntletMap() {
+  // 12 floors: floor 0 = start, floor 3/6/9 = boss, floor 12 = final boss
+  // Floors 1-2, 4-5, 7-8, 10-11 have 2-3 branching nodes each
+  const map = [];
+  for (let floor = 0; floor <= 12; floor++) {
+    if (GAUNTLET_BOSS_STAGES.includes(floor)) {
+      // Boss floors always have exactly 1 node
+      const bossBoards = GAUNTLET_BOSS_BOARDS[floor] || GAUNTLET_BOSS_BOARDS[3];
+      const board = bossBoards[Math.floor(Math.random() * bossBoards.length)];
+      map.push([{ id:`f${floor}_0`, floor, type:'boss', board, connections:[] }]);
+    } else if (floor === 0) {
+      // Start floor: 1 node
+      map.push([{ id:'f0_0', floor:0, type:'battle', connections:[] }]);
+    } else {
+      // Regular floor: 2-3 nodes with random types
+      const nodeCount = 2 + (Math.random() < 0.4 ? 1 : 0);
+      const nodes = [];
+      for (let n = 0; n < nodeCount; n++) {
+        const roll = Math.random();
+        let type;
+        if (roll < 0.55) type = 'battle';
+        else if (roll < 0.75) type = 'elite';
+        else if (roll < 0.90) type = 'rest';
+        else type = 'event';
+        nodes.push({ id:`f${floor}_${n}`, floor, type, connections:[] });
+      }
+      map.push(nodes);
+    }
+  }
+  // Generate connections: each node connects to 1-2 nodes on the next floor
+  for (let floor = 0; floor < map.length - 1; floor++) {
+    const current = map[floor];
+    const next = map[floor + 1];
+    for (const node of current) {
+      // Connect to at least 1 node, up to 2
+      const connectCount = next.length === 1 ? 1 : (1 + (Math.random() < 0.5 ? 1 : 0));
+      const indices = [];
+      while (indices.length < connectCount) {
+        const idx = Math.floor(Math.random() * next.length);
+        if (!indices.includes(idx)) indices.push(idx);
+      }
+      node.connections = indices.map(i => next[i].id);
+    }
+    // Ensure every next-floor node has at least one incoming connection
+    for (let ni = 0; ni < next.length; ni++) {
+      const hasIncoming = current.some(n => n.connections.includes(next[ni].id));
+      if (!hasIncoming) {
+        const randomParent = current[Math.floor(Math.random() * current.length)];
+        randomParent.connections.push(next[ni].id);
+      }
+    }
+  }
+  return map;
+}
+
 // ── Champions (7 — one per faction) ─────────────────────────────────
 const CHAMPIONS = {
   // Architects: maze-building, indestructible walls, double-card passive
@@ -2842,17 +2944,17 @@ function shuffle(arr) {
 
 // GDD-accurate starter decks per faction
 function buildStarterDeck(faction) {
+  // Small 10-card common-only starter decks — approachable for new players
   const deckDefs = {
-    Architects:  ['BB','BB','BB','BB','AR1','AR1','AR1','AR2','AR2','AR3','AR3','AR4','AR4','AR5','RC','RC','RC','CB','CB','AV'],
-    Pathfinders: ['BB','BB','BB','RC','RC','QS','QS','WS','AV','AV','PF1','PF1','PF3','PF3','PF7','PF7','PF12','CB','B01','B10'],
-    Wardens:     ['BB','BB','BB','RC','RC','WD1','WD1','WD2','WD2','WD3','WD3','WD4','WD6','WD8','WD12','AV','CB','B07','B09','B12'],
-    Phantoms:    ['BB','BB','PH1','PH1','PH1','PH2','PH2','PH3','PH3','PH4','PH10','PH16','RC','RC','CB','AV','QS','B01','B07','B12'],
-    Pushers:     ['BB','BB','BB','RC','RC','PU2','PU2','PU3','PU3','PU4','PU4','PU7','PU9','PU9','PU11','AV','AV','CB','B07','B10'],
-    Trappers:    ['BB','BB','BB','RC','RC','TR1','TR1','TR2','TR2','TR3','TR3','TR5','TR5','TR7','TR7','TR10','AV','AV','CB','B07'],
-    Chronists:   ['BB','BB','BB','RC','RC','CH1','CH1','CH3','CH3','CH6','CH6','CH8','CH10','CH12','CH13','AV','AV','CB','B07','B12'],
+    Architects:  ['BB','BB','BB','AR1','AR2','AR3','RC','CB','AV','B01'],
+    Pathfinders: ['BB','BB','RC','AV','AV','QS','B01','CB','PF11','B04'],
+    Wardens:     ['BB','BB','BB','RC','AV','CB','WD8','WD12','B01','B04'],
+    Phantoms:    ['BB','PH1','PH1','PH2','PH3','RC','AV','CB','QS','B01'],
+    Pushers:     ['BB','BB','BB','PU4','RC','AV','AV','CB','B01','B04'],
+    Trappers:    ['BB','BB','TR1','TR2','TR3','TR5','RC','AV','CB','B01'],
+    Chronists:   ['BB','BB','CH1','CH3','CH12','RC','AV','AV','CB','B01'],
   };
   const ids = deckDefs[faction] || deckDefs['Architects'];
-  // 20-card deck
   const base = ids.map(id => ({...CARDS[id]}));
   return shuffle([...base]);
 }
@@ -2928,8 +3030,8 @@ let aiThinking = false;
 let _tutorialState = null;
 let _gauntletRun = null;
 const TUTORIAL_MATCHES = {
-  1: { title:'THE BASICS', subtitle:'Movement & Wall Placement',
-       playerStart:{row:5,col:4}, aiStart:{row:2,col:4},
+  1: { title:'THE BASICS', subtitle:'Movement & Jumping',
+       playerStart:{row:5,col:4}, aiStart:{row:3,col:4},
        playerChampion:'soren', aiChampion:'magnus',
        skipDraw:true, fixedHand:false, skipUltimate:true, playerGoesFirst:true },
   2: { title:'CARDS & COMBAT', subtitle:'Playing Your Hand',
@@ -2986,8 +3088,8 @@ function initGame(playerChampId, aiChampId, playerDeckCards) {
 
   playerChampId = playerChampId || 'magnus';
   aiChampId     = aiChampId     || 'soren';
-  const pChamp  = CHAMPIONS[playerChampId];
-  const aChamp  = CHAMPIONS[aiChampId];
+  const pChamp  = resolveChampion(playerChampId);
+  const aChamp  = resolveChampion(aiChampId);
   gameState = {
     players: [
       createPlayer(0, playerChampId, pChamp.faction, playerDeckCards),
@@ -5532,7 +5634,7 @@ async function runAI() {
   }
   console.log('[AI] Starting AI turn. Hand:', gameState.players[AI_PLAYER].hand.map(c => c?.id || '?').join(','));
   // Tutorial mode: use simplified, unloseable AI
-  if (gameMode === 'tutorial') { await runTutorialAI(); aiThinking = false; return; }
+  if (gameMode === 'tutorial') { await runTutorialAI(); return; }
   // Global AI turn timeout: if AI hasn't finished in 5 seconds, force-end
   const _aiTurnTimeout = setTimeout(() => {
     if (aiThinking && gameState?.activePlayer === AI_PLAYER) {
@@ -6584,9 +6686,22 @@ function showLandingScreen() {
       <div style="font-size:9px;color:var(--text-dim);text-align:center;cursor:pointer;text-decoration:underline;margin-bottom:8px;"
            onclick="if(confirm('Skip tutorial? You will not receive the 100 shard reward.')){saveUserProfile({tutorialComplete:true,tutorial_complete:true});if(_userProfile)_userProfile.tutorialComplete=true;document.getElementById('landing-overlay').remove();showLandingScreen();}">SKIP TUTORIAL</div>
       ` : ''}
+      <button onclick="document.getElementById('landing-overlay').remove();showGauntletEntry();"
+              class="landing-btn" style="background:rgba(224,80,80,0.15);color:#e05050;border:1px solid rgba(224,80,80,0.3);">
+        ☠ GAUNTLET${(_gauntletRun || _userProfile?.gauntlet_run) ? ' <span style="font-size:9px;color:#fbbf24;">(IN PROGRESS)</span>' : ''}
+      </button>
       <button onclick="document.getElementById('landing-overlay').remove();showChampionSelect();"
               class="landing-btn amber">
         ⚔ EXHIBITION
+      </button>
+      <button onclick="document.getElementById('landing-overlay').remove();showMultiplayerLobby();"
+              class="landing-btn blue">
+        ⚡ MULTIPLAYER
+      </button>
+      <div class="landing-divider"></div>
+      <button onclick="document.getElementById('landing-overlay').remove();showCollectionScreen();"
+              class="landing-btn muted">
+        ◈ COLLECTION &amp; DECKS
       </button>
       <button onclick="document.getElementById('landing-overlay').remove();showRosterScreen();"
               class="landing-btn" style="background:rgba(139,92,246,0.15);color:#c084fc;border:1px solid rgba(139,92,246,0.3);">
@@ -6595,19 +6710,6 @@ function showLandingScreen() {
       <button onclick="document.getElementById('landing-overlay').remove();showShopScreen();"
               class="landing-btn" style="background:rgba(251,191,36,0.12);color:#fbbf24;border:1px solid rgba(251,191,36,0.3);position:relative;">
         ◆ SHOP${canClaimDailyRoll() ? ' <span style="display:inline-block;width:8px;height:8px;background:#fbbf24;border-radius:50;margin-left:6px;"></span>' : ''}
-      </button>
-      <button onclick="document.getElementById('landing-overlay').remove();showCollectionScreen();"
-              class="landing-btn muted">
-        ◈ COLLECTION &amp; DECKS
-      </button>
-      <div class="landing-divider"></div>
-      <button onclick="document.getElementById('landing-overlay').remove();showMultiplayerLobby();"
-              class="landing-btn blue">
-        ⚡ MULTIPLAYER
-      </button>
-      <button onclick="document.getElementById('landing-overlay').remove();showGauntletEntry();"
-              class="landing-btn" style="background:rgba(224,80,80,0.15);color:#e05050;border:1px solid rgba(224,80,80,0.3);">
-        ☠ GAUNTLET${(_gauntletRun || _userProfile?.gauntlet_run) ? ' <span style="font-size:9px;color:#fbbf24;">(IN PROGRESS)</span>' : ''}
       </button>
     </div>
 
@@ -6649,7 +6751,9 @@ async function runTutorialAI() {
     gameState.players[pi] = { ...gameState.players[pi], position: pick };
   }
 
-  // End turn
+  // End turn — must clear aiThinking BEFORE calling endTurn()
+  // because endTurn() checks `if (aiThinking) return;` and would bail out.
+  aiThinking = false;
   gameState.phase = 'end_turn';
   renderAll();
   await new Promise(r => setTimeout(r, 300));
@@ -6687,21 +6791,22 @@ function queueTutorialTooltips(matchNum) {
   if (matchNum === 1) {
     _tutorialState.tooltipQueue = [
       { title:'WELCOME TO CORRIDORS', text:'Your goal: reach the opposite side of the board. You are the amber piece at the bottom — move to ROW 0 at the top to win.' },
-      { title:'MOVEMENT', text:'Each turn you get one move. Click the MOVE button, then click a highlighted tile to step forward, backward, left, or right.' },
-      { title:'WALLS', text:'You can also place walls on the board edges to block your opponent. Try moving toward the top row. After you move, you can place a wall or end your turn.', defer:'afterFirstMove' },
-      { title:'END TURN', text:'When you are done, click END TURN to pass to your opponent. Now reach the top row to win!', defer:'afterFirstMove' },
+      { title:'SOREN THE FLEETFOOT', text:'You are playing as Soren. His passive ability lets you take TWO moves each turn instead of one. Use this speed to outmaneuver your opponent!' },
+      { title:'MOVEMENT', text:'Click the MOVE button, then click a highlighted tile. After your first move, click MOVE again to take your second step.' },
+      { title:'JUMPING', text:'When you are directly adjacent to your opponent, you can JUMP over them! This lands you on the tile behind them — a key tactic for slipping past blockers.', defer:'afterFirstMove' },
+      { title:'END TURN', text:'When you are done, click END TURN. Now reach the top row to win! Try jumping over your opponent when you get close.', defer:'afterFirstMove' },
     ];
   } else if (matchNum === 2) {
     _tutorialState.tooltipQueue = [
-      { title:'YOUR HAND', text:'You now have cards! Look at the bottom of the screen — those are your cards. Each turn you can play ONE card in addition to moving.' },
-      { title:'CARD TYPES', text:'WALL cards (like Basic Barrier) place walls. MOVEMENT cards (like Advance) give you extra movement. DISRUPTION cards have special effects.' },
-      { title:'PLAYING A CARD', text:'Click a card in your hand to select it, then follow the on-screen prompt. Try using Advance for an extra move, or Basic Barrier to block the opponent.' },
+      { title:'YOUR HAND', text:'You now have cards! Look at the bottom of the screen — those are your cards. Each turn you can MOVE and play ONE card.' },
+      { title:'CARD TYPES', text:'WALL cards (like Basic Barrier) place walls to block your opponent. MOVEMENT cards (like Advance) give extra movement. DISRUPTION cards remove or modify walls.' },
+      { title:'PLAYING A CARD', text:'Click a card in your hand to select it, then follow the on-screen prompt. Remember: Soren can move twice OR move once and play a card each turn.' },
     ];
   } else if (matchNum === 3) {
     _tutorialState.tooltipQueue = [
-      { title:'YOUR CHAMPION', text:'Each champion has a unique passive ability (always active) and an ultimate ability (charges over time). Check the info panel on the left for details.' },
+      { title:'PASSIVES & ULTIMATES', text:'Each champion has a PASSIVE ability (always active) and an ULTIMATE ability (charges over time). Your passive defines your playstyle — check the info panel for details.' },
       { title:'ULTIMATE ABILITY', text:'Your ultimate charges by 1 each turn. When fully charged, the ULTIMATE button lights up — click it to unleash a powerful effect!' },
-      { title:'FULL MATCH', text:'This is a full match with all mechanics active. Use your cards, passive, and ultimate to reach the goal. Win to complete your training!' },
+      { title:'PUT IT ALL TOGETHER', text:'Use movement, jumping, cards, your passive, and your ultimate to reach the goal. Win this match to complete your training and earn 100 Shards!' },
     ];
   }
 }
@@ -6882,24 +6987,10 @@ function showGauntletEntry() {
   if (_gauntletRun || _userProfile?.gauntlet_run) {
     const run = _gauntletRun || _userProfile.gauntlet_run;
     _gauntletRun = run;
-    const overlay = document.createElement('div');
-    overlay.id = 'gauntlet-entry-overlay';
-    overlay.style.cssText = 'position:fixed;inset:0;background:var(--bg);display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:200;padding:40px 24px;text-align:center;';
-    overlay.innerHTML = `
-      <div style="font-family:'Teko',sans-serif;font-size:42px;color:#e05050;letter-spacing:.2em;margin-bottom:8px;">THE GAUNTLET</div>
-      <div style="font-size:12px;color:var(--text-dim);margin-bottom:24px;">Run in progress</div>
-      <div style="background:var(--surface);border:1px solid var(--border);padding:16px 24px;margin-bottom:24px;">
-        <div style="font-family:'Teko',sans-serif;font-size:22px;color:var(--amber);">${run.champion.name}</div>
-        <div style="font-size:11px;color:#aaa;">${run.champion.faction} · ${run.champion.rarity} · Stage ${run.stage} of 12</div>
-        <div style="font-size:10px;color:#888;margin-top:4px;">Deck: ${run.deck.length} cards · Shards earned: ${run.earnedShards}</div>
-      </div>
-      <div style="display:flex;gap:12px;">
-        <button class="landing-btn amber" style="width:160px;" onclick="document.getElementById('gauntlet-entry-overlay')?.remove();startGauntletStage();">RESUME</button>
-        <button class="landing-btn muted" style="width:160px;" onclick="if(confirm('Abandon run? Your champion will be lost.')){abandonGauntletRun();}">ABANDON</button>
-      </div>
-      <button class="landing-btn muted" style="width:140px;margin-top:16px;font-size:11px;" onclick="document.getElementById('gauntlet-entry-overlay')?.remove();showLandingScreen();">BACK</button>
-    `;
-    document.body.appendChild(overlay);
+    // Ensure map exists (backward compat)
+    if (!_gauntletRun.map) _gauntletRun.map = generateGauntletMap();
+    document.getElementById('gauntlet-entry-overlay')?.remove();
+    showGauntletMap(false);
     return;
   }
 
@@ -6959,6 +7050,7 @@ function gauntletPickChampion(idx) {
 async function startGauntletRun(champion) {
   const starterDeck = buildStarterDeck(champion.faction);
   const deckIds = starterDeck.map(c => c.id);
+  const map = generateGauntletMap();
 
   _gauntletRun = {
     stage: 1,
@@ -6967,44 +7059,256 @@ async function startGauntletRun(champion) {
     earnedShards: 0,
     bossUpgrades: [],
     startedAt: new Date().toISOString(),
+    map: map,
+    currentNodeId: null,        // set when player picks a node
+    visitedNodeIds: [],
+    currentFloor: 0,            // which floor the player is on
   };
 
   if (_userProfile) await saveUserProfile({ gauntlet_run: _gauntletRun });
-  showGauntletMap(true);
+  showGauntletMap(false);
 }
 
 async function abandonGauntletRun() {
   _gauntletRun = null;
   if (_userProfile) await saveUserProfile({ gauntlet_run: null });
   document.getElementById('gauntlet-entry-overlay')?.remove();
+  document.getElementById('gauntlet-map-overlay')?.remove();
   showLandingScreen();
 }
 
-function startGauntletStage() {
-  document.getElementById('gauntlet-entry-overlay')?.remove();
+// Resolve the current node from the map
+function gauntletGetNode(nodeId) {
+  if (!_gauntletRun?.map) return null;
+  for (const floor of _gauntletRun.map) {
+    for (const node of floor) {
+      if (node.id === nodeId) return node;
+    }
+  }
+  return null;
+}
+
+// Get the available next nodes from current position
+function gauntletGetAvailableNodes() {
+  if (!_gauntletRun?.map) return [];
+  const floor = _gauntletRun.currentFloor;
+  if (floor >= _gauntletRun.map.length) return [];
+
+  // If no current node, first floor nodes are available
+  if (!_gauntletRun.currentNodeId) {
+    return _gauntletRun.map[0] || [];
+  }
+  // Otherwise, get connections from current node
+  const current = gauntletGetNode(_gauntletRun.currentNodeId);
+  if (!current) return _gauntletRun.map[floor] || [];
+  return (current.connections || []).map(id => gauntletGetNode(id)).filter(Boolean);
+}
+
+function startGauntletNode(nodeId) {
   document.getElementById('gauntlet-map-overlay')?.remove();
   document.getElementById('gauntlet-reward-overlay')?.remove();
   if (!_gauntletRun) return;
 
+  const node = gauntletGetNode(nodeId);
+  if (!node) return;
+
+  _gauntletRun.currentNodeId = nodeId;
+  _gauntletRun.currentFloor = node.floor;
+
+  if (node.type === 'battle' || node.type === 'elite' || node.type === 'boss') {
+    startGauntletCombat(node);
+  } else if (node.type === 'rest') {
+    showGauntletRestEvent();
+  } else if (node.type === 'event') {
+    showGauntletRandomEvent();
+  }
+}
+
+function startGauntletCombat(node) {
   const stage = _gauntletRun.stage;
-  const aiRarity = GAUNTLET_AI_RARITY[stage] || 'Common';
+  const aiRarity = node.type === 'elite' ? (GAUNTLET_AI_RARITY[Math.min(stage + 2, 12)] || 'Uncommon')
+                 : (GAUNTLET_AI_RARITY[stage] || 'Common');
 
   // Boss stages: pick counter-faction
   let preferredFaction = null;
-  if (GAUNTLET_BOSS_STAGES.includes(stage)) {
+  if (node.type === 'boss') {
     preferredFaction = FACTION_COUNTER[_gauntletRun.champion.faction] || null;
   }
   const aiChamp = generateChampion(aiRarity, preferredFaction);
   const aiDeck = buildGauntletAIDeck(stage, aiChamp.faction);
 
+  // Store node info for board mods
+  _gauntletRun._currentNode = node;
+  if (_userProfile) saveUserProfile({ gauntlet_run: _gauntletRun });
+
   initGauntletGame(_gauntletRun.champion, aiChamp, _gauntletRun.deck, aiDeck);
+
+  // Apply boss board modifiers after init
+  if (node.type === 'boss' && node.board) {
+    applyBossBoard(node.board);
+  }
+}
+
+function applyBossBoard(board) {
+  // Pre-place walls on the board
+  if (board.preWalls && board.preWalls.length > 0) {
+    for (const pw of board.preWalls) {
+      const wall = {
+        id: gameState.nextWallId++, owner: -1, // neutral walls
+        anchor: pw.anchor, orientation: pw.orientation, length: pw.length,
+        isPhantom: false, durable: false, durableHits: 0, immune: true,
+        reinforced: true, temporary: false, turnsRemaining: null,
+        placedOnTurn: 0, _bossWall: true,
+      };
+      gameState.walls.push(wall);
+    }
+    renderAll();
+  }
+}
+
+// Rest event: heal (draw extra cards or remove a bad card)
+function showGauntletRestEvent() {
+  const overlay = document.createElement('div');
+  overlay.id = 'gauntlet-event-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;background:var(--bg);display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:200;padding:40px 24px;text-align:center;';
+  overlay.innerHTML = `
+    <div style="font-size:48px;margin-bottom:8px;">🔥</div>
+    <div style="font-family:'Teko',sans-serif;font-size:32px;color:#4ade80;margin-bottom:8px;">REST SITE</div>
+    <div style="font-size:12px;color:var(--text-dim);margin-bottom:24px;">Take a moment to prepare for what lies ahead.</div>
+    <div style="display:flex;gap:16px;">
+      <button class="landing-btn" style="width:200px;background:rgba(74,222,128,0.15);color:#4ade80;border:1px solid rgba(74,222,128,0.3);"
+        onclick="gauntletRestRemoveCard();">
+        REMOVE A CARD
+        <div style="font-size:9px;color:#aaa;margin-top:2px;">Thin your deck</div>
+      </button>
+      <button class="landing-btn" style="width:200px;background:rgba(251,191,36,0.15);color:#fbbf24;border:1px solid rgba(251,191,36,0.3);"
+        onclick="gauntletRestSkip();">
+        MOVE ON
+        <div style="font-size:9px;color:#aaa;margin-top:2px;">Continue to the next node</div>
+      </button>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+}
+
+function gauntletRestRemoveCard() {
+  document.getElementById('gauntlet-event-overlay')?.remove();
+  // Show deck and allow free removal
+  const overlay = document.createElement('div');
+  overlay.id = 'gauntlet-event-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;background:var(--bg);display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:200;padding:20px;overflow-y:auto;';
+  function renderDeck() {
+    const deckHtml = _gauntletRun.deck.map((id, i) => {
+      const c = CARDS[id];
+      if (!c) return '';
+      const rc = c.rarity==='Common'?'#aaa':c.rarity==='Uncommon'?'#4ade80':c.rarity==='Rare'?'#60a5fa':'#fbbf24';
+      return `<div onclick="gauntletRestDoRemove(${i})" style="cursor:pointer;display:inline-block;background:var(--surface);border:1px solid ${rc};
+        padding:6px 12px;margin:3px;font-size:11px;color:#ccc;transition:border-color 0.2s;"
+        onmouseover="this.style.borderColor='#e05050'" onmouseout="this.style.borderColor='${rc}'">
+        ${c.name} <span style="font-size:9px;color:#888;">${c.rarity}</span>
+      </div>`;
+    }).join('');
+    overlay.innerHTML = `
+      <div style="font-family:'Teko',sans-serif;font-size:24px;color:#4ade80;margin-bottom:12px;">SELECT A CARD TO REMOVE</div>
+      <div style="max-width:600px;margin-bottom:16px;">${deckHtml}</div>
+      <button class="landing-btn muted" style="width:160px;font-size:11px;" onclick="gauntletRestSkip();">SKIP</button>
+    `;
+  }
+  document.body.appendChild(overlay);
+  renderDeck();
+}
+
+async function gauntletRestDoRemove(idx) {
+  _gauntletRun.deck.splice(idx, 1);
+  _gauntletRun.visitedNodeIds.push(_gauntletRun.currentNodeId);
+  _gauntletRun.currentFloor++;
+  _gauntletRun.stage = Math.min(_gauntletRun.stage + 1, 12);
+  if (_userProfile) await saveUserProfile({ gauntlet_run: _gauntletRun });
+  document.getElementById('gauntlet-event-overlay')?.remove();
+  showGauntletMap(false);
+}
+
+async function gauntletRestSkip() {
+  _gauntletRun.visitedNodeIds.push(_gauntletRun.currentNodeId);
+  _gauntletRun.currentFloor++;
+  _gauntletRun.stage = Math.min(_gauntletRun.stage + 1, 12);
+  if (_userProfile) await saveUserProfile({ gauntlet_run: _gauntletRun });
+  document.getElementById('gauntlet-event-overlay')?.remove();
+  showGauntletMap(false);
+}
+
+// Random event: bonus shards, random card, or a trade
+function showGauntletRandomEvent() {
+  const events = [
+    { title:'WANDERING MERCHANT', desc:'A merchant offers a rare card from your faction.', action:'card',
+      execute: () => {
+        const faction = _gauntletRun.champion.faction;
+        const pool = Object.values(CARDS).filter(c => (c.faction === faction || c.faction === 'Basic') && c.rarity !== 'Legendary');
+        const card = pool[Math.floor(Math.random() * pool.length)];
+        _gauntletRun.deck.push(card.id);
+        return `Added ${card.name} to your deck!`;
+      }},
+    { title:'SHARD CACHE', desc:'You discover a hidden cache of shards.', action:'shards',
+      execute: () => {
+        const amount = 20 + Math.floor(Math.random() * 30);
+        _gauntletRun.earnedShards += amount;
+        grantShards(amount);
+        return `Found ${amount} shards!`;
+      }},
+    { title:'TRAINING GROUNDS', desc:'You practice and hone your skills.', action:'upgrade',
+      execute: () => {
+        const stats = ['wallLimit','handSize','cardDraw'];
+        const stat = stats[Math.floor(Math.random() * stats.length)];
+        const labels = {wallLimit:'Wall Limit',handSize:'Hand Size',cardDraw:'Card Draw'};
+        _gauntletRun.champion[stat] = (_gauntletRun.champion[stat] || 3) + 1;
+        return `+1 ${labels[stat]}!`;
+      }},
+  ];
+  const event = events[Math.floor(Math.random() * events.length)];
+
+  const overlay = document.createElement('div');
+  overlay.id = 'gauntlet-event-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;background:var(--bg);display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:200;padding:40px 24px;text-align:center;';
+  overlay.innerHTML = `
+    <div style="font-size:48px;margin-bottom:8px;">?</div>
+    <div style="font-family:'Teko',sans-serif;font-size:32px;color:#c084fc;margin-bottom:8px;">${event.title}</div>
+    <div style="font-size:13px;color:var(--text);margin-bottom:24px;">${event.desc}</div>
+    <button class="landing-btn" style="width:200px;background:rgba(192,132,252,0.15);color:#c084fc;border:1px solid rgba(192,132,252,0.3);"
+      onclick="gauntletResolveEvent(this);">
+      PROCEED
+    </button>
+  `;
+  overlay._event = event;
+  document.body.appendChild(overlay);
+}
+
+async function gauntletResolveEvent(btn) {
+  const overlay = document.getElementById('gauntlet-event-overlay');
+  if (!overlay?._event) return;
+  const result = overlay._event.execute();
+  _gauntletRun.visitedNodeIds.push(_gauntletRun.currentNodeId);
+  _gauntletRun.currentFloor++;
+  _gauntletRun.stage = Math.min(_gauntletRun.stage + 1, 12);
+  if (_userProfile) await saveUserProfile({ gauntlet_run: _gauntletRun });
+
+  overlay.innerHTML = `
+    <div style="font-family:'Teko',sans-serif;font-size:28px;color:#c084fc;margin-bottom:12px;">EVENT COMPLETE</div>
+    <div style="font-size:14px;color:var(--amber);margin-bottom:24px;">${result}</div>
+    <button class="landing-btn amber" style="width:200px;" onclick="document.getElementById('gauntlet-event-overlay')?.remove();showGauntletMap(false);">CONTINUE</button>
+  `;
+}
+
+function startGauntletStage() {
+  // Legacy compat — redirect to map
+  showGauntletMap(false);
 }
 
 // ── Gauntlet Victory ────────────────────────────────────────────────
 async function showGauntletVictory(winner) {
   if (!_gauntletRun) return;
   const stage = _gauntletRun.stage;
-  const isBoss = GAUNTLET_BOSS_STAGES.includes(stage);
+  const currentNode = _gauntletRun.currentNodeId ? gauntletGetNode(_gauntletRun.currentNodeId) : null;
+  const isBoss = currentNode ? currentNode.type === 'boss' : GAUNTLET_BOSS_STAGES.includes(stage);
 
   if (winner !== 0) {
     showGauntletDeath();
@@ -7133,10 +7437,12 @@ async function gauntletRemoveCard(idx) {
 }
 
 async function gauntletAdvanceStage() {
-  _gauntletRun.stage++;
+  _gauntletRun.visitedNodeIds.push(_gauntletRun.currentNodeId);
+  _gauntletRun.currentFloor++;
+  _gauntletRun.stage = Math.min(_gauntletRun.stage + 1, 12);
   if (_userProfile) await saveUserProfile({ gauntlet_run: _gauntletRun });
   document.getElementById('gauntlet-reward-overlay')?.remove();
-  showGauntletMap(true);
+  showGauntletMap(false);
 }
 
 // ── Boss Reward Screen ──────────────────────────────────────────────
@@ -7239,10 +7545,12 @@ async function gauntletLeaveAlive() {
 }
 
 async function gauntletContinueDeeper() {
-  _gauntletRun.stage++;
+  _gauntletRun.visitedNodeIds.push(_gauntletRun.currentNodeId);
+  _gauntletRun.currentFloor++;
+  _gauntletRun.stage = Math.min(_gauntletRun.stage + 1, 12);
   if (_userProfile) await saveUserProfile({ gauntlet_run: _gauntletRun });
   document.getElementById('gauntlet-reward-overlay')?.remove();
-  showGauntletMap(true);
+  showGauntletMap(false);
 }
 
 // ── Gauntlet Death ──────────────────────────────────────────────────
@@ -7271,51 +7579,105 @@ async function showGauntletDeath() {
   document.body.appendChild(deathOvl);
 }
 
-// ── Gauntlet Map ────────────────────────────────────────────────────
-function showGauntletMap(autoClose) {
+// ── Gauntlet Map (Branching Paths) ───────────────────────────────────
+function showGauntletMap(autoStartNext) {
   document.getElementById('gauntlet-map-overlay')?.remove();
   if (!_gauntletRun) return;
 
+  // Ensure map exists
+  if (!_gauntletRun.map) _gauntletRun.map = generateGauntletMap();
+  if (!_gauntletRun.visitedNodeIds) _gauntletRun.visitedNodeIds = [];
+
+  const map = _gauntletRun.map;
+  const currentFloor = _gauntletRun.currentFloor || 0;
+  const visited = new Set(_gauntletRun.visitedNodeIds || []);
+  const available = gauntletGetAvailableNodes();
+  const availableIds = new Set(available.map(n => n.id));
+
   const overlay = document.createElement('div');
   overlay.id = 'gauntlet-map-overlay';
-  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.92);display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:250;padding:20px;';
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.95);display:flex;flex-direction:column;align-items:center;z-index:250;padding:20px;overflow-y:auto;';
 
-  let nodesHtml = '';
-  for (let s = GAUNTLET_STAGES; s >= 1; s--) {
-    const isBoss = GAUNTLET_BOSS_STAGES.includes(s);
-    const isCurrent = s === _gauntletRun.stage;
-    const isCompleted = s < _gauntletRun.stage;
-    const aiRarity = GAUNTLET_AI_RARITY[s];
-    const rc = aiRarity==='Common'?'#aaa':aiRarity==='Uncommon'?'#4ade80':aiRarity==='Rare'?'#60a5fa':aiRarity==='Epic'?'#c084fc':'#fbbf24';
-
-    const bg = isCompleted ? 'rgba(212,144,58,0.15)' : isCurrent ? 'rgba(212,144,58,0.25)' : 'rgba(255,255,255,0.03)';
-    const border = isCurrent ? 'var(--amber)' : isCompleted ? 'rgba(212,144,58,0.4)' : 'var(--border)';
-    const textCol = isCompleted ? 'var(--amber)' : isCurrent ? '#fff' : '#555';
-
-    nodesHtml += `<div style="display:flex;align-items:center;gap:10px;padding:6px 16px;background:${bg};border:1px solid ${border};
-      margin-bottom:3px;width:300px;${isCurrent ? 'box-shadow:0 0 8px rgba(212,144,58,0.3);' : ''}">
-      <div style="width:24px;font-family:'Teko',sans-serif;font-size:16px;color:${textCol};">${s}</div>
-      <div style="flex:1;font-size:11px;color:${textCol};">${isBoss ? '☠ BOSS' : 'Stage'} ${s}</div>
-      <div style="font-size:10px;color:${rc};">${aiRarity}</div>
-      ${isCurrent ? '<div style="font-size:9px;color:var(--amber);">← YOU</div>' : ''}
-      ${isCompleted ? '<div style="font-size:9px;color:var(--amber);">✓</div>' : ''}
-    </div>`;
-  }
-
-  overlay.innerHTML = `
-    <div style="font-family:'Teko',sans-serif;font-size:28px;color:#e05050;letter-spacing:.15em;margin-bottom:4px;">THE GAUNTLET</div>
-    <div style="font-size:11px;color:var(--text-dim);margin-bottom:16px;">${_gauntletRun.champion.name} · ${_gauntletRun.champion.faction} · Deck: ${_gauntletRun.deck.length} cards</div>
-    ${nodesHtml}
-    ${!autoClose ? '<button class="landing-btn muted" style="width:140px;margin-top:12px;font-size:11px;" onclick="document.getElementById(\'gauntlet-map-overlay\')?.remove();">CLOSE</button>' : ''}
+  // Header
+  let html = `
+    <div style="font-family:'Teko',sans-serif;font-size:32px;color:#e05050;letter-spacing:.2em;margin-bottom:4px;">THE GAUNTLET</div>
+    <div style="font-size:11px;color:var(--text-dim);margin-bottom:4px;">
+      ${_gauntletRun.champion.name} · ${_gauntletRun.champion.faction} · Deck: ${_gauntletRun.deck.length} cards · ◆ ${_gauntletRun.earnedShards} shards
+    </div>
+    <div style="font-size:10px;color:#555;margin-bottom:16px;">Floor ${currentFloor} of 12</div>
   `;
-  document.body.appendChild(overlay);
 
-  if (autoClose) {
-    setTimeout(() => {
-      document.getElementById('gauntlet-map-overlay')?.remove();
-      startGauntletStage();
-    }, 2000);
+  // Render floors from top (12) to bottom (0)
+  html += '<div style="display:flex;flex-direction:column;align-items:center;gap:0;width:100%;max-width:500px;">';
+
+  for (let f = map.length - 1; f >= 0; f--) {
+    const floorNodes = map[f];
+    const isCurrentFloor = f === currentFloor;
+
+    // Connection lines from this floor to the floor below (f-1)
+    // (rendered above the nodes visually since we go top-down)
+
+    // Floor row
+    html += `<div style="display:flex;justify-content:center;gap:16px;padding:4px 0;width:100%;position:relative;">`;
+
+    for (const node of floorNodes) {
+      const nodeType = GAUNTLET_NODE_TYPES[node.type] || GAUNTLET_NODE_TYPES.battle;
+      const isVisited = visited.has(node.id);
+      const isAvailable = availableIds.has(node.id);
+      const isCurrent = node.id === _gauntletRun.currentNodeId;
+
+      let bg, border, textCol, cursor;
+      if (isCurrent) {
+        bg = 'rgba(212,144,58,0.3)'; border = 'var(--amber)'; textCol = '#fff'; cursor = 'default';
+      } else if (isVisited) {
+        bg = 'rgba(212,144,58,0.1)'; border = 'rgba(212,144,58,0.3)'; textCol = 'var(--amber)'; cursor = 'default';
+      } else if (isAvailable) {
+        bg = `rgba(255,255,255,0.06)`; border = nodeType.color; textCol = nodeType.color; cursor = 'pointer';
+      } else {
+        bg = 'rgba(255,255,255,0.02)'; border = '#333'; textCol = '#444'; cursor = 'default';
+      }
+
+      const clickHandler = isAvailable ? `onclick="startGauntletNode('${node.id}')"` : '';
+      const hoverStyle = isAvailable ? `onmouseover="this.style.transform='scale(1.1)';this.style.boxShadow='0 0 12px ${nodeType.color}40'" onmouseout="this.style.transform='scale(1)';this.style.boxShadow='none'"` : '';
+
+      const bossLabel = node.type === 'boss' && node.board ? `<div style="font-size:8px;color:#e05050;margin-top:2px;">${node.board.name}</div>` : '';
+
+      html += `<div ${clickHandler} ${hoverStyle} style="
+        background:${bg};border:2px solid ${border};padding:8px 14px;min-width:80px;text-align:center;
+        cursor:${cursor};transition:transform 0.15s,box-shadow 0.15s;position:relative;
+        ${isCurrent ? 'box-shadow:0 0 12px rgba(212,144,58,0.4);' : ''}
+      ">
+        <div style="font-size:18px;">${isVisited ? '✓' : nodeType.icon}</div>
+        <div style="font-size:10px;color:${textCol};letter-spacing:.08em;">${nodeType.label}</div>
+        ${bossLabel}
+        ${isCurrent ? '<div style="font-size:8px;color:var(--amber);margin-top:2px;">← YOU</div>' : ''}
+      </div>`;
+    }
+
+    html += '</div>';
+
+    // Draw connection lines between floors (simple vertical connectors)
+    if (f > 0) {
+      html += `<div style="width:2px;height:12px;background:#333;margin:0 auto;"></div>`;
+    }
   }
+
+  html += '</div>';
+
+  // Action buttons
+  html += `<div style="display:flex;gap:12px;margin-top:20px;">`;
+  if (currentFloor >= map.length) {
+    html += `<button class="landing-btn amber" style="width:200px;" onclick="document.getElementById('gauntlet-map-overlay')?.remove();showLandingScreen();">GAUNTLET COMPLETE</button>`;
+  }
+  html += `<button class="landing-btn muted" style="width:140px;font-size:11px;" onclick="document.getElementById('gauntlet-map-overlay')?.remove();showLandingScreen();">BACK</button>`;
+  if (_gauntletRun) {
+    html += `<button class="landing-btn" style="width:140px;font-size:11px;background:rgba(224,80,80,0.1);color:#e05050;border:1px solid rgba(224,80,80,0.3);"
+      onclick="if(confirm('Abandon run? Your champion will be lost.')){abandonGauntletRun();}">ABANDON</button>`;
+  }
+  html += `</div>`;
+
+  overlay.innerHTML = html;
+  document.body.appendChild(overlay);
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -7427,7 +7789,8 @@ function confirmChampionSelect() {
 }
 
 function showSPDeckPicker(championId) {
-  const champ = CHAMPIONS[championId];
+  const champ = resolveChampion(championId);
+  if (!champ) { showStatus('Champion not found', 'error'); return; }
   const customDecks = (_userProfile?.decks ?? []).filter(d => d.championId === championId);
   const factionColors = {
     Architects:'var(--wall-arch)', Pathfinders:'var(--wall-path)',
@@ -7496,8 +7859,10 @@ function startSPGame(championId) {
   const chosen = deckOptions[_dpSelectedIdx] ?? deckOptions[0];
   const deckCards = chosen.isStarter ? null : (chosen.cards ?? null);
 
-  // Determine AI champion
-  const playerFaction  = CHAMPIONS[championId].faction;
+  // Resolve champion (template or roster)
+  const playerChamp = resolveChampion(championId);
+  if (!playerChamp) { showStatus('Champion not found', 'error'); return; }
+  const playerFaction  = playerChamp.faction;
   const counterFaction = FACTION_COUNTER[playerFaction];
   let aiChampId;
   if (aiDifficulty === 'hard' && counterFaction) {
@@ -14551,8 +14916,7 @@ async function buyCardPack(tier) {
 // ── Daily Free Champion Roll ─────────────────────────────────────────
 function canClaimDailyRoll() {
   if (!_userProfile) return false;
-  const today = new Date().toISOString().slice(0, 10);
-  return (_userProfile.dailyRollDate || '') !== today;
+  return true; // Always available — no time limit
 }
 
 async function claimDailyRoll() {
@@ -14579,7 +14943,7 @@ function showShopScreen() {
         <h1 style="font-family:'Teko',sans-serif;font-size:32px;color:var(--accent);margin:0;">SHOP</h1>
         <div style="display:flex;gap:16px;align-items:center;">
           <span style="color:var(--accent);font-family:'Teko',sans-serif;font-size:22px;">◆ ${shards.toLocaleString()}</span>
-          <button onclick="document.getElementById('shop-overlay')?.remove()" class="action-btn" style="font-size:13px;padding:6px 16px;">BACK</button>
+          <button onclick="document.getElementById('shop-overlay')?.remove();showLandingScreen();" class="action-btn" style="font-size:13px;padding:6px 16px;">BACK</button>
         </div>
       </div>
 
@@ -14588,7 +14952,7 @@ function showShopScreen() {
         ${['Common','Uncommon','Rare','Mystery'].map(t => `
           <div style="background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:16px;text-align:center;">
             <div style="font-family:'Teko',sans-serif;font-size:20px;color:${t==='Common'?'#aaa':t==='Uncommon'?'#4ade80':t==='Rare'?'#60a5fa':t==='Mystery'?'#c084fc':'#ccc'};">${t.toUpperCase()} PACK</div>
-            <div style="font-size:12px;color:#888;margin:8px 0;">${t==='Mystery'?'Random rarity (~70% C, 20% U, 8% R, 2% E)':'Guaranteed '+t+' champion'}</div>
+            <div style="font-size:12px;color:#888;margin:8px 0;">${t==='Mystery'?'Random rarity champion':'Guaranteed '+t+' champion'}</div>
             <div style="color:var(--accent);font-family:'Teko',sans-serif;font-size:18px;margin:8px 0;">◆ ${CHAMPION_PACK_COSTS[t]}</div>
             <button onclick="handleBuyChampionPack('${t}')" class="action-btn primary" style="width:100%;font-size:13px;padding:6px;" ${shards < CHAMPION_PACK_COSTS[t] ? 'disabled' : ''}>BUY</button>
           </div>
@@ -14599,7 +14963,7 @@ function showShopScreen() {
       <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px;">
         <div style="background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:16px;text-align:center;">
           <div style="font-family:'Teko',sans-serif;font-size:20px;color:#aaa;">BASIC CARD PACK</div>
-          <div style="font-size:12px;color:#888;margin:8px 0;">3 cards (60% C, 30% U, 10% R)</div>
+          <div style="font-size:12px;color:#888;margin:8px 0;">3 random cards</div>
           <div style="color:var(--accent);font-family:'Teko',sans-serif;font-size:18px;margin:8px 0;">◆ 50</div>
           <button onclick="handleBuyCardPack('basic')" class="action-btn primary" style="width:100%;font-size:13px;padding:6px;" ${shards < 50 ? 'disabled' : ''}>BUY</button>
         </div>
@@ -14612,9 +14976,9 @@ function showShopScreen() {
       </div>
 
       ${canClaimDailyRoll() ? `
-      <h2 style="font-family:'Teko',sans-serif;font-size:22px;color:#fbbf24;margin:24px 0 12px;">DAILY FREE CHAMPION</h2>
+      <h2 style="font-family:'Teko',sans-serif;font-size:22px;color:#fbbf24;margin:24px 0 12px;">FREE CHAMPION</h2>
       <div style="background:var(--panel);border:2px solid #fbbf24;border-radius:8px;padding:16px;text-align:center;max-width:300px;">
-        <div style="font-size:14px;color:#fbbf24;margin-bottom:8px;">Free champion roll! (90% C, 8% U, 2% R)</div>
+        <div style="font-size:14px;color:#fbbf24;margin-bottom:8px;">Claim a free champion!</div>
         <button onclick="handleDailyRoll()" class="action-btn" style="background:#fbbf24;color:#000;width:100%;font-size:14px;padding:8px;">CLAIM FREE ROLL</button>
       </div>` : ''}
     </div>
@@ -14682,7 +15046,7 @@ function showRosterScreen() {
   let html = `<div style="max-width:900px;margin:0 auto;">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
       <h1 style="font-family:'Teko',sans-serif;font-size:32px;color:var(--accent);margin:0;">ROSTER</h1>
-      <button onclick="document.getElementById('roster-overlay')?.remove()" class="action-btn" style="font-size:13px;padding:6px 16px;">BACK</button>
+      <button onclick="document.getElementById('roster-overlay')?.remove();showLandingScreen();" class="action-btn" style="font-size:13px;padding:6px 16px;">BACK</button>
     </div>
 
     <h2 style="font-family:'Teko',sans-serif;font-size:18px;color:#888;margin:16px 0 8px;">TEMPLATE CHAMPIONS (Always Available)</h2>
