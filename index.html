@@ -2410,38 +2410,95 @@ const GAUNTLET_AI_DECK_DIST = {
 
 // ── Boss Board Modifiers ────────────────────────────────────────────
 // Bosses have unique board configurations making them harder
+// Boss boards use permanent indestructible walls to reshape the 9x9 grid.
+// "Boundary" walls along edges effectively narrow the board.
+// "Interior" walls create corridors, mazes, and chokepoints.
 const GAUNTLET_BOSS_BOARDS = {
   3: [
-    { name:'THE NARROW', desc:'7-wide board', boardWidth:7, boardHeight:9, preWalls:[] },
-    { name:'THE MAZE', desc:'Pre-placed walls block the path', boardWidth:9, boardHeight:9,
-      preWalls:[{anchor:{row:2,col:1},orientation:'H',length:3},{anchor:{row:2,col:5},orientation:'H',length:3},
-               {anchor:{row:5,col:2},orientation:'H',length:2},{anchor:{row:5,col:5},orientation:'H',length:2}] },
-    { name:'THE SPRINT', desc:'Short board — less room to maneuver', boardWidth:9, boardHeight:7, preWalls:[] },
+    { name:'THE NARROW', desc:'Walled-off edges — only 5 columns of play',
+      // Seal off columns 0 and 7-8 with vertical walls along their inner edges
+      preWalls:[
+        {anchor:{row:0,col:1},orientation:'V',length:2},{anchor:{row:2,col:1},orientation:'V',length:2},
+        {anchor:{row:4,col:1},orientation:'V',length:2},{anchor:{row:6,col:1},orientation:'V',length:2},
+        {anchor:{row:0,col:6},orientation:'V',length:2},{anchor:{row:2,col:6},orientation:'V',length:2},
+        {anchor:{row:4,col:6},orientation:'V',length:2},{anchor:{row:6,col:6},orientation:'V',length:2},
+      ]},
+    { name:'THE MAZE', desc:'Staggered walls force a winding path',
+      preWalls:[
+        {anchor:{row:1,col:0},orientation:'H',length:4},
+        {anchor:{row:3,col:4},orientation:'H',length:4},
+        {anchor:{row:5,col:0},orientation:'H',length:4},
+        {anchor:{row:7,col:4},orientation:'H',length:4},
+      ]},
+    { name:'THE SPRINT', desc:'Sealed top and bottom — short race to the finish',
+      // Horizontal walls at rows 1 and 7 seal off the outer rows
+      preWalls:[
+        {anchor:{row:1,col:0},orientation:'H',length:3},{anchor:{row:1,col:3},orientation:'H',length:3},{anchor:{row:1,col:6},orientation:'H',length:2},
+        {anchor:{row:6,col:0},orientation:'H',length:3},{anchor:{row:6,col:3},orientation:'H',length:3},{anchor:{row:6,col:6},orientation:'H',length:2},
+      ]},
   ],
   6: [
-    { name:'THE GAUNTLET', desc:'Narrow corridor with walls', boardWidth:5, boardHeight:9,
-      preWalls:[{anchor:{row:3,col:0},orientation:'H',length:2},{anchor:{row:3,col:3},orientation:'H',length:2},
-               {anchor:{row:5,col:1},orientation:'H',length:2},{anchor:{row:5,col:3},orientation:'H',length:2}] },
-    { name:'THE CAGE', desc:'Trapped corners', boardWidth:9, boardHeight:9,
-      preWalls:[{anchor:{row:1,col:0},orientation:'V',length:3},{anchor:{row:1,col:8},orientation:'V',length:3},
-               {anchor:{row:5,col:0},orientation:'V',length:3},{anchor:{row:5,col:8},orientation:'V',length:3}] },
-    { name:'THE FUNNEL', desc:'Narrow in the middle', boardWidth:9, boardHeight:9,
-      preWalls:[{anchor:{row:3,col:0},orientation:'V',length:3},{anchor:{row:3,col:1},orientation:'V',length:3},
-               {anchor:{row:3,col:7},orientation:'V',length:3},{anchor:{row:3,col:8},orientation:'V',length:3}] },
+    { name:'THE CORRIDOR', desc:'Tight 3-column passage with chokepoints',
+      preWalls:[
+        // Seal off cols 0-1 and 6-8
+        {anchor:{row:0,col:2},orientation:'V',length:2},{anchor:{row:2,col:2},orientation:'V',length:2},
+        {anchor:{row:4,col:2},orientation:'V',length:2},{anchor:{row:6,col:2},orientation:'V',length:2},
+        {anchor:{row:0,col:5},orientation:'V',length:2},{anchor:{row:2,col:5},orientation:'V',length:2},
+        {anchor:{row:4,col:5},orientation:'V',length:2},{anchor:{row:6,col:5},orientation:'V',length:2},
+        // Chokepoints in the middle
+        {anchor:{row:3,col:3},orientation:'H',length:1},{anchor:{row:5,col:3},orientation:'H',length:1},
+      ]},
+    { name:'THE CAGE', desc:'Center walled off — fight around the edges',
+      preWalls:[
+        // Box in the center (rows 3-5, cols 3-5)
+        {anchor:{row:2,col:3},orientation:'H',length:3},
+        {anchor:{row:5,col:3},orientation:'H',length:3},
+        {anchor:{row:3,col:2},orientation:'V',length:3},
+        {anchor:{row:3,col:5},orientation:'V',length:3},
+      ]},
+    { name:'THE FUNNEL', desc:'Wide at edges, narrow in the middle',
+      preWalls:[
+        // Vertical walls narrowing at row 4
+        {anchor:{row:3,col:0},orientation:'V',length:3},{anchor:{row:3,col:1},orientation:'V',length:3},
+        {anchor:{row:3,col:7},orientation:'V',length:3},{anchor:{row:3,col:8},orientation:'V',length:3},
+        // Extra horizontal choke
+        {anchor:{row:4,col:2},orientation:'H',length:2},{anchor:{row:4,col:5},orientation:'H',length:2},
+      ]},
   ],
   9: [
-    { name:'THE PIT', desc:'Tiny arena', boardWidth:7, boardHeight:7, preWalls:[] },
-    { name:'THE LABYRINTH', desc:'Dense walls everywhere', boardWidth:9, boardHeight:9,
-      preWalls:[{anchor:{row:1,col:2},orientation:'H',length:2},{anchor:{row:1,col:5},orientation:'H',length:2},
-               {anchor:{row:3,col:0},orientation:'H',length:2},{anchor:{row:3,col:4},orientation:'H',length:3},
-               {anchor:{row:5,col:2},orientation:'H',length:3},{anchor:{row:5,col:7},orientation:'H',length:2},
-               {anchor:{row:7,col:1},orientation:'H',length:2},{anchor:{row:7,col:5},orientation:'H',length:2}] },
+    { name:'THE PIT', desc:'Walled-off perimeter — tiny 5x5 arena',
+      preWalls:[
+        // Seal rows 0-1 and 7-8
+        {anchor:{row:1,col:0},orientation:'H',length:3},{anchor:{row:1,col:3},orientation:'H',length:3},{anchor:{row:1,col:6},orientation:'H',length:2},
+        {anchor:{row:6,col:0},orientation:'H',length:3},{anchor:{row:6,col:3},orientation:'H',length:3},{anchor:{row:6,col:6},orientation:'H',length:2},
+        // Seal cols 0-1 and 7-8
+        {anchor:{row:2,col:1},orientation:'V',length:2},{anchor:{row:4,col:1},orientation:'V',length:2},
+        {anchor:{row:2,col:6},orientation:'V',length:2},{anchor:{row:4,col:6},orientation:'V',length:2},
+      ]},
+    { name:'THE LABYRINTH', desc:'Dense permanent walls — every path is a puzzle',
+      preWalls:[
+        {anchor:{row:1,col:1},orientation:'H',length:2},{anchor:{row:1,col:5},orientation:'H',length:2},
+        {anchor:{row:2,col:3},orientation:'V',length:2},
+        {anchor:{row:3,col:0},orientation:'H',length:2},{anchor:{row:3,col:6},orientation:'H',length:2},
+        {anchor:{row:4,col:2},orientation:'V',length:2},{anchor:{row:4,col:5},orientation:'V',length:2},
+        {anchor:{row:5,col:3},orientation:'H',length:3},
+        {anchor:{row:6,col:1},orientation:'V',length:2},{anchor:{row:6,col:7},orientation:'V',length:2},
+        {anchor:{row:7,col:3},orientation:'H',length:2},
+      ]},
   ],
   12: [
-    { name:'THE FINAL CORRIDOR', desc:'Narrow and walled — no room for error', boardWidth:5, boardHeight:9,
-      preWalls:[{anchor:{row:2,col:0},orientation:'H',length:2},{anchor:{row:2,col:3},orientation:'H',length:2},
-               {anchor:{row:4,col:1},orientation:'H',length:3},
-               {anchor:{row:6,col:0},orientation:'H',length:2},{anchor:{row:6,col:3},orientation:'H',length:2}] },
+    { name:'THE FINAL CORRIDOR', desc:'Deadly narrow with maze walls — no room for error',
+      preWalls:[
+        // Narrow to 3 columns
+        {anchor:{row:0,col:2},orientation:'V',length:2},{anchor:{row:2,col:2},orientation:'V',length:2},
+        {anchor:{row:4,col:2},orientation:'V',length:2},{anchor:{row:6,col:2},orientation:'V',length:2},
+        {anchor:{row:0,col:5},orientation:'V',length:2},{anchor:{row:2,col:5},orientation:'V',length:2},
+        {anchor:{row:4,col:5},orientation:'V',length:2},{anchor:{row:6,col:5},orientation:'V',length:2},
+        // Staggered chokepoints within the corridor
+        {anchor:{row:2,col:3},orientation:'H',length:1},
+        {anchor:{row:4,col:3},orientation:'H',length:2},
+        {anchor:{row:6,col:3},orientation:'H',length:1},
+      ]},
   ],
 };
 
@@ -5122,6 +5179,7 @@ function cancelTrapPlace() {
 }
 
 // Place a 1-tile wall at a position (used by Seismic Slam wall trail)
+// These walls do NOT count toward the owner's wall limit.
 function placeTrapWallBehind(pos, pushDir, ownerPi) {
   // Wall goes perpendicular to push direction at the vacated position
   const orientation = (pushDir.r !== 0) ? 'H' : 'V';
@@ -5141,10 +5199,10 @@ function placeTrapWallBehind(pos, pushDir, ownerPi) {
       binding: false, noJump: false,
       temporary: false, turnsRemaining: null,
       placedOnTurn: gameState.turnNumber,
+      _seismicSlam: true, // Seismic Slam walls don't count toward wall limit
     };
     gameState.walls.push(wall);
-    gameState.players[ownerPi] = {...gameState.players[ownerPi],
-      wallsInPlay: gameState.players[ownerPi].wallsInPlay + 1};
+    // Do NOT increment wallsInPlay — Seismic Slam walls are free
     return true;
   }
   return false;
@@ -5816,7 +5874,7 @@ async function runAI() {
 
     // RC Reconstruction / A3 Reclaim: removes oldest own wall, draws 1.
     if (card.id === 'A3' || card.id === 'RC') {
-      const myWalls = st.walls.filter(w => w.owner===pi && !w.isPhantom && !w.permanent)
+      const myWalls = st.walls.filter(w => w.owner===pi && !w.isPhantom && !w.permanent && !w._seismicSlam && !w._bossWall)
                                .sort((a,b) => a.placedOnTurn - b.placedOnTurn);
       if (!myWalls.length) continue;
       const target = myWalls[0];
@@ -5825,7 +5883,10 @@ async function runAI() {
       const oppDistAfter = bfsDistanceFor(st.oppPos, 0,            simWalls, 0);
       const myGain  = (bfsDistanceFor(st.aiPos, BOARD_SIZE-1, st.walls, pi) - myDistAfter);
       const oppGain = (bfsDistanceFor(st.oppPos, 0, st.walls, 0) - oppDistAfter);
-      const s = myGain * 8 - oppGain * 6 - 1;
+      let s = myGain * 8 - oppGain * 6 - 1;
+      // Big bonus when at wall limit — freeing a slot lets AI place new walls
+      if (st.aiWalls >= st.aiLimit) s += 12;
+      else if (st.aiWalls >= st.aiLimit - 1) s += 6;
       if (s > bestCardScore) {
         secondBestCardScore = bestCardScore; secondBestCardAction = bestCardAction;
         bestCardScore = s;
@@ -6714,7 +6775,7 @@ function showLandingScreen() {
       </button>
       <button onclick="document.getElementById('landing-overlay').remove();showShopScreen();"
               class="landing-btn" style="background:rgba(251,191,36,0.12);color:#fbbf24;border:1px solid rgba(251,191,36,0.3);position:relative;">
-        ◆ SHOP${canClaimDailyRoll() ? ' <span style="display:inline-block;width:8px;height:8px;background:#fbbf24;border-radius:50;margin-left:6px;"></span>' : ''}
+        ◆ SHOP
       </button>
     </div>
 
@@ -7226,18 +7287,34 @@ function startGauntletCombat(node) {
 }
 
 function applyBossBoard(board) {
-  // Pre-place walls on the board
+  // Pre-place indestructible boss walls
   if (board.preWalls && board.preWalls.length > 0) {
     for (const pw of board.preWalls) {
       const wall = {
-        id: gameState.nextWallId++, owner: -1, // neutral walls
+        id: gameState.nextWallId++, owner: -1, // neutral — no one owns them
         anchor: pw.anchor, orientation: pw.orientation, length: pw.length,
-        isPhantom: false, durable: false, durableHits: 0, immune: true,
-        reinforced: true, temporary: false, turnsRemaining: null,
+        isPhantom: false, durable: false, durableHits: 0,
+        immune: true, reinforced: true, permanent: true,
+        temporary: false, turnsRemaining: null,
         placedOnTurn: 0, _bossWall: true,
       };
       gameState.walls.push(wall);
     }
+
+    // Ensure both players are in valid (reachable) positions
+    // Move players to center columns if the board is narrowed
+    for (let pi = 0; pi < 2; pi++) {
+      const pos = gameState.players[pi].position;
+      // Check if current position is reachable from the goal
+      const goalRow = pi === 0 ? 0 : BOARD_SIZE - 1;
+      const dist = bfsDistance(pos, pi, gameState.walls);
+      if (dist === Infinity || dist === undefined) {
+        // Position is walled off — relocate to center column on same row
+        const newPos = { row: pos.row, col: 4 };
+        gameState.players[pi] = {...gameState.players[pi], position: newPos};
+      }
+    }
+
     renderAll();
   }
 }
@@ -7559,15 +7636,56 @@ async function gauntletPickCard(idx) {
   const card = overlay._cards[idx];
   if (!card) return;
   _gauntletRun.deck.push(card.id);
-  // Elite stat boost: +1 to a random stat
-  if (overlay._isElite) {
-    const stats = ['wallLimit','handSize','cardDraw'];
-    const stat = stats[Math.floor(Math.random() * stats.length)];
-    _gauntletRun.champion[stat] = (_gauntletRun.champion[stat] || 3) + 1;
-  }
   overlay._setCardPicked();
   if (_userProfile) await saveUserProfile({ gauntlet_run: _gauntletRun });
+  // Elite: show stat upgrade choice instead of random
+  if (overlay._isElite) {
+    showEliteStatChoice();
+    return;
+  }
   overlay._render();
+}
+
+function showEliteStatChoice() {
+  const overlay = document.getElementById('gauntlet-reward-overlay');
+  if (!overlay) return;
+  const upgrades = [
+    {stat:'wallLimit', label:'+1 Wall Limit', current: _gauntletRun.champion.wallLimit},
+    {stat:'handSize', label:'+1 Hand Size', current: _gauntletRun.champion.handSize},
+    {stat:'cardDraw', label:'+1 Card Draw', current: _gauntletRun.champion.cardDraw},
+  ];
+  const html = upgrades.map((u, i) => `
+    <div onclick="gauntletElitePickStat(${i})" style="cursor:pointer;background:var(--surface);border:2px solid #f59e0b;
+      padding:16px 20px;width:150px;text-align:center;transition:transform 0.15s;"
+      onmouseover="this.style.transform='scale(1.05)'" onmouseout="this.style.transform='scale(1)'">
+      <div style="font-family:'Teko',sans-serif;font-size:18px;color:#f59e0b;">${u.label}</div>
+      <div style="font-size:10px;color:#888;margin-top:4px;">Currently: ${u.current}</div>
+    </div>
+  `).join('');
+  overlay.innerHTML = `
+    <div style="font-family:'Teko',sans-serif;font-size:28px;color:#f59e0b;margin-bottom:4px;">⚡ ELITE BONUS</div>
+    <div style="font-size:12px;color:var(--text-dim);margin-bottom:8px;">Card added! Now choose a stat upgrade:</div>
+    <div style="display:flex;gap:12px;margin-bottom:24px;flex-wrap:wrap;justify-content:center;">${html}</div>
+  `;
+  overlay._eliteUpgrades = upgrades;
+}
+
+async function gauntletElitePickStat(idx) {
+  const overlay = document.getElementById('gauntlet-reward-overlay');
+  if (!overlay?._eliteUpgrades) return;
+  const upgrade = overlay._eliteUpgrades[idx];
+  _gauntletRun.champion[upgrade.stat] = (_gauntletRun.champion[upgrade.stat] || 3) + 1;
+  if (_userProfile) await saveUserProfile({ gauntlet_run: _gauntletRun });
+  // Show confirmation, then advance button
+  overlay.innerHTML = `
+    <div style="font-family:'Teko',sans-serif;font-size:28px;color:#f59e0b;margin-bottom:8px;">⚡ ${upgrade.label.toUpperCase()}</div>
+    <div style="font-size:13px;color:#4ade80;margin-bottom:24px;">${_gauntletRun.champion.name} grows stronger!</div>
+    <div style="background:var(--surface);border:1px solid var(--border);padding:12px 20px;margin-bottom:20px;text-align:center;">
+      <div style="font-size:10px;color:var(--text-dim);margin-bottom:6px;">STATS</div>
+      <div style="font-size:12px;color:#ccc;">W:${_gauntletRun.champion.wallLimit} H:${_gauntletRun.champion.handSize} D:${_gauntletRun.champion.cardDraw} U:${_gauntletRun.champion.ultimateCost}</div>
+    </div>
+    <button class="landing-btn amber" style="width:220px;" onclick="gauntletAdvanceStage();">CONTINUE →</button>
+  `;
 }
 
 async function gauntletAdvanceStage() {
@@ -11695,10 +11813,47 @@ function applyUltimate(pi, champId) {
       if (!targets.length) {
         showStatus('Breach: no valid landing tiles!', 'error'); return;
       }
-      // Enter a move-like mode where player picks the landing tile
+
+      // AI: automatically pick the best Breach target
+      if (!isHumanSeat(pi)) {
+        const oppPos = gameState.players[1-pi].position;
+        const goalRow = pi === 0 ? 0 : BOARD_SIZE - 1;
+        let bestTarget = null, bestScore = -Infinity;
+        for (const t of targets) {
+          let score = 0;
+          // Prefer tiles closer to the goal
+          score += (BOARD_SIZE - Math.abs(t.row - goalRow)) * 5;
+          // Win immediately if landing on goal row
+          if (t.row === goalRow) score += 10000;
+          // Bonus for stunning opponent (within 2 tiles)
+          const dist = Math.abs(t.row - oppPos.row) + Math.abs(t.col - oppPos.col);
+          if (dist <= 2) score += 15;
+          // Bonus for jumping over walls (prefer tiles that were unreachable normally)
+          const normalMoves = getLegalMoves(gameState, pi);
+          const wasReachable = normalMoves.some(m => m.row === t.row && m.col === t.col);
+          if (!wasReachable) score += 8;
+          if (score > bestScore) { bestScore = score; bestTarget = t; }
+        }
+        if (bestTarget) {
+          gameState.players[pi] = {...gameState.players[pi], position: bestTarget};
+          const dist = Math.abs(bestTarget.row - oppPos.row) + Math.abs(bestTarget.col - oppPos.col);
+          if (dist <= 2) {
+            addStatusEffect(1-pi, 'skip_move', 2);
+            addLog(pi, 'ultimate', `Breach: opponent stunned!`);
+          }
+          addLog(pi, 'ultimate', `Breach: teleported to (${bestTarget.row},${bestTarget.col})`);
+          if (bestTarget.row === goalRow) {
+            gameState.winner = pi; gameState.phase = 'ended';
+            addLog(pi, 'system', `PLAYER ${pi} WINS — Breach to the goal!`);
+            renderAll(); showVictory(pi); return;
+          }
+        }
+        renderAll(); return;
+      }
+
+      // Human: enter move-like mode where player picks the landing tile
       gameState._breachTargets = targets;
       uiMode = 'move';
-      // Override legal moves to be the breach targets
       selectedCard = { id: '__breach__', idx: -1, _breach: true, overrideSpeed: 0 };
       addLog(pi, 'ultimate', 'Breach: choose a landing tile within 2 spaces!');
       showStatus('Breach — click any highlighted tile to teleport (ignores walls)', 'active');
@@ -15197,28 +15352,10 @@ function showShopScreen() {
         </div>
       </div>
 
-      <h2 style="font-family:'Teko',sans-serif;font-size:22px;color:#fbbf24;margin:24px 0 12px;">DAILY FREE CHAMPION</h2>
-      <div style="background:var(--panel);border:2px solid ${canClaimDailyRoll()?'#fbbf24':'#555'};border-radius:8px;padding:16px;text-align:center;max-width:300px;">
-        ${canClaimDailyRoll() ? `
-          <div style="font-size:14px;color:#fbbf24;margin-bottom:8px;">Claim a free champion!</div>
-          <button onclick="handleDailyRoll()" class="action-btn" style="background:#fbbf24;color:#000;width:100%;font-size:14px;padding:8px;">CLAIM FREE ROLL</button>
-        ` : `
-          <div style="font-size:13px;color:#888;margin-bottom:6px;">Already claimed today</div>
-          <div style="font-size:16px;color:#fbbf24;font-family:'Teko',sans-serif;letter-spacing:.1em;" id="daily-roll-countdown">Next in: ${getDailyRollCountdown()}</div>
-        `}
-      </div>
     </div>
   `;
   document.body.appendChild(overlay);
 
-  // Start countdown timer if daily roll not available
-  if (!canClaimDailyRoll()) {
-    const _shopTimer = setInterval(() => {
-      const el = document.getElementById('daily-roll-countdown');
-      if (!el || !document.getElementById('shop-overlay')) { clearInterval(_shopTimer); return; }
-      el.textContent = 'Next in: ' + getDailyRollCountdown();
-    }, 1000);
-  }
 }
 
 async function handleBuyChampionPack(tier) {
