@@ -2305,7 +2305,27 @@
 // structures exactly — ready to be swapped for the compiled engine.
 // ═══════════════════════════════════════════════════════════════════
 
-const BOARD_SIZE = 9;
+const DEFAULT_BOARD_ROWS = 9;
+const DEFAULT_BOARD_COLS = 9;
+let BOARD_ROWS = DEFAULT_BOARD_ROWS;
+let BOARD_COLS = DEFAULT_BOARD_COLS;
+// BOARD_SIZE is kept as a getter for backward compat — returns BOARD_ROWS
+// (Most code checks row/col < BOARD_SIZE, which works for square boards.
+//  For asymmetric boards, code should use BOARD_ROWS and BOARD_COLS.)
+let BOARD_SIZE = 9;
+
+function setBoardSize(rows, cols) {
+  BOARD_ROWS = rows || DEFAULT_BOARD_ROWS;
+  BOARD_COLS = cols || DEFAULT_BOARD_COLS;
+  BOARD_SIZE = Math.max(BOARD_ROWS, BOARD_COLS); // compat: bounds checks use the larger dimension
+}
+
+function resetBoardSize() {
+  BOARD_ROWS = DEFAULT_BOARD_ROWS;
+  BOARD_COLS = DEFAULT_BOARD_COLS;
+  BOARD_SIZE = 9;
+}
+
 const CELL = 52;
 const GAP  = 3;
 
@@ -3142,6 +3162,8 @@ function createPlayer(index, championIdOrObj, faction, deckCards, overridePos) {
 
 // ── initGame ────────────────────────────────────────────────────────
 function initGame(playerChampId, aiChampId, playerDeckCards) {
+  // Reset board to default size for exhibition/SP games
+  resetBoardSize();
   // ── FULLY tear down any lingering MP state ──
   gameMode = 'sp';
   mp_isMultiplayer = false;
@@ -3201,6 +3223,7 @@ function initGame(playerChampId, aiChampId, playerDeckCards) {
 function initTutorialMatch(matchNum) {
   const cfg = TUTORIAL_MATCHES[matchNum];
   if (!cfg) return;
+  resetBoardSize(); // Tutorials always use default board
 
   // Reset match 3 champion pick if re-entering tutorial
   if (matchNum === 1) TUTORIAL_MATCHES[3].playerChampion = null;
@@ -3292,6 +3315,7 @@ function initTutorialMatch(matchNum) {
 
 // ── Gauntlet Match Init ─────────────────────────────────────────────
 function initGauntletGame(playerChamp, aiChamp, playerDeckIds, aiDeckCards) {
+  resetBoardSize(); // Reset to default; boss boards may override after init
   gameMode = 'gauntlet';
   mp_isMultiplayer = false;
   mp_gameId = null; mp_localSeat = null; mp_opponentName = null;
@@ -7325,6 +7349,11 @@ function startGauntletCombat(node) {
 }
 
 function applyBossBoard(board) {
+  // Optionally resize the board for this boss fight
+  if (board.rows || board.cols) {
+    setBoardSize(board.rows || DEFAULT_BOARD_ROWS, board.cols || DEFAULT_BOARD_COLS);
+  }
+
   // Pre-place indestructible boss walls
   if (board.preWalls && board.preWalls.length > 0) {
     for (const pw of board.preWalls) {
@@ -7338,22 +7367,28 @@ function applyBossBoard(board) {
       };
       gameState.walls.push(wall);
     }
+  }
 
-    // Ensure both players are in valid (reachable) positions
-    // Move players to center columns if the board is narrowed
-    for (let pi = 0; pi < 2; pi++) {
-      const pos = gameState.players[pi].position;
-      // Check if current position is reachable from the goal
-      const goalRow = pi === 0 ? 0 : BOARD_SIZE - 1;
-      const dist = bfsDistance(pos, pi, gameState.walls);
-      if (dist === Infinity || dist === undefined) {
-        // Position is walled off — relocate to center column on same row
-        const newPos = { row: pos.row, col: 4 };
-        gameState.players[pi] = {...gameState.players[pi], position: newPos};
-      }
+  // Ensure both players are in valid (reachable) positions
+  const centerCol = Math.floor(BOARD_COLS / 2);
+  for (let pi = 0; pi < 2; pi++) {
+    const pos = gameState.players[pi].position;
+    // Clamp to board bounds
+    const clampedRow = Math.min(pos.row, BOARD_ROWS - 1);
+    const clampedCol = Math.min(pos.col, BOARD_COLS - 1);
+    if (clampedRow !== pos.row || clampedCol !== pos.col) {
+      gameState.players[pi] = {...gameState.players[pi], position: {row: clampedRow, col: clampedCol}};
     }
+    // Check if position is reachable from goal
+    const dist = bfsDistance(gameState.players[pi].position, pi, gameState.walls);
+    if (dist === Infinity || dist === undefined) {
+      // Position is walled off — relocate to center column on same row
+      const newPos = { row: gameState.players[pi].position.row, col: centerCol };
+      gameState.players[pi] = {...gameState.players[pi], position: newPos};
+    }
+  }
 
-    renderAll();
+  renderAll();
   }
 }
 
@@ -7431,14 +7466,10 @@ async function gauntletRestSkip() {
 // Random event: bonus shards, random card, or a trade
 function showGauntletRandomEvent() {
   const faction = _gauntletRun.champion.faction;
+  const rarityColor = r => r==='Common'?'#aaa':r==='Uncommon'?'#4ade80':r==='Rare'?'#60a5fa':r==='Legendary'?'#fbbf24':'#ccc';
+
   const goodEvents = [
-    { title:'WANDERING MERCHANT', desc:'A merchant offers a rare card from your faction.', good:true,
-      execute: () => {
-        const pool = Object.values(CARDS).filter(c => (c.faction === faction || c.faction === 'Basic') && (c.rarity === 'Rare' || c.rarity === 'Uncommon'));
-        const card = pool.length ? pool[Math.floor(Math.random() * pool.length)] : Object.values(CARDS)[0];
-        _gauntletRun.deck.push(card.id);
-        return `Added ${card.name} (${card.rarity}) to your deck!`;
-      }},
+    { title:'WANDERING MERCHANT', desc:'A merchant offers rare cards. Pick one for your deck.', good:true, interactive:'pick_card' },
     { title:'SHARD CACHE', desc:'You discover a hidden cache of shards.', good:true,
       execute: () => {
         const amount = 20 + Math.floor(Math.random() * 30);
@@ -7454,26 +7485,7 @@ function showGauntletRandomEvent() {
         _gauntletRun.champion[stat] = (_gauntletRun.champion[stat] || 3) + 1;
         return `+1 ${labels[stat]}!`;
       }},
-    { title:'FOREIGN DIPLOMAT', desc:'An emissary from another faction offers a card.', good:true,
-      execute: () => {
-        const otherFactions = Object.keys(FACTION_COUNTER).filter(f => f !== faction);
-        const otherFaction = otherFactions[Math.floor(Math.random() * otherFactions.length)];
-        const pool = Object.values(CARDS).filter(c => c.faction === otherFaction);
-        const card = pool.length ? pool[Math.floor(Math.random() * pool.length)] : Object.values(CARDS)[0];
-        _gauntletRun.deck.push(card.id);
-        return `Added ${card.name} (${card.faction}) to your deck!`;
-      }},
-    { title:'REST STOP', desc:'A quiet place to remove a weak card from your deck.', good:true,
-      execute: () => {
-        // Auto-remove weakest common card
-        const idx = _gauntletRun.deck.findIndex(id => CARDS[id] && CARDS[id].rarity === 'Common');
-        if (idx >= 0) {
-          const removed = CARDS[_gauntletRun.deck[idx]];
-          _gauntletRun.deck.splice(idx, 1);
-          return `Removed ${removed.name} from your deck!`;
-        }
-        return 'No common cards to remove.';
-      }},
+    { title:'FOREIGN DIPLOMAT', desc:'An emissary from another faction offers cards. Pick one.', good:true, interactive:'pick_foreign_card' },
   ];
   const badEvents = [
     { title:'DECK FLOOD', desc:'A chaotic surge fills your deck with weak cards.', good:false,
@@ -7490,18 +7502,7 @@ function showGauntletRandomEvent() {
         _gauntletRun.champion[stat] = Math.max(2, (_gauntletRun.champion[stat] || 3) - 1);
         return `-1 ${labels[stat]}! Champion weakened.`;
       }},
-    { title:'CURSED SHRINE', desc:'The shrine demands a sacrifice from your deck.', good:false,
-      execute: () => {
-        // Force remove a random non-basic card
-        const nonBasic = _gauntletRun.deck.map((id, i) => ({id, i})).filter(x => CARDS[x.id] && CARDS[x.id].faction !== 'Basic');
-        if (nonBasic.length > 0) {
-          const victim = nonBasic[Math.floor(Math.random() * nonBasic.length)];
-          const removed = CARDS[victim.id];
-          _gauntletRun.deck.splice(victim.i, 1);
-          return `The shrine consumed ${removed.name}!`;
-        }
-        return 'The shrine finds nothing worthy to take.';
-      }},
+    { title:'CURSED SHRINE', desc:'The shrine demands a sacrifice. Choose a card to lose.', good:false, interactive:'lose_card' },
     { title:'AMBUSH', desc:'Bandits steal some of your shards.', good:false,
       execute: () => {
         const stolen = Math.min(15 + Math.floor(Math.random() * 20), _gauntletRun.earnedShards);
@@ -7518,7 +7519,78 @@ function showGauntletRandomEvent() {
   const eventColor = event.good ? '#c084fc' : '#e05050';
   const overlay = document.createElement('div');
   overlay.id = 'gauntlet-event-overlay';
-  overlay.style.cssText = 'position:fixed;inset:0;background:var(--bg);display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:200;padding:40px 24px;text-align:center;';
+  overlay.style.cssText = 'position:fixed;inset:0;background:var(--bg);display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:200;padding:40px 24px;text-align:center;overflow-y:auto;';
+
+  // Interactive events show pick UI immediately
+  if (event.interactive === 'pick_card' || event.interactive === 'pick_foreign_card') {
+    // Generate 3 card options
+    let cardPool;
+    if (event.interactive === 'pick_foreign_card') {
+      const otherFactions = Object.keys(FACTION_COUNTER).filter(f => f !== faction);
+      const otherFaction = otherFactions[Math.floor(Math.random() * otherFactions.length)];
+      cardPool = Object.values(CARDS).filter(c => c.faction === otherFaction);
+    } else {
+      cardPool = Object.values(CARDS).filter(c => (c.faction === faction || c.faction === 'Basic') && (c.rarity === 'Rare' || c.rarity === 'Uncommon'));
+    }
+    const picks = []; const usedIds = new Set();
+    for (let i = 0; i < 3 && cardPool.length; i++) {
+      const filtered = cardPool.filter(c => !usedIds.has(c.id));
+      if (!filtered.length) break;
+      const pick = filtered[Math.floor(Math.random() * filtered.length)];
+      picks.push(pick); usedIds.add(pick.id);
+    }
+    const cardsHtml = picks.map((c, i) => {
+      const rc = rarityColor(c.rarity);
+      return `<div onclick="gauntletEventPickCard(${i})" style="cursor:pointer;background:var(--surface);border:2px solid ${rc};
+        padding:14px;width:150px;text-align:center;transition:transform 0.15s;"
+        onmouseover="this.style.transform='scale(1.05)'" onmouseout="this.style.transform='scale(1)'">
+        <div style="font-family:'Teko',sans-serif;font-size:16px;color:${rc};">${c.name}</div>
+        <div style="font-size:9px;color:#888;">${c.rarity} · ${c.faction}</div>
+        <div style="font-size:10px;color:var(--text);margin-top:4px;line-height:1.3;">${c.desc}</div>
+      </div>`;
+    }).join('');
+    overlay.innerHTML = `
+      <div style="font-size:48px;margin-bottom:8px;">?</div>
+      <div style="font-family:'Teko',sans-serif;font-size:32px;color:${eventColor};margin-bottom:8px;">${event.title}</div>
+      <div style="font-size:13px;color:var(--text);margin-bottom:20px;">${event.desc}</div>
+      <div style="display:flex;gap:12px;flex-wrap:wrap;justify-content:center;">${cardsHtml}</div>
+    `;
+    overlay._eventPicks = picks;
+    overlay._event = event;
+    document.body.appendChild(overlay);
+    return;
+  }
+
+  if (event.interactive === 'lose_card') {
+    // Show the 3 highest-rarity cards in the deck for player to choose which to lose
+    const rarityRank = {Legendary:4, Rare:3, Uncommon:2, Common:1};
+    const sorted = _gauntletRun.deck
+      .map((id, i) => ({id, i, card: CARDS[id], rank: rarityRank[CARDS[id]?.rarity] || 0}))
+      .filter(x => x.card)
+      .sort((a, b) => b.rank - a.rank || a.i - b.i);
+    const top3 = sorted.slice(0, 3);
+    const loseHtml = top3.map((x, i) => {
+      const rc = rarityColor(x.card.rarity);
+      return `<div onclick="gauntletEventLoseCard(${x.i})" style="cursor:pointer;background:var(--surface);border:2px solid ${rc};
+        padding:14px;width:150px;text-align:center;transition:transform 0.15s;"
+        onmouseover="this.style.borderColor='#e05050'" onmouseout="this.style.borderColor='${rc}'">
+        <div style="font-family:'Teko',sans-serif;font-size:16px;color:${rc};">${x.card.name}</div>
+        <div style="font-size:9px;color:#888;">${x.card.rarity} · ${x.card.faction}</div>
+        <div style="font-size:10px;color:var(--text);margin-top:4px;line-height:1.3;">${x.card.desc}</div>
+      </div>`;
+    }).join('');
+    overlay.innerHTML = `
+      <div style="font-size:48px;margin-bottom:8px;">!</div>
+      <div style="font-family:'Teko',sans-serif;font-size:32px;color:${eventColor};margin-bottom:8px;">${event.title}</div>
+      <div style="font-size:13px;color:var(--text);margin-bottom:20px;">${event.desc}</div>
+      <div style="display:flex;gap:12px;flex-wrap:wrap;justify-content:center;">${loseHtml}</div>
+    `;
+    overlay._event = event;
+    document.body.appendChild(overlay);
+    return;
+  }
+
+  // Non-interactive events: show proceed button
   overlay.innerHTML = `
     <div style="font-size:48px;margin-bottom:8px;">${event.good ? '?' : '!'}</div>
     <div style="font-family:'Teko',sans-serif;font-size:32px;color:${eventColor};margin-bottom:8px;">${event.title}</div>
@@ -7532,22 +7604,45 @@ function showGauntletRandomEvent() {
   document.body.appendChild(overlay);
 }
 
+async function gauntletEventPickCard(idx) {
+  const overlay = document.getElementById('gauntlet-event-overlay');
+  if (!overlay?._eventPicks) return;
+  const card = overlay._eventPicks[idx];
+  if (!card) return;
+  _gauntletRun.deck.push(card.id);
+  await gauntletFinishEvent(overlay._event, `Added ${card.name} (${card.rarity}) to your deck!`);
+}
+
+async function gauntletEventLoseCard(deckIdx) {
+  const overlay = document.getElementById('gauntlet-event-overlay');
+  const removed = CARDS[_gauntletRun.deck[deckIdx]];
+  _gauntletRun.deck.splice(deckIdx, 1);
+  await gauntletFinishEvent(overlay._event, `The shrine consumed ${removed?.name || 'a card'}!`);
+}
+
 async function gauntletResolveEvent(btn) {
   const overlay = document.getElementById('gauntlet-event-overlay');
   if (!overlay?._event) return;
   const event = overlay._event;
   const result = event.execute();
+  await gauntletFinishEvent(event, result);
+}
+
+async function gauntletFinishEvent(event, resultText) {
   _gauntletRun.visitedNodeIds.push(_gauntletRun.currentNodeId);
   _gauntletRun.currentFloor++;
   _gauntletRun.stage = Math.min(_gauntletRun.stage + 1, 12);
   if (_userProfile) await saveUserProfile({ gauntlet_run: _gauntletRun });
 
   const resultColor = event.good ? '#4ade80' : '#e05050';
-  overlay.innerHTML = `
-    <div style="font-family:'Teko',sans-serif;font-size:28px;color:${resultColor};margin-bottom:12px;">${event.good ? 'EVENT COMPLETE' : 'MISFORTUNE'}</div>
-    <div style="font-size:14px;color:${resultColor};margin-bottom:24px;">${result}</div>
-    <button class="landing-btn amber" style="width:200px;" onclick="document.getElementById('gauntlet-event-overlay')?.remove();showGauntletMap(false);">CONTINUE</button>
-  `;
+  const overlay = document.getElementById('gauntlet-event-overlay');
+  if (overlay) {
+    overlay.innerHTML = `
+      <div style="font-family:'Teko',sans-serif;font-size:28px;color:${resultColor};margin-bottom:12px;">${event.good ? 'EVENT COMPLETE' : 'MISFORTUNE'}</div>
+      <div style="font-size:14px;color:${resultColor};margin-bottom:24px;">${resultText}</div>
+      <button class="landing-btn amber" style="width:200px;" onclick="document.getElementById('gauntlet-event-overlay')?.remove();showGauntletMap(false);">CONTINUE</button>
+    `;
+  }
 }
 
 function startGauntletStage() {
@@ -12319,15 +12414,17 @@ function renderBoard() {
   const container = document.getElementById('board-container');
   if (!container) return;
 
-  const totalSize = BOARD_SIZE*CELL + (BOARD_SIZE-1)*GAP;
+  const totalW = BOARD_COLS*CELL + (BOARD_COLS-1)*GAP;
+  const totalH = BOARD_ROWS*CELL + (BOARD_ROWS-1)*GAP;
+  const totalSize = Math.max(totalW, totalH); // compat for wall layer positioning
 
   const p0Name = gameState.players[0].champion.name.toUpperCase();
   const p1Name = gameState.players[1].champion.name.toUpperCase();
   container.innerHTML = `
     <div style="position:absolute;top:-20px;left:0;right:0;text-align:center;font-size:9px;color:var(--p1-dim);letter-spacing:.15em;font-family:'JetBrains Mono',monospace;">${gameMode === 'mp' ? '← ' + p1Name + ' GOAL →' : '← AI (' + p1Name + ') GOAL →'}</div>
-    <div class="board-grid" id="board-grid"></div>
-    <div class="wall-layer" id="wall-layer" style="position:absolute;top:${GAP}px;left:${GAP}px;width:${totalSize}px;height:${totalSize}px;"></div>
-    <div id="wall-overlay" style="position:absolute;top:${GAP}px;left:${GAP}px;width:${totalSize}px;height:${totalSize}px;pointer-events:none;"></div>
+    <div class="board-grid" id="board-grid" style="grid-template-columns:repeat(${BOARD_COLS},${CELL}px);grid-template-rows:repeat(${BOARD_ROWS},${CELL}px);"></div>
+    <div class="wall-layer" id="wall-layer" style="position:absolute;top:${GAP}px;left:${GAP}px;width:${totalW}px;height:${totalH}px;"></div>
+    <div id="wall-overlay" style="position:absolute;top:${GAP}px;left:${GAP}px;width:${totalW}px;height:${totalH}px;pointer-events:none;"></div>
     <div style="position:absolute;bottom:-20px;left:0;right:0;text-align:center;font-size:9px;color:var(--amber-dim);letter-spacing:.15em;font-family:'JetBrains Mono',monospace;">← ${gameMode === 'mp' ? p0Name : 'YOUR (' + p0Name + ')'} GOAL →</div>
   `;
 
@@ -12360,14 +12457,14 @@ function renderBoard() {
   const trapTargets = (uiMode === 'trapPlace' && _trapPlaceState) ? getTrapPlaceTargets() : [];
   const trapTargetSet = new Set(trapTargets.map(t=>`${t.row},${t.col}`));
 
-  for (let r=0; r<BOARD_SIZE; r++) {
-    for (let c=0; c<BOARD_SIZE; c++) {
+  for (let r=0; r<BOARD_ROWS; r++) {
+    for (let c=0; c<BOARD_COLS; c++) {
       const isLegal = legalSet.has(`${r},${c}`);
       const isTrapTarget = trapTargetSet.has(`${r},${c}`);
       const cell = document.createElement('div');
       // Check for Trailblazer's Mark on this tile
       const isTrailMark = !!(gameState._trailMarks && gameState._trailMarks.some(m => m.tile.row===r && m.tile.col===c));
-      cell.className = `cell${isLegal?' legal-move':''}${isTrapTarget?' legal-move trap-place-target':''}${isTrailMark?' trail-mark':''}${r===0?' goal-row-p0':''}${r===BOARD_SIZE-1?' goal-row-p1':''}`;
+      cell.className = `cell${isLegal?' legal-move':''}${isTrapTarget?' legal-move trap-place-target':''}${isTrailMark?' trail-mark':''}${r===0?' goal-row-p0':''}${r===BOARD_ROWS-1?' goal-row-p1':''}`;
       if (isTrailMark) {
         const mark = gameState._trailMarks.find(m => m.tile.row===r && m.tile.col===c);
         const owner = mark ? mark.owner : 0;
@@ -15155,12 +15252,22 @@ async function loadUserProfile() {
 async function saveUserProfile(updates) {
   const sb = mpInit();
   if (!sb || !_authUser) return false;
+  // Normalize camelCase keys to snake_case for Supabase columns
+  // (DB uses snake_case; JS code may pass either)
+  const dbUpdates = {};
+  for (const [key, val] of Object.entries(updates)) {
+    if (key === 'tutorialComplete') { dbUpdates.tutorial_complete = val; continue; }
+    if (key === 'dailyRollDate')    { dbUpdates.daily_roll_date = val; continue; }
+    dbUpdates[key] = val;
+  }
+  dbUpdates.updated_at = new Date().toISOString();
   const { error } = await sb
     .from('user_profiles')
-    .update({ ...updates, updated_at: new Date().toISOString() })
+    .update(dbUpdates)
     .eq('id', _authUser.id);
   if (error) { console.error('[Profile] save error:', error); return false; }
-  _userProfile = { ..._userProfile, ...updates };
+  // Update local profile with both snake_case and camelCase for compat
+  _userProfile = { ..._userProfile, ...updates, ...dbUpdates };
   return true;
 }
 
@@ -15315,35 +15422,7 @@ async function buyCardPack(tier) {
   return { ok: true, cards: cards.map(id => CARDS[id]) };
 }
 
-// ── Daily Free Champion Roll ─────────────────────────────────────────
-function canClaimDailyRoll() {
-  if (!_userProfile) return false;
-  const today = new Date().toISOString().slice(0, 10);
-  return (_userProfile.dailyRollDate || '') !== today;
-}
-
-function getDailyRollCountdown() {
-  const now = new Date();
-  const tomorrow = new Date(now);
-  tomorrow.setDate(tomorrow.getDate() + 1);
-  tomorrow.setHours(0, 0, 0, 0);
-  const diff = tomorrow - now;
-  const h = Math.floor(diff / 3600000);
-  const m = Math.floor((diff % 3600000) / 60000);
-  const s = Math.floor((diff % 60000) / 1000);
-  return `${h}h ${m}m ${s}s`;
-}
-
-async function claimDailyRoll() {
-  if (!canClaimDailyRoll()) return { ok: false, error: 'Already claimed today' };
-  const roll = Math.random();
-  const rarity = roll < 0.90 ? 'Common' : roll < 0.98 ? 'Uncommon' : 'Rare';
-  const champ = generateChampion(rarity);
-  const today = new Date().toISOString().slice(0, 10);
-  await addToRoster(champ);
-  await saveUserProfile({ daily_roll_date: today, dailyRollDate: today });
-  return { ok: true, champion: champ };
-}
+// (Daily Free Champion feature removed)
 
 // ── Shop UI ──────────────────────────────────────────────────────────
 function showShopScreen() {
@@ -15408,11 +15487,7 @@ async function handleBuyCardPack(tier) {
   showPackReveal(result.cards, 'card');
 }
 
-async function handleDailyRoll() {
-  const result = await claimDailyRoll();
-  if (!result.ok) { showStatus(result.error, 'error'); return; }
-  showPackReveal([result.champion], 'champion');
-}
+// (handleDailyRoll removed — feature disabled)
 
 function showPackReveal(items, type) {
   // Refresh shop after purchase
