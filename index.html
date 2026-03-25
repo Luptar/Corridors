@@ -2341,6 +2341,14 @@ const FACTION_AI = {
   Chronists:   { moveBonus: 1,  wallBonus: 2,  aggression: 1.0, control: 1.0 },
 };
 
+// ── Faction adjacency wheel (for champion generation weighting) ──────
+const FACTION_WHEEL = ['Architects','Pathfinders','Wardens','Phantoms','Pushers','Trappers','Chronists'];
+function getAdjacentFactions(faction) {
+  const idx = FACTION_WHEEL.indexOf(faction);
+  if (idx < 0) return [];
+  return [FACTION_WHEEL[(idx - 1 + 7) % 7], FACTION_WHEEL[(idx + 1) % 7]];
+}
+
 // ── Champions (7 — one per faction) ─────────────────────────────────
 const CHAMPIONS = {
   // Architects: maze-building, indestructible walls, double-card passive
@@ -2351,6 +2359,7 @@ const CHAMPIONS = {
     passiveName:'Master Mason',
     passiveDesc:'Each turn you may play a 2nd Wall card instead of moving.',
     ultimateDesc:'Discard your hand and refill to full hand size immediately.',
+    passiveId:'magnus', ultimateId:'magnus',
   },
 
   // Pathfinders: speed, mobility, racing
@@ -2361,6 +2370,7 @@ const CHAMPIONS = {
     passiveName:'Fleetfoot',
     passiveDesc:'Each turn you may take a 2nd move instead of playing a card.',
     ultimateDesc:'Ignore all walls for this entire turn — move freely through them.',
+    passiveId:'soren', ultimateId:'soren',
   },
 
   // Wardens: disruption, hand control, wall repositioning
@@ -2371,6 +2381,7 @@ const CHAMPIONS = {
     passiveName:"Warden's Stare",
     passiveDesc:"Opponent's hand is always revealed to you.",
     ultimateDesc:'Reposition ALL walls on the board to legal locations of your choice.',
+    passiveId:'thorne', ultimateId:'thorne',
   },
 
   // Phantoms: illusions, bluffing, misdirection
@@ -2381,6 +2392,7 @@ const CHAMPIONS = {
     passiveName:'Illusory Trail',
     passiveDesc:'When you move, a phantom duplicate marker lingers on your previous position for 1 turn.',
     ultimateDesc:'Your champion becomes invisible to opponent for 3 full turns.',
+    passiveId:'nyx', ultimateId:'nyx',
   },
 
   // Pushers: displacement, body-checking, forced movement
@@ -2391,6 +2403,7 @@ const CHAMPIONS = {
     passiveName:'Chad Aura',
     passiveDesc:'When you move adjacent to the opponent, push them 1 tile in the exact opposite direction. Walls block the push.',
     ultimateDesc:'Jump to any empty tile within 2-tile radius (ignoring walls). If opponent within 2 tiles of landing, stun them (Bind) for 1 turn.',
+    passiveId:'pushaman', ultimateId:'pushaman',
   },
 
   // Trappers: invisible traps on tiles, area denial
@@ -2401,6 +2414,7 @@ const CHAMPIONS = {
     passiveName:'Trapsmith',
     passiveDesc:'Move over your own traps without triggering them.',
     ultimateDesc:'Place snare traps on ALL empty tiles within 2 tiles of your champion. They last 4 turns.',
+    passiveId:'shade', ultimateId:'shade',
   },
 
   // Chronists: tempo manipulation, replay, delayed effects
@@ -2411,9 +2425,143 @@ const CHAMPIONS = {
     passiveName:'Echo Chamber',
     passiveDesc:'Once per turn, you may discard one card from your hand to draw a new card from your deck.',
     ultimateDesc:'Take an additional action phase: play 1 extra card AND take 1 extra movement this turn.',
+    passiveId:'vex', ultimateId:'vex',
   },
 
 };
+
+// ── Ability dispatch helpers (support generated champions with borrowed passives/ultimates) ──
+function getPassiveId(pi) {
+  const c = gameState?.players?.[pi]?.champion;
+  return c?.passiveId || c?.id || '';
+}
+function getUltimateId(pi) {
+  const c = gameState?.players?.[pi]?.champion;
+  return c?.ultimateId || c?.id || '';
+}
+
+// ── Procedural Champion Generation ───────────────────────────────────
+const RARITY_BUDGETS = { Common:16, Uncommon:19, Rare:22, Epic:25, Legendary:28 };
+const RARITY_TIERS = ['Common','Uncommon','Rare','Epic','Legendary'];
+
+// Map template champions to their faction
+const CHAMPION_BY_FACTION = {};
+for (const [cid, cdef] of Object.entries(CHAMPIONS)) {
+  CHAMPION_BY_FACTION[cdef.faction] = cid;
+}
+
+function allocateStats(budget) {
+  // Floors: wallLimit=4, handSize=3, cardDraw=1, ultimateCost=9 (worst)
+  // Costs: wallLimit +1/pt, handSize +2/pt, cardDraw +3/pt, ultimateCost -2/pt to improve (reduce from 9)
+  // Ceilings: wallLimit=12, handSize=7, cardDraw=6, ultimateCost=3 (best)
+  let remaining = budget;
+  const stats = { wallLimit:4, handSize:3, cardDraw:1, ultimateCost:9 };
+  const maxSpend = Math.floor(budget * 0.5); // no stat consumes >50%
+
+  const options = [
+    { key:'wallLimit',    cost:1, ceil:12, spent:0 },
+    { key:'handSize',     cost:2, ceil:7,  spent:0 },
+    { key:'cardDraw',     cost:3, ceil:6,  spent:0 },
+    { key:'ultimateCost', cost:2, ceil:3,  spent:0, invert:true }, // lower is better
+  ];
+
+  // Shuffle allocation order for variety
+  let attempts = 0;
+  while (remaining > 0 && attempts < 200) {
+    attempts++;
+    const viable = options.filter(o => {
+      if (o.spent >= maxSpend) return false;
+      if (o.cost > remaining) return false;
+      if (o.invert) return stats[o.key] > o.ceil;
+      return stats[o.key] < o.ceil;
+    });
+    if (!viable.length) break;
+    const pick = viable[Math.floor(Math.random() * viable.length)];
+    if (pick.invert) { stats[pick.key]--; } else { stats[pick.key]++; }
+    pick.spent += pick.cost;
+    remaining -= pick.cost;
+  }
+  return stats;
+}
+
+function pickWeightedFaction(preferredFaction) {
+  if (!preferredFaction) return FACTION_WHEEL[Math.floor(Math.random() * FACTION_WHEEL.length)];
+  const roll = Math.random();
+  if (roll < 0.70) return preferredFaction;
+  if (roll < 0.95) {
+    const adj = getAdjacentFactions(preferredFaction);
+    return adj[Math.floor(Math.random() * adj.length)];
+  }
+  return FACTION_WHEEL[Math.floor(Math.random() * FACTION_WHEEL.length)];
+}
+
+function pickAbilitySource(championFaction, type) {
+  // Returns the template champion ID whose passive/ultimate to borrow
+  const sameFactionChamp = CHAMPION_BY_FACTION[championFaction];
+  const adjFactions = getAdjacentFactions(championFaction);
+  const roll = Math.random();
+  if (roll < 0.60 && sameFactionChamp) return sameFactionChamp;
+  if (roll < 0.85) {
+    const adjChamps = adjFactions.map(f => CHAMPION_BY_FACTION[f]).filter(Boolean);
+    if (adjChamps.length) return adjChamps[Math.floor(Math.random() * adjChamps.length)];
+  }
+  // Any faction
+  const allChamps = Object.keys(CHAMPIONS);
+  return allChamps[Math.floor(Math.random() * allChamps.length)];
+}
+
+const NAME_PREFIXES = ['Grim','Iron','Storm','Shadow','Ash','Void','Ember','Frost','Thorn','Dusk',
+  'Crimson','Onyx','Pale','Wild','Stone','Deep','Silver','Rust','Hollow','Night',
+  'Blaze','Jade','Obsidian','Ivory','Rune','Steel','Amber','Drift','Bane','Wrath'];
+const NAME_SUFFIXES = ['weaver','striker','blade','walker','born','heart','fang','shade','binder','song',
+  'ward','fall','root','sight','claw','veil','step','mark','forge','drift',
+  'thorn','spark','grasp','wind','hold','break','call','reach','run','stone'];
+const NAME_TITLES = ['the Relentless','of the Depths','Voidtouched','the Unyielding','Stormborn',
+  'the Hollow','Dawnbreaker','the Forsaken','Ironclad','the Silent',
+  'Nightbound','the Cunning','Ashwalker','the Eternal','Frostbitten',
+  'the Bold','Shadowmend','the Unbroken','Runecarver','the Vigilant'];
+
+function generateChampionName() {
+  const prefix = NAME_PREFIXES[Math.floor(Math.random() * NAME_PREFIXES.length)];
+  const suffix = NAME_SUFFIXES[Math.floor(Math.random() * NAME_SUFFIXES.length)];
+  const title = NAME_TITLES[Math.floor(Math.random() * NAME_TITLES.length)];
+  const name = prefix + suffix.charAt(0).toLowerCase() + suffix.slice(1);
+  // Check collision with existing roster
+  const existing = (_userProfile?.roster || []).map(c => c.name);
+  if (existing.includes(name)) {
+    return generateChampionName(); // retry on collision
+  }
+  return { name, title };
+}
+
+function generateChampion(rarity, preferredFaction) {
+  const budget = RARITY_BUDGETS[rarity] || RARITY_BUDGETS.Common;
+  const faction = pickWeightedFaction(preferredFaction || null);
+  const stats = allocateStats(budget);
+  const passiveSourceId = pickAbilitySource(faction, 'passive');
+  const ultimateSourceId = pickAbilitySource(faction, 'ultimate');
+  const passiveSource = CHAMPIONS[passiveSourceId];
+  const ultimateSource = CHAMPIONS[ultimateSourceId];
+  const { name, title } = generateChampionName();
+
+  return {
+    id: 'gen_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2,6),
+    name, title, faction, rarity,
+    isGenerated: true,
+    wallLimit: stats.wallLimit,
+    handSize: stats.handSize,
+    cardDraw: stats.cardDraw,
+    moveSpeed: 1,
+    ultimateCost: stats.ultimateCost,
+    passiveId: passiveSourceId,
+    ultimateId: ultimateSourceId,
+    passiveName: passiveSource.passiveName,
+    passiveDesc: passiveSource.passiveDesc,
+    ultimateName: ultimateSource.ultimateName,
+    ultimateDesc: ultimateSource.ultimateDesc,
+    createdAt: new Date().toISOString(),
+  };
+}
 
 // ── Cards — GDD v2.4 ─────────────────────────────────────────────────
 const CARDS = {
@@ -2671,6 +2819,23 @@ let debugVisible = false;
 const AI_PLAYER = 1;       // Player 1 is always the AI (VS-AI mode)
 let aiThinking = false;
 
+// ── Tutorial state ───────────────────────────────────────────────────
+let _tutorialState = null;
+const TUTORIAL_MATCHES = {
+  1: { title:'THE BASICS', subtitle:'Movement & Wall Placement',
+       playerStart:{row:5,col:4}, aiStart:{row:2,col:4},
+       playerChampion:'soren', aiChampion:'magnus',
+       skipDraw:true, fixedHand:false, skipUltimate:true, playerGoesFirst:true },
+  2: { title:'CARDS & COMBAT', subtitle:'Playing Your Hand',
+       playerStart:{row:6,col:4}, aiStart:{row:1,col:4},
+       playerChampion:'soren', aiChampion:'magnus',
+       skipDraw:false, fixedHand:true, skipUltimate:true, playerGoesFirst:true },
+  3: { title:'YOUR CHAMPION', subtitle:'Passives, Ultimates & Full Play',
+       playerStart:{row:8,col:4}, aiStart:{row:0,col:4},
+       playerChampion:null, aiChampion:'soren',
+       skipDraw:false, fixedHand:false, skipUltimate:false, playerGoesFirst:true },
+};
+
 // Returns true if seat pi is controlled by a human (not the AI engine).
 // In VS-AI mode only seat 0 is human; in multiplayer BOTH seats are human.
 function isHumanSeat(pi) {
@@ -2679,13 +2844,18 @@ function isHumanSeat(pi) {
 }
 
 // ── createPlayer ────────────────────────────────────────────────────
-function createPlayer(index, championId, faction, deckCards) {
-  const def = CHAMPIONS[championId];
+function createPlayer(index, championIdOrObj, faction, deckCards, overridePos) {
+  // Accept either a template champion ID string or a full champion object (for generated champions)
+  const def = typeof championIdOrObj === 'string'
+    ? (CHAMPIONS[championIdOrObj] || resolveChampion(championIdOrObj))
+    : championIdOrObj;
+  if (!def) throw new Error('Unknown champion: ' + championIdOrObj);
+  const champId = def.id;
   return {
     index,
     champion: { ...def },
-    position: index === 0 ? {row:8, col:4} : {row:0, col:4},
-    deck: buildDeckForGame(championId, deckCards),
+    position: overridePos || (index === 0 ? {row:8, col:4} : {row:0, col:4}),
+    deck: buildDeckForGame(champId, deckCards),
     hand: [],
     discard: [],
     wallsInPlay: 0,
@@ -2753,6 +2923,98 @@ function initGame(playerChampId, aiChampId, playerDeckCards) {
   const _aName = gameState.players[1].champion.name;
   addLog(0, 'system', `Game started. You (${_pName}) vs AI (${_aName}).`);
   performDraw();
+}
+
+// ── Tutorial Match Init ─────────────────────────────────────────────
+function initTutorialMatch(matchNum) {
+  const cfg = TUTORIAL_MATCHES[matchNum];
+  if (!cfg) return;
+
+  // Reset match 3 champion pick if re-entering tutorial
+  if (matchNum === 1) TUTORIAL_MATCHES[3].playerChampion = null;
+
+  gameMode = 'tutorial';
+  mp_isMultiplayer = false;
+  mp_gameId = null;
+  mp_localSeat = null;
+  mp_opponentName = null;
+  if (mp_subscription && _sb) { _sb.removeChannel(mp_subscription); mp_subscription = null; }
+
+  _tutorialState = _tutorialState || { currentMatch: matchNum, tooltipQueue: [], tooltipShowing: false, completedMatches: [] };
+  _tutorialState.currentMatch = matchNum;
+  _tutorialState.matchConfig = cfg;
+  _tutorialState.tooltipShowing = false;
+
+  const pChampId = cfg.playerChampion;
+  const aChampId = cfg.aiChampion;
+  const pChamp = CHAMPIONS[pChampId];
+  const aChamp = CHAMPIONS[aChampId];
+
+  gameState = {
+    players: [
+      createPlayer(0, pChampId, pChamp.faction, null, cfg.playerStart),
+      createPlayer(1, aChampId, aChamp.faction, null, cfg.aiStart),
+    ],
+    walls: [],
+    decoyTokens: [],
+    trapTokens: [],
+    activePlayer: 0,
+    turnNumber: 1,
+    phase: cfg.skipDraw ? 'action' : 'draw',
+    winner: null,
+    log: [],
+    nextWallId: 1,
+    nextTokenId: 1,
+    firstDraw: [!cfg.skipDraw, !cfg.skipDraw],
+  };
+
+  uiMode = 'idle';
+  selectedCard = null;
+  hasMoved = false;
+  hasPlayedCard = false;
+  aiThinking = false;
+  aiProbedWallIds.clear();
+  cardsPlayedThisTurn = 0;
+  aiDifficulty = 'easy';
+
+  // Match 1: no cards at all
+  if (cfg.skipDraw) {
+    gameState.players[0].hand = [];
+    gameState.players[0].deck = [];
+    gameState.players[1].hand = [];
+    gameState.players[1].deck = [];
+  }
+
+  // Match 2: fixed curated hand for player
+  if (cfg.fixedHand) {
+    gameState.players[0].hand = ['BB','BB','BB','BB','AV','AV','AV','RC','RC','QS']
+      .map(id => ({...CARDS[id]})).filter(Boolean);
+    gameState.players[0].deck = [];
+    gameState.players[1].hand = ['BB','BB'].map(id => ({...CARDS[id]})).filter(Boolean);
+    gameState.players[1].deck = [];
+    gameState.phase = 'action';
+    gameState.firstDraw = [false, false];
+  }
+
+  const p0Label = document.querySelector('#panel-p0 .panel-label');
+  const p1Label = document.querySelector('#panel-p1 .panel-label');
+  if (p0Label) p0Label.textContent = 'YOU';
+  if (p1Label) p1Label.textContent = 'OPPONENT';
+
+  renderAll();
+  addLog(0, 'system', `Tutorial Lesson ${matchNum}: ${cfg.title}`);
+
+  if (!cfg.skipDraw && !cfg.fixedHand) {
+    performDraw();
+  } else {
+    updateActionBar();
+  }
+
+  // Show tooltips after a brief delay so board is visible
+  setTimeout(() => {
+    queueTutorialTooltips(matchNum);
+    showNextTooltip();
+  }, 500);
 }
 
 // ── BFS pathfinding ─────────────────────────────────────────────────
@@ -3042,6 +3304,23 @@ function isWallLegal(anchor, orientation, length, walls, p0pos, p1pos, isPhantom
 function performDraw() {
   const drawPi = gameState.activePlayer;
 
+  // Tutorial: skip draw if match config says so
+  if (gameMode === 'tutorial' && _tutorialState?.matchConfig?.skipDraw) {
+    gameState.phase = 'action';
+    hasMoved = false; hasPlayedCard = false; cardsPlayedThisTurn = 0;
+    renderAll(); updateActionBar();
+    if (drawPi === AI_PLAYER) { aiThinking = true; setTimeout(runAI, 300); }
+    return;
+  }
+  // Tutorial: fixed hand means no per-turn draw after the initial setup
+  if (gameMode === 'tutorial' && _tutorialState?.matchConfig?.fixedHand && !gameState.firstDraw[drawPi]) {
+    gameState.phase = 'action';
+    hasMoved = false; hasPlayedCard = false; cardsPlayedThisTurn = 0;
+    renderAll(); updateActionBar();
+    if (drawPi === AI_PLAYER) { aiThinking = true; setTimeout(runAI, 300); }
+    return;
+  }
+
   // Resolve turn-start effects (Temporal Maze, Paradox Wall, etc.)
   resolveTurnStartEffects(drawPi);
 
@@ -3227,7 +3506,7 @@ function executeMove(to) {
     if (isTurnDone()) gameState.phase = 'end_turn';
     renderAll(); showStatus('Shortcut: moved!', 'success'); return;
   }
-  if (gameState.players[pi]?.champion?.id !== 'nyx') addLog(pi, 'move', `Moved (${from.row},${from.col}) → (${to.row},${to.col})`);
+  if (getPassiveId(pi) !== 'nyx') addLog(pi, 'move', `Moved (${from.row},${from.col}) → (${to.row},${to.col})`);
   // If a movement card was pending, resolve it now (discard + count)
   if (selectedCard && selectedCard._pendingMove) {
     // Find the card in hand — idx may have shifted, so search by ID as fallback
@@ -3251,7 +3530,7 @@ function executeMove(to) {
   // Nyx (Illusory Trail) passive: store previous position so the
   // opponent sees Nyx at the old tile for one full turn (delayed reveal).
   // Active in both SP and MP.
-  if (gameState.players[pi].champion.id === 'nyx') {
+  if (getPassiveId(pi) === 'nyx') {
     if (!gameState._nyxTrail) gameState._nyxTrail = [null, null];
     gameState._nyxTrail[pi] = { pos: { row: from.row, col: from.col }, turnsRemaining: 1 };
     addLog(pi, 'passive', 'Illusory Trail: previous position lingers for one turn');
@@ -3428,12 +3707,15 @@ function executeMove(to) {
     return;
   }
 
+  // Tutorial: trigger deferred tooltips after first move
+  if (gameMode === 'tutorial') triggerDeferredTooltips('afterFirstMove');
+
   // Clear Phase Walk flag after movement
   if (gameState._phaseWalk) gameState._phaseWalk = false;
 
 
   // ── Pushaman "Chad Aura" passive: after card effects ──
-  if(gameState.players[pi].champion.id==='pushaman'){
+  if(getPassiveId(pi)==='pushaman'){
     const oP3=1-pi,oPs3=gameState.players[oP3].position,mPs3=gameState.players[pi].position;
     const d3r=mPs3.row-oPs3.row,d3c=mPs3.col-oPs3.col;
     if((Math.abs(d3r)+Math.abs(d3c))===1){
@@ -3635,7 +3917,7 @@ function executeMove(to) {
     showStatus('Moved — end your turn', 'success');
   } else {
     // Magnus passive: may play a 2nd Wall card after moving
-    const champId = gameState.players[pi].champion.id;
+    const champId = getPassiveId(pi);
     const msg = champId === 'magnus' ? 'Moved — now play another card or end your turn' : (champId === 'soren' && !gameState._sorenSecondMove ? 'Moved — move again or play a card, or end your turn' : 'Moved — you may still play a card or end your turn');
     renderAll();
     showStatus(msg, 'active');
@@ -4720,6 +5002,7 @@ function discardCard(pi, idx) {
 }
 
 function endTurnHuman() {
+  if (_tutorialState?.tooltipShowing) return;
   // ── MP mode: dispatch to multiplayer end-turn ──
   if (gameMode === 'mp') {
     mpGuardedEndTurnHuman();
@@ -5103,6 +5386,8 @@ async function runAI() {
     aiThinking = false; return;
   }
   console.log('[AI] Starting AI turn. Hand:', gameState.players[AI_PLAYER].hand.map(c => c?.id || '?').join(','));
+  // Tutorial mode: use simplified, unloseable AI
+  if (gameMode === 'tutorial') { await runTutorialAI(); aiThinking = false; return; }
   // Global AI turn timeout: if AI hasn't finished in 5 seconds, force-end
   const _aiTurnTimeout = setTimeout(() => {
     if (aiThinking && gameState?.activePlayer === AI_PLAYER) {
@@ -6145,18 +6430,38 @@ function showLandingScreen() {
     </div>
 
     <div style="display:flex;flex-direction:column;gap:12px;width:280px;">
+      ${!_userProfile?.tutorialComplete ? `
+      <button onclick="document.getElementById('landing-overlay').remove();showTutorialMatchIntro(1);"
+              class="landing-btn" style="background:rgba(212,144,58,0.15);color:var(--amber);border:2px solid var(--amber);
+              font-size:15px;letter-spacing:.2em;box-shadow:0 0 12px rgba(212,144,58,0.2);">
+        ⚔ BEGIN TRAINING
+      </button>
+      <div style="font-size:9px;color:var(--text-dim);text-align:center;cursor:pointer;text-decoration:underline;margin-bottom:8px;"
+           onclick="if(confirm('Skip tutorial? You will not receive the 100 shard reward.')){saveUserProfile({tutorialComplete:true,tutorial_complete:true});if(_userProfile)_userProfile.tutorialComplete=true;document.getElementById('landing-overlay').remove();showLandingScreen();}">SKIP TUTORIAL</div>
+      ` : ''}
       <button onclick="document.getElementById('landing-overlay').remove();showChampionSelect();"
               class="landing-btn amber">
-        ⚔ VS COMPUTER
+        ⚔ EXHIBITION
       </button>
+      <button onclick="document.getElementById('landing-overlay').remove();showRosterScreen();"
+              class="landing-btn" style="background:rgba(139,92,246,0.15);color:#c084fc;border:1px solid rgba(139,92,246,0.3);">
+        ⬡ ROSTER${(_userProfile?.roster||[]).length ? ' ('+(_userProfile?.roster||[]).length+')' : ''}
+      </button>
+      <button onclick="document.getElementById('landing-overlay').remove();showShopScreen();"
+              class="landing-btn" style="background:rgba(251,191,36,0.12);color:#fbbf24;border:1px solid rgba(251,191,36,0.3);position:relative;">
+        ◆ SHOP${canClaimDailyRoll() ? ' <span style="display:inline-block;width:8px;height:8px;background:#fbbf24;border-radius:50;margin-left:6px;"></span>' : ''}
+      </button>
+      <button onclick="document.getElementById('landing-overlay').remove();showCollectionScreen();"
+              class="landing-btn muted">
+        ◈ COLLECTION &amp; DECKS
+      </button>
+      <div class="landing-divider"></div>
       <button onclick="document.getElementById('landing-overlay').remove();showMultiplayerLobby();"
               class="landing-btn blue">
         ⚡ MULTIPLAYER
       </button>
-      <div class="landing-divider"></div>
-      <button onclick="document.getElementById('landing-overlay').remove();showCollectionScreen();"
-              class="landing-btn muted">
-        ◈ COLLECTION &amp; DECKS
+      <button disabled class="landing-btn muted" style="opacity:0.4;cursor:not-allowed;" title="Coming soon!">
+        ☠ GAUNTLET (COMING SOON)
       </button>
     </div>
 
@@ -6167,6 +6472,262 @@ function showLandingScreen() {
 
   document.body.appendChild(overlay);
 }
+
+// ════════════════════════════════════════════════════════════════════
+// ── TUTORIAL SYSTEM ──────────────────────────────────────────────────
+// ════════════════════════════════════════════════════════════════════
+
+// ── Tutorial AI: intentionally weak, NEVER advances toward goal ─────
+async function runTutorialAI() {
+  const pi = AI_PLAYER;
+  const ai = gameState.players[pi];
+  const matchNum = _tutorialState?.currentMatch || 1;
+
+  // Thinking delay
+  await new Promise(r => setTimeout(r, 600 + Math.random() * 400));
+  if (gameState.phase !== 'action' || gameState.activePlayer !== pi) return;
+
+  // Match 2+: occasionally play a basic wall card (20% chance)
+  if (matchNum >= 2 && ai.hand.length > 0 && Math.random() < 0.2) {
+    const wallIdx = ai.hand.findIndex(c => c.type === 'Wall' && !c.phantom);
+    if (wallIdx >= 0 && ai.wallsInPlay < ai.wallLimitCurrent) {
+      tutorialAIPlaceWall(pi);
+    }
+  }
+
+  // Movement: ONLY sideways or backward (never toward row 8 / AI goal)
+  const legalMoves = getLegalMoves(gameState, pi);
+  const safeMoves = legalMoves.filter(m => m.row <= ai.position.row);
+  if (safeMoves.length > 0) {
+    const pick = safeMoves[Math.floor(Math.random() * safeMoves.length)];
+    gameState.players[pi] = { ...gameState.players[pi], position: pick };
+  }
+
+  // End turn
+  gameState.phase = 'end_turn';
+  renderAll();
+  await new Promise(r => setTimeout(r, 300));
+  endTurn();
+}
+
+function tutorialAIPlaceWall(pi) {
+  const playerPos = gameState.players[0].position;
+  const playerDist = bfsDistance(playerPos, 0, gameState.walls);
+
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const anchor = {
+      row: Math.floor(Math.random() * (BOARD_SIZE - 1)),
+      col: Math.floor(Math.random() * (BOARD_SIZE - 1)),
+    };
+    const orientation = Math.random() < 0.5 ? 'H' : 'V';
+    if (!isWallLegal(anchor, orientation, 2, gameState.walls,
+        gameState.players[0].position, gameState.players[1].position, false)) continue;
+    const testWall = { id: gameState.nextWallId, owner: pi, anchor, orientation, length: 2,
+      isPhantom:false, durable:false, durableHits:0, immune:false,
+      temporary:false, turnsRemaining:null, placedOnTurn:gameState.turnNumber };
+    const newDist = bfsDistance(playerPos, 0, [...gameState.walls, testWall]);
+    if (newDist > playerDist + 1) continue; // don't significantly block the player
+    gameState.walls.push(testWall);
+    gameState.nextWallId++;
+    gameState.players[pi] = { ...gameState.players[pi], wallsInPlay: gameState.players[pi].wallsInPlay + 1 };
+    return;
+  }
+}
+
+// ── Tutorial tooltip system ─────────────────────────────────────────
+function queueTutorialTooltips(matchNum) {
+  if (!_tutorialState) return;
+  _tutorialState.tooltipQueue = [];
+  if (matchNum === 1) {
+    _tutorialState.tooltipQueue = [
+      { title:'WELCOME TO CORRIDORS', text:'Your goal: reach the opposite side of the board. You are the amber piece at the bottom — move to ROW 0 at the top to win.' },
+      { title:'MOVEMENT', text:'Each turn you get one move. Click the MOVE button, then click a highlighted tile to step forward, backward, left, or right.' },
+      { title:'WALLS', text:'You can also place walls on the board edges to block your opponent. Try moving toward the top row. After you move, you can place a wall or end your turn.', defer:'afterFirstMove' },
+      { title:'END TURN', text:'When you are done, click END TURN to pass to your opponent. Now reach the top row to win!', defer:'afterFirstMove' },
+    ];
+  } else if (matchNum === 2) {
+    _tutorialState.tooltipQueue = [
+      { title:'YOUR HAND', text:'You now have cards! Look at the bottom of the screen — those are your cards. Each turn you can play ONE card in addition to moving.' },
+      { title:'CARD TYPES', text:'WALL cards (like Basic Barrier) place walls. MOVEMENT cards (like Advance) give you extra movement. DISRUPTION cards have special effects.' },
+      { title:'PLAYING A CARD', text:'Click a card in your hand to select it, then follow the on-screen prompt. Try using Advance for an extra move, or Basic Barrier to block the opponent.' },
+    ];
+  } else if (matchNum === 3) {
+    _tutorialState.tooltipQueue = [
+      { title:'YOUR CHAMPION', text:'Each champion has a unique passive ability (always active) and an ultimate ability (charges over time). Check the info panel on the left for details.' },
+      { title:'ULTIMATE ABILITY', text:'Your ultimate charges by 1 each turn. When fully charged, the ULTIMATE button lights up — click it to unleash a powerful effect!' },
+      { title:'FULL MATCH', text:'This is a full match with all mechanics active. Use your cards, passive, and ultimate to reach the goal. Win to complete your training!' },
+    ];
+  }
+}
+
+function showNextTooltip() {
+  document.getElementById('tutorial-backdrop')?.remove();
+  document.getElementById('tutorial-tooltip')?.remove();
+  document.getElementById('tutorial-spotlight')?.remove();
+  if (!_tutorialState?.tooltipQueue?.length) {
+    if (_tutorialState) _tutorialState.tooltipShowing = false;
+    return;
+  }
+  const next = _tutorialState.tooltipQueue[0];
+  if (next.defer) { _tutorialState.tooltipShowing = false; return; }
+  _tutorialState.tooltipQueue.shift();
+  _tutorialState.tooltipShowing = true;
+
+  const backdrop = document.createElement('div');
+  backdrop.id = 'tutorial-backdrop';
+  backdrop.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:300;';
+  document.body.appendChild(backdrop);
+
+  const tip = document.createElement('div');
+  tip.id = 'tutorial-tooltip';
+  tip.style.cssText = `position:fixed;z-index:301;background:var(--surface);border:1px solid var(--amber);
+    padding:20px 24px;max-width:360px;left:50%;top:38%;transform:translate(-50%,-50%);
+    box-shadow:0 4px 24px rgba(0,0,0,0.5);`;
+  const btnLabel = _tutorialState.tooltipQueue.length > 0 ? 'NEXT' : 'GOT IT';
+  tip.innerHTML = `
+    <div style="font-family:'Teko',sans-serif;font-size:20px;letter-spacing:.1em;color:var(--amber);margin-bottom:6px;">${next.title}</div>
+    <div style="font-size:13px;color:var(--text-bright);line-height:1.5;">${next.text}</div>
+    <button onclick="showNextTooltip()" style="display:inline-block;margin-top:14px;padding:6px 24px;
+      background:var(--amber);color:var(--bg);font-family:'Teko',sans-serif;font-size:14px;
+      letter-spacing:.15em;border:none;cursor:pointer;">${btnLabel}</button>
+  `;
+  document.body.appendChild(tip);
+}
+
+function triggerDeferredTooltips(eventName) {
+  if (!_tutorialState?.tooltipQueue?.length) return;
+  if (_tutorialState.tooltipShowing) return;
+  const next = _tutorialState.tooltipQueue[0];
+  if (next.defer === eventName) {
+    next.defer = null;
+    showNextTooltip();
+  }
+}
+
+// ── Tutorial flow screens ───────────────────────────────────────────
+function showTutorialMatchIntro(matchNum) {
+  const cfg = TUTORIAL_MATCHES[matchNum];
+  if (!cfg) return;
+  // Match 3: show champion pick first
+  if (matchNum === 3 && !cfg.playerChampion) {
+    showTutorialChampionPick();
+    return;
+  }
+  const overlay = document.createElement('div');
+  overlay.id = 'tutorial-intro-overlay';
+  overlay.style.cssText = `position:fixed;inset:0;background:var(--bg);display:flex;flex-direction:column;
+    align-items:center;justify-content:center;z-index:200;padding:40px 24px;text-align:center;`;
+  overlay.innerHTML = `
+    <div style="font-size:10px;letter-spacing:.25em;color:var(--text-dim);text-transform:uppercase;margin-bottom:8px;">LESSON ${matchNum} OF 3</div>
+    <div style="font-family:'Teko',sans-serif;font-size:42px;font-weight:700;letter-spacing:.15em;color:var(--amber);margin-bottom:4px;">${cfg.title}</div>
+    <div style="font-size:12px;color:var(--text-dim);letter-spacing:.1em;margin-bottom:40px;">${cfg.subtitle}</div>
+    <button class="landing-btn amber" style="width:200px;" onclick="document.getElementById('tutorial-intro-overlay').remove();initTutorialMatch(${matchNum});">BEGIN</button>
+  `;
+  document.body.appendChild(overlay);
+}
+
+function showTutorialChampionPick() {
+  const picks = ['soren','magnus','pushaman'];
+  const overlay = document.createElement('div');
+  overlay.id = 'tutorial-champ-overlay';
+  overlay.style.cssText = `position:fixed;inset:0;background:var(--bg);display:flex;flex-direction:column;
+    align-items:center;justify-content:center;z-index:200;padding:40px 24px;text-align:center;`;
+  const cards = picks.map(id => {
+    const c = CHAMPIONS[id];
+    const col = id === 'soren' ? 'var(--wall-path)' : id === 'magnus' ? 'var(--wall-arch)' : 'var(--wall-push)';
+    return `<div onclick="selectTutorialChampion('${id}')" style="cursor:pointer;background:var(--surface);border:1px solid var(--border);
+      padding:16px;width:180px;text-align:center;transition:border-color 0.2s;"
+      onmouseover="this.style.borderColor='var(--amber)'" onmouseout="this.style.borderColor='var(--border)'">
+      <div style="font-family:'Teko',sans-serif;font-size:22px;color:${col};">${c.name}</div>
+      <div style="font-size:9px;letter-spacing:.12em;color:var(--text-dim);text-transform:uppercase;margin-bottom:8px;">${c.faction}</div>
+      <div style="font-size:11px;color:var(--amber);margin-bottom:4px;">${c.passiveName}</div>
+      <div style="font-size:10px;color:var(--text);line-height:1.4;">${c.passiveDesc}</div>
+    </div>`;
+  }).join('');
+  overlay.innerHTML = `
+    <div style="font-size:10px;letter-spacing:.25em;color:var(--text-dim);margin-bottom:8px;">LESSON 3 OF 3</div>
+    <div style="font-family:'Teko',sans-serif;font-size:36px;color:var(--amber);margin-bottom:24px;">CHOOSE YOUR CHAMPION</div>
+    <div style="display:flex;gap:16px;margin-bottom:24px;">${cards}</div>
+  `;
+  document.body.appendChild(overlay);
+}
+
+function selectTutorialChampion(champId) {
+  TUTORIAL_MATCHES[3].playerChampion = champId;
+  document.getElementById('tutorial-champ-overlay')?.remove();
+  showTutorialMatchIntro(3);
+}
+
+// ── Tutorial victory ────────────────────────────────────────────────
+function showTutorialVictory(winner) {
+  const matchNum = _tutorialState?.currentMatch || 1;
+  const overlay = document.getElementById('victory-overlay');
+  if (!overlay) return;
+  overlay.style.display = 'flex';
+  const title = document.getElementById('victory-title');
+  const subtitle = document.getElementById('victory-subtitle');
+  const cfg = TUTORIAL_MATCHES[matchNum];
+
+  if (winner === 0) {
+    title.textContent = matchNum < 3 ? 'LESSON COMPLETE' : 'TRAINING COMPLETE';
+    title.style.color = 'var(--amber)';
+    subtitle.textContent = cfg.title + ' — Mastered!';
+  } else {
+    title.textContent = 'TRY AGAIN';
+    title.style.color = 'var(--p1)';
+    subtitle.textContent = "Don't worry — try a different path!";
+  }
+
+  const vt = document.getElementById('v-turns'); if (vt) vt.textContent = gameState?.turnNumber || '?';
+  const vw = document.getElementById('v-walls'); if (vw) vw.textContent = (gameState?.walls?.filter(w => !w.isPhantom).length || 0);
+
+  // Replace the victory button
+  const btn = overlay.querySelector('.draw-screen-btn');
+  if (btn) {
+    if (winner !== 0) {
+      btn.textContent = 'RETRY';
+      btn.onclick = () => { overlay.style.display = 'none'; initTutorialMatch(matchNum); };
+    } else if (matchNum < 3) {
+      btn.textContent = 'NEXT LESSON →';
+      btn.onclick = () => { overlay.style.display = 'none'; showTutorialMatchIntro(matchNum + 1); };
+    } else {
+      btn.textContent = 'CLAIM REWARDS';
+      btn.onclick = () => { overlay.style.display = 'none'; completeTutorial(); };
+    }
+  }
+}
+
+async function completeTutorial() {
+  if (_userProfile) {
+    await grantShards(100);
+    await saveUserProfile({ tutorialComplete: true, tutorial_complete: true });
+    _userProfile.tutorialComplete = true;
+  }
+  showTutorialCompleteScreen();
+}
+
+function showTutorialCompleteScreen() {
+  ['landing-overlay','victory-overlay'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = 'none';
+  });
+  const overlay = document.createElement('div');
+  overlay.id = 'tutorial-complete-overlay';
+  overlay.style.cssText = `position:fixed;inset:0;background:var(--bg);display:flex;flex-direction:column;
+    align-items:center;justify-content:center;z-index:200;padding:40px 24px;text-align:center;`;
+  overlay.innerHTML = `
+    <div style="font-family:'Teko',sans-serif;font-size:48px;font-weight:700;letter-spacing:.2em;color:var(--amber);margin-bottom:8px;">TRAINING COMPLETE</div>
+    <div style="font-size:12px;letter-spacing:.15em;color:var(--text-dim);text-transform:uppercase;margin-bottom:32px;">You are ready for the Corridors</div>
+    <div style="background:var(--surface);border:1px solid var(--border);padding:24px 32px;margin-bottom:24px;min-width:260px;">
+      <div style="font-size:10px;letter-spacing:.15em;color:var(--text-dim);margin-bottom:12px;">REWARDS</div>
+      <div style="font-family:'Teko',sans-serif;font-size:28px;color:var(--amber);">+100 ◆ SHARDS</div>
+    </div>
+    <button class="landing-btn amber" style="width:240px;" onclick="document.getElementById('tutorial-complete-overlay').remove();showLandingScreen();">CONTINUE</button>
+  `;
+  document.body.appendChild(overlay);
+}
+
+// ════════════════════════════════════════════════════════════════════
 
 function showChampionSelect() {
   selectedChampionId = null;
@@ -6181,9 +6742,12 @@ function showChampionSelect() {
     Chronists:   'var(--wall-chro)',
   };
 
-  const cards = Object.values(CHAMPIONS).map(champ => {
+  function renderChampCard(champ, isRoster) {
     const col = factionColors[champ.faction] || 'var(--text-dim)';
-    return `<div class="cs-card" id="cs-${champ.id}" onclick="selectChampion('${champ.id}')">
+    const rarityBorder = isRoster ? `border:2px solid ${champ.rarity==='Common'?'#aaa':champ.rarity==='Uncommon'?'#4ade80':champ.rarity==='Rare'?'#60a5fa':champ.rarity==='Epic'?'#c084fc':'#fbbf24'};` : '';
+    const badge = isRoster ? `<div style="font-size:9px;color:${champ.rarity==='Common'?'#aaa':champ.rarity==='Uncommon'?'#4ade80':champ.rarity==='Rare'?'#60a5fa':champ.rarity==='Epic'?'#c084fc':'#fbbf24'};letter-spacing:.12em;margin-bottom:2px;">${champ.rarity.toUpperCase()}</div>` : '<div style="font-size:9px;color:#888;letter-spacing:.12em;margin-bottom:2px;">TEMPLATE</div>';
+    return `<div class="cs-card" id="cs-${champ.id}" onclick="selectChampion('${champ.id}')" style="${rarityBorder}">
+      ${badge}
       <div class="cs-champ-name" style="color:${col}">${champ.name}</div>
       <div class="cs-champ-title">${champ.title}</div>
       <div class="cs-faction" style="color:${col}">${champ.faction}</div>
@@ -6199,15 +6763,13 @@ function showChampionSelect() {
       </div>
       <div class="cs-ult-name">&#9889; ${champ.ultimateName}</div>
       <div class="cs-ult-desc">${champ.ultimateDesc || ''}</div>
-      <div style="margin-top:8px;display:flex;align-items:center;gap:6px;">
-        <span style="font-size:9px;letter-spacing:.12em;color:var(--text-dim);text-transform:uppercase;">COMPLEXITY</span>
-        <span style="display:flex;gap:2px;">${Array.from({length:4},(_,i)=>
-          '<span style="width:8px;height:8px;border-radius:50%;border:1px solid '+(i<(champ.simplicity||2)?'var(--amber)':'var(--border)')+';background:'+(i<(champ.simplicity||2)?'var(--amber)':'transparent')+'"></span>'
-        ).join('')}</span>
-        <span style="font-size:9px;color:var(--text-dim)">${['','Simple','Easy','Medium','Complex'][champ.simplicity||2]}</span>
-      </div>
     </div>`;
-  }).join('');
+  }
+
+  const templateCards = Object.values(CHAMPIONS).map(c => renderChampCard(c, false)).join('');
+  const rosterChamps = (_userProfile?.roster || []);
+  const rosterCards = rosterChamps.length ? rosterChamps.map(c => renderChampCard(c, true)).join('') : '';
+  const cards = templateCards + (rosterCards ? rosterCards : '');
 
   document.body.insertAdjacentHTML('beforeend', `
     <div id="champion-select-overlay" style="
@@ -6244,11 +6806,19 @@ function selectChampion(id) {
   const card = document.getElementById('cs-' + id);
   if (card) card.classList.add('selected');
   const btn = document.getElementById('cs-confirm');
-  if (btn) {
-    btn.textContent = 'PLAY AS ' + CHAMPIONS[id].name.toUpperCase() + ' →';
+  // Look up name from templates or roster
+  const champ = CHAMPIONS[id] || (_userProfile?.roster || []).find(c => c.id === id);
+  if (btn && champ) {
+    btn.textContent = 'PLAY AS ' + champ.name.toUpperCase() + ' →';
     btn.disabled = false;
     btn.style.opacity = '1';
   }
+}
+
+// Resolve a champion ID (template or generated) to a full champion definition
+function resolveChampion(id) {
+  if (CHAMPIONS[id]) return CHAMPIONS[id];
+  return (_userProfile?.roster || []).find(c => c.id === id) || null;
 }
 
 function setDifficulty(level) {
@@ -6359,11 +6929,12 @@ function startSPGame(championId) {
 
 // ── UI interactions ─────────────────────────────────────────────────
 function enterMoveMode() {
+  if (_tutorialState?.tooltipShowing) return;
   if (gameMode === 'mp' && gameState.activePlayer !== mp_localSeat) { showStatus("It's not your turn!", 'error'); return; }
   if (!isHumanSeat(gameState.activePlayer)) return;
   if (gameState.phase !== 'action') { showStatus('Not your action phase', 'error'); return; }
   const pi = gameState.activePlayer;
-  const champId = gameState.players[pi].champion.id;
+  const champId = getPassiveId(pi);
   // Check for Binding Wall skip effect
   const isBound = (gameState.players[pi].statusEffects || []).some(e => (e.type === 'skip_move' || e.type === 'bound') && e.turnsRemaining > 0);
   if (isBound) {
@@ -6427,6 +6998,7 @@ function hideOrientationToggle() {
 }
 
 function handleCellClick(r, c) {
+  if (_tutorialState?.tooltipShowing) return;
   if (gameMode === 'mp' && gameState.activePlayer !== mp_localSeat) { showStatus("It's not your turn!", 'error'); return; }
   if (uiMode !== 'move') return;
   executeMove({row:r, col:c});
@@ -6436,6 +7008,7 @@ function handleCellClick(r, c) {
 }
 
 function handleWallClick(anchor, orientation, length, isPhantom, isDurable) {
+  if (_tutorialState?.tooltipShowing) return;
   if (gameMode === 'mp' && gameState.activePlayer !== mp_localSeat) { showStatus("It's not your turn!", 'error'); return; }
   if (uiMode !== 'wall') return;
   const pi = gameState.activePlayer;
@@ -6620,7 +7193,7 @@ function handleWallClick(anchor, orientation, length, isPhantom, isDurable) {
 
   renderAll();
   const _wpi = gameState.activePlayer;
-  const _wchamp = gameState.players[_wpi].champion.id;
+  const _wchamp = getPassiveId(_wpi);
   // Delayed wall is free — tell the player they still have their full turn
   const _wasDelayed = _wasDelayedWall;
   if (_wasDelayed) {
@@ -6664,7 +7237,8 @@ function getFactionRule(pi) {
 function isTurnDone() {
   const pi = gameState.activePlayer;
   const p  = gameState.players[pi];
-  const champId = p.champion.id;
+  const champId = getPassiveId(pi);
+  const ultId = getUltimateId(pi);
 
   // Bonus move: don't end turn while a grantBonusMove() bonus is pending
   if (gameState._bonusMoveActive && gameState._bonusMovePi === pi) return false;
@@ -6681,7 +7255,7 @@ function isTurnDone() {
   // so the player has a chance to activate it before ending.
   // Exception: Vex has special handling via _vexTemporalFold flag
   if (p.ultimateReady && !p.ultimateUsed) {
-    if (champId === 'vex' && gameState._vexTemporalFold) {
+    if (ultId === 'vex' && gameState._vexTemporalFold) {
       // Vex already used temporal fold — allow turn to end
     } else {
       return false;
@@ -6706,7 +7280,7 @@ function isTurnDone() {
   }
 
   // All other champions: move + play 1 card (or just move if hand empty)
-  if (champId === 'vex') {
+  if (ultId === 'vex') {
     console.log('[VEX isTurnDone] cardsPlayed=', cardsPlayedThisTurn, 'hasMoved=', hasMoved,
       'hand=', p.hand.length, 'ult ready=', p.ultimateReady, 'ult used=', p.ultimateUsed,
       'temporalFold=', gameState._vexTemporalFold);
@@ -6829,6 +7403,8 @@ function showEmbargoTypePicker(pi, opp) {
 
 
 function selectCard(cardId, idx) {
+  if (_tutorialState?.tooltipShowing) return;
+  if (gameMode === 'tutorial' && _tutorialState?.matchConfig?.skipDraw) { showStatus('Cards are not available in this lesson', 'error'); return; }
   if (!isHumanSeat(gameState.activePlayer)) return;
   if (gameState.phase !== 'action') { showStatus('Not your action phase', 'error'); return; }
 
@@ -6840,7 +7416,7 @@ function selectCard(cardId, idx) {
 
   const pi     = gameState.activePlayer;
   const rule   = getFactionRule(pi);
-  const champId = gameState.players[pi].champion.id;
+  const champId = getPassiveId(pi);
   const card   = gameState.players[pi].hand[idx];
   if (!card) return;
 
@@ -9867,6 +10443,7 @@ async function applyDisruptionCard(pi, card, idx) {
 
 // ── Ultimates ────────────────────────────────────────────────────────
 function activateUltimate(pi) {
+  if (gameMode === 'tutorial' && _tutorialState?.matchConfig?.skipUltimate) { showStatus('Ultimates are not available in this lesson', 'error'); return; }
   // In MP, always operate on the local player regardless of which button was clicked
   if (gameMode === 'mp') pi = mp_localSeat;
   if (!isHumanSeat(pi)) return;
@@ -9878,7 +10455,7 @@ function activateUltimate(pi) {
   if (p.ultimateUsed)   { showStatus('Ultimate is recharging', 'error'); return; }
   // Reset charge to 0 and mark as used (will be cleared at start of next charge cycle)
   gameState.players[pi] = { ...p, ultimateUsed:true, ultimateReady:false, ultimateCharge:0 };
-  applyUltimate(pi, gameState.players[pi].champion.id);
+  applyUltimate(pi, getUltimateId(pi));
 }
 
 function applyUltimate(pi, champId) {
@@ -10018,10 +10595,10 @@ function maybeAIUltimate(pi) {
   const p = gameState.players[pi];
   if (!p.ultimateReady || p.ultimateUsed) return false;
   gameState.players[pi] = { ...p, ultimateUsed:true, ultimateReady:false, ultimateCharge:0 };
-  applyUltimate(pi, p.champion.id);
+  applyUltimate(pi, getUltimateId(pi));
   return true;
 }function onEndTurnPassives(pi) {
-  const champId = gameState.players[pi].champion.id;
+  const champId = getPassiveId(pi);
   const p = gameState.players[pi];
   // Reset wall limit to base if it was temporarily increased
   if (p.wallLimitCurrent > p.champion.wallLimit)
@@ -10144,7 +10721,7 @@ function updateActionBar() {
 
   if (btnMove) {
     const pi = gameState.activePlayer;
-    const champId = isHuman && gameState.players[pi] ? gameState.players[pi].champion.id : null;
+    const champId = isHuman && gameState.players[pi] ? getPassiveId(pi) : null;
     // Soren can take a second move if no card played yet and hasn't used second move
     const sorenCanMoveAgain = champId === 'soren' && hasMoved && cardsPlayedThisTurn === 0 && !gameState._sorenSecondMove;
     const isBound = isHuman && (gameState.players[pi]?.statusEffects || []).some(e => (e.type === 'skip_move' || e.type === 'bound') && e.turnsRemaining > 0);
@@ -10191,7 +10768,7 @@ function updateActionBar() {
   // ── Vex "Echo Chamber" passive button ──────────────────────────────
   const vexBtn = document.getElementById('btn-echo-chamber');
   if (vexBtn) vexBtn.remove(); // clean up old button
-  if (gameState.players[gameState.activePlayer]?.champion?.id === 'vex' &&
+  if (getPassiveId(gameState.activePlayer) === 'vex' &&
       isHumanSeat(gameState.activePlayer) && gameState.phase === 'action' &&
       !gameState._vexEchoUsedThisTurn &&
       gameState.players[gameState.activePlayer].hand.length > 0) {
@@ -10225,7 +10802,7 @@ function renderAll() {
   if (gameMode === 'mp') {
     const oppSeat = 1 - mp_localSeat;
     const oppHandEl = document.getElementById('p' + oppSeat + '-hand');
-    const localIsThorne = gameState.players[mp_localSeat] && gameState.players[mp_localSeat].champion.id === 'thorne';
+    const localIsThorne = gameState.players[mp_localSeat] && getPassiveId(mp_localSeat) === 'thorne';
     if (oppHandEl && !localIsThorne) {
       const count = (gameState._handCounts && gameState._handCounts[oppSeat]) || 0;
       oppHandEl.innerHTML = count > 0
@@ -10323,7 +10900,7 @@ function renderPanels() {
       // Warden's Stare: local player is Thorne AND we are rendering the opponent's panel
       const localSeat = (gameMode === 'mp') ? mp_localSeat : 0;
       const oppSeatForPassive = (localSeat !== null) ? 1 - localSeat : AI_PLAYER;
-      const localIsThorne = gameState.players[localSeat] && gameState.players[localSeat].champion.id === 'thorne';
+      const localIsThorne = gameState.players[localSeat] && getPassiveId(localSeat) === 'thorne';
       const wardenStareActive = localIsThorne && pi === oppSeatForPassive;
       if (!isHumanSeat(pi) && !wardenStareActive) {
         handEl.innerHTML = p.hand.map(()=>
@@ -10334,10 +10911,10 @@ function renderPanels() {
         // Determine if card budget is still available for non-instant cards
         let canPlayNonInstant = false;
         if (isActive) {
-          const champId = gameState.players[pi].champion.id;
+          const _passId = getPassiveId(pi);
           const rule = FACTION_RULES[gameState.players[pi].champion.faction] || {};
           const _dvB = (gameState.players[pi].statusEffects||[]).some(e=>e.type==='deja_vu'&&e.turnsRemaining>0)?1:0;
-          const maxCards = ((champId==='magnus')?2:(rule.cardPlays||1))+_dvB;
+          const maxCards = ((_passId==='magnus')?2:(rule.cardPlays||1))+_dvB;
           canPlayNonInstant = cardsPlayedThisTurn < maxCards && !isCardPhaseSkipped(pi);
         }
         handEl.innerHTML = p.hand.map((card,idx) => renderCard(card, idx, pi, isActive, canPlayNonInstant)).join('');
@@ -10489,7 +11066,7 @@ function renderBoard() {
   // Pieces (with Nyx Illusory Trail + Veil of Shadows support in MP)
   const localViewer = (gameMode === 'mp') ? mp_localSeat : 0;
   for (const pi of [0,1]) {
-    const champId = gameState.players[pi].champion.id;
+    const champId = getPassiveId(pi);
     // In MP: opponent is any seat that isn't ours. In SP: human is always seat 0, so seat 1 is always the opponent.
     const isOpponentPerspective = (pi !== localViewer);
 
@@ -11523,6 +12100,8 @@ async function saveGameRecord(record) {
 }
 
 function showVictory(winner) {
+  // ── Tutorial mode: use tutorial victory display ──
+  if (gameMode === 'tutorial') { showTutorialVictory(winner); return; }
   // ── MP mode: use multiplayer victory display ──
   if (gameMode === 'mp') {
     mpShowVictory(winner);
@@ -11668,6 +12247,17 @@ function resetGame() {
   hasPlayedCard = false;
   aiThinking = false;
   cardsPlayedThisTurn = 0;
+  _tutorialState = null;
+
+  // Clean up any tutorial overlays
+  ['tutorial-backdrop','tutorial-tooltip','tutorial-spotlight',
+   'tutorial-intro-overlay','tutorial-champ-overlay','tutorial-complete-overlay'].forEach(id => {
+    document.getElementById(id)?.remove();
+  });
+
+  // Restore victory button to default
+  const victoryBtn = document.querySelector('#victory-overlay .draw-screen-btn');
+  if (victoryBtn) { victoryBtn.textContent = 'NEW GAME'; victoryBtn.onclick = resetGame; }
 
   showLandingScreen();
 }
@@ -13005,6 +13595,8 @@ function mpShowVictory(winner) {
     `;
     victoryCard.appendChild(placeholder);
 
+    // Grant shards for MP wins
+    if (iWon) grantShards(30);
     issueMatchRewards(iWon).then(cardIds => {
       const container = document.getElementById('mp-reward-cards');
       if (!container) return;
@@ -13124,11 +13716,15 @@ async function authRegister(username, password) {
 
   const { error: profileError } = await sb.from('user_profiles').insert({
     id: userId, username: trimmed, shards: 0, collection: {}, decks: [],
+    roster: [], daily_roll_date: null, tutorial_complete: false,
+    stats: { gamesPlayed:0, gamesWon:0, shardsEarned:0, championsGenerated:0 },
   });
   if (profileError) throw new Error('Profile creation failed: ' + profileError.message);
 
   _authUser    = data.user;
-  _userProfile = { id: userId, username: trimmed, shards: 0, collection: {}, decks: [] };
+  _userProfile = { id: userId, username: trimmed, shards: 0, collection: {}, decks: [],
+    roster: [], dailyRollDate: null, tutorialComplete: false,
+    stats: { gamesPlayed:0, gamesWon:0, shardsEarned:0, championsGenerated:0 } };
   _userName    = trimmed;
   localStorage.setItem('corridors:userName', trimmed);
   return _userProfile;
@@ -13180,8 +13776,16 @@ async function loadUserProfile() {
   const { data, error } = await sb
     .from('user_profiles').select('*').eq('id', _authUser.id).single();
   if (error) { console.error('[Profile] load error:', error); return null; }
-  _userProfile = data;
-  return data;
+  // Merge defaults for forward compatibility (new fields not yet in DB)
+  _userProfile = {
+    roster: [], dailyRollDate: null, tutorialComplete: false,
+    stats: { gamesPlayed:0, gamesWon:0, shardsEarned:0, championsGenerated:0 },
+    ...data,
+    // Supabase uses snake_case; normalize to camelCase
+    dailyRollDate: data.daily_roll_date ?? data.dailyRollDate ?? null,
+    tutorialComplete: data.tutorial_complete ?? data.tutorialComplete ?? false,
+  };
+  return _userProfile;
 }
 
 async function saveUserProfile(updates) {
@@ -13231,7 +13835,7 @@ async function issueSPWinReward(difficulty) {
 
 // ── Disenchant & Craft ────────────────────────────────────────────────
 const DISENCHANT_VALUE = { Common: 5, Uncommon: 15, Rare: 50, Legendary: 150 };
-const CRAFT_COST       = { Common: 25, Uncommon: 75, Rare: 250, Legendary: 800 };
+const CRAFT_COST       = { Common: 60, Uncommon: 175, Rare: 600, Legendary: 2000 };
 
 async function disenchantCard(cardId) {
   if (!_userProfile) return { ok: false, error: 'Not logged in' };
@@ -13258,10 +13862,324 @@ async function craftCard(cardId) {
   return ok ? { ok: true, costPaid: cost } : { ok: false, error: 'Save failed' };
 }
 
+// ── Shard spending ────────────────────────────────────────────────────
+async function spendShards(amount) {
+  if (!_userProfile || (_userProfile.shards ?? 0) < amount) return false;
+  return saveUserProfile({ shards: _userProfile.shards - amount });
+}
+
+// ── Roster Management ────────────────────────────────────────────────
+async function addToRoster(champion) {
+  if (!_userProfile) return false;
+  const roster = [...(_userProfile.roster || []), champion];
+  const stats = { ...(_userProfile.stats || {}), championsGenerated: ((_userProfile.stats?.championsGenerated || 0) + 1) };
+  return saveUserProfile({ roster, stats });
+}
+
+async function removeFromRoster(champId) {
+  if (!_userProfile) return false;
+  const roster = (_userProfile.roster || []).filter(c => c.id !== champId);
+  // Return deck cards to collection if champion had a deck
+  const deck = (_userProfile.decks || []).find(d => d.championId === champId);
+  let updates = { roster, decks: (_userProfile.decks || []).filter(d => d.championId !== champId) };
+  if (deck && deck.cards?.length) {
+    const col = { ...(_userProfile.collection || {}) };
+    for (const cardId of deck.cards) { col[cardId] = (col[cardId] ?? 0) + 1; }
+    updates.collection = col;
+  }
+  return saveUserProfile(updates);
+}
+
+async function renameChampion(champId, newName) {
+  if (!_userProfile) return false;
+  const roster = (_userProfile.roster || []).map(c =>
+    c.id === champId && !c.renamed ? { ...c, name: newName.trim(), renamed: true } : c);
+  return saveUserProfile({ roster });
+}
+
+async function destroyChampion(champId) {
+  // Permadeath: remove from roster, return deck cards, show overlay
+  const champ = (_userProfile?.roster || []).find(c => c.id === champId);
+  if (!champ || !champ.isGenerated) return false;
+  await removeFromRoster(champId);
+  return true;
+}
+
+// ── Shop: Champion Packs ─────────────────────────────────────────────
+const CHAMPION_PACK_COSTS = { Common:100, Uncommon:300, Rare:750, Mystery:500 };
+const CARD_PACK_COSTS = { basic:50, premium:200 };
+
+async function buyChampionPack(tier) {
+  const cost = CHAMPION_PACK_COSTS[tier];
+  if (!cost) return { ok: false, error: 'Unknown pack tier' };
+  if ((_userProfile?.shards ?? 0) < cost) return { ok: false, error: 'Not enough shards' };
+  let rarity = tier;
+  if (tier === 'Mystery') {
+    const roll = Math.random();
+    rarity = roll < 0.70 ? 'Common' : roll < 0.90 ? 'Uncommon' : roll < 0.98 ? 'Rare' : 'Epic';
+  }
+  const champ = generateChampion(rarity);
+  await spendShards(cost);
+  await addToRoster(champ);
+  return { ok: true, champion: champ };
+}
+
+async function buyCardPack(tier) {
+  const cost = CARD_PACK_COSTS[tier];
+  if (!cost) return { ok: false, error: 'Unknown pack tier' };
+  if ((_userProfile?.shards ?? 0) < cost) return { ok: false, error: 'Not enough shards' };
+  const count = tier === 'premium' ? 5 : 3;
+  const allCardIds = Object.keys(CARDS);
+  const cards = [];
+  for (let i = 0; i < count; i++) {
+    let roll = Math.random();
+    let targetRarity;
+    if (tier === 'premium' && i === 0) {
+      // Guaranteed Uncommon+ for first card
+      targetRarity = roll < 0.85 ? 'Uncommon' : 'Rare';
+    } else if (tier === 'premium') {
+      targetRarity = roll < 0.50 ? 'Common' : roll < 0.80 ? 'Uncommon' : roll < 0.95 ? 'Rare' : 'Legendary';
+    } else {
+      targetRarity = roll < 0.60 ? 'Common' : roll < 0.90 ? 'Uncommon' : 'Rare';
+    }
+    const pool = allCardIds.filter(id => CARDS[id].rarity === targetRarity);
+    if (pool.length) cards.push(pool[Math.floor(Math.random() * pool.length)]);
+    else cards.push(allCardIds[Math.floor(Math.random() * allCardIds.length)]);
+  }
+  await spendShards(cost);
+  await grantCards(cards);
+  return { ok: true, cards: cards.map(id => CARDS[id]) };
+}
+
+// ── Daily Free Champion Roll ─────────────────────────────────────────
+function canClaimDailyRoll() {
+  if (!_userProfile) return false;
+  const today = new Date().toISOString().slice(0, 10);
+  return (_userProfile.dailyRollDate || '') !== today;
+}
+
+async function claimDailyRoll() {
+  if (!canClaimDailyRoll()) return { ok: false, error: 'Already claimed today' };
+  const roll = Math.random();
+  const rarity = roll < 0.90 ? 'Common' : roll < 0.98 ? 'Uncommon' : 'Rare';
+  const champ = generateChampion(rarity);
+  const today = new Date().toISOString().slice(0, 10);
+  await addToRoster(champ);
+  await saveUserProfile({ daily_roll_date: today, dailyRollDate: today });
+  return { ok: true, champion: champ };
+}
+
+// ── Shop UI ──────────────────────────────────────────────────────────
+function showShopScreen() {
+  const overlay = document.createElement('div');
+  overlay.id = 'shop-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;background:var(--bg);z-index:2000;overflow-y:auto;padding:20px;';
+  const shards = _userProfile?.shards ?? 0;
+
+  overlay.innerHTML = `
+    <div style="max-width:900px;margin:0 auto;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
+        <h1 style="font-family:'Teko',sans-serif;font-size:32px;color:var(--accent);margin:0;">SHOP</h1>
+        <div style="display:flex;gap:16px;align-items:center;">
+          <span style="color:var(--accent);font-family:'Teko',sans-serif;font-size:22px;">◆ ${shards.toLocaleString()}</span>
+          <button onclick="document.getElementById('shop-overlay')?.remove()" class="action-btn" style="font-size:13px;padding:6px 16px;">BACK</button>
+        </div>
+      </div>
+
+      <h2 style="font-family:'Teko',sans-serif;font-size:22px;color:#ccc;margin:24px 0 12px;">CHAMPION PACKS</h2>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px;">
+        ${['Common','Uncommon','Rare','Mystery'].map(t => `
+          <div style="background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:16px;text-align:center;">
+            <div style="font-family:'Teko',sans-serif;font-size:20px;color:${t==='Common'?'#aaa':t==='Uncommon'?'#4ade80':t==='Rare'?'#60a5fa':t==='Mystery'?'#c084fc':'#ccc'};">${t.toUpperCase()} PACK</div>
+            <div style="font-size:12px;color:#888;margin:8px 0;">${t==='Mystery'?'Random rarity (~70% C, 20% U, 8% R, 2% E)':'Guaranteed '+t+' champion'}</div>
+            <div style="color:var(--accent);font-family:'Teko',sans-serif;font-size:18px;margin:8px 0;">◆ ${CHAMPION_PACK_COSTS[t]}</div>
+            <button onclick="handleBuyChampionPack('${t}')" class="action-btn primary" style="width:100%;font-size:13px;padding:6px;" ${shards < CHAMPION_PACK_COSTS[t] ? 'disabled' : ''}>BUY</button>
+          </div>
+        `).join('')}
+      </div>
+
+      <h2 style="font-family:'Teko',sans-serif;font-size:22px;color:#ccc;margin:24px 0 12px;">CARD PACKS</h2>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px;">
+        <div style="background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:16px;text-align:center;">
+          <div style="font-family:'Teko',sans-serif;font-size:20px;color:#aaa;">BASIC CARD PACK</div>
+          <div style="font-size:12px;color:#888;margin:8px 0;">3 cards (60% C, 30% U, 10% R)</div>
+          <div style="color:var(--accent);font-family:'Teko',sans-serif;font-size:18px;margin:8px 0;">◆ 50</div>
+          <button onclick="handleBuyCardPack('basic')" class="action-btn primary" style="width:100%;font-size:13px;padding:6px;" ${shards < 50 ? 'disabled' : ''}>BUY</button>
+        </div>
+        <div style="background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:16px;text-align:center;">
+          <div style="font-family:'Teko',sans-serif;font-size:20px;color:#4ade80;">PREMIUM CARD PACK</div>
+          <div style="font-size:12px;color:#888;margin:8px 0;">5 cards (guaranteed 1+ Uncommon)</div>
+          <div style="color:var(--accent);font-family:'Teko',sans-serif;font-size:18px;margin:8px 0;">◆ 200</div>
+          <button onclick="handleBuyCardPack('premium')" class="action-btn primary" style="width:100%;font-size:13px;padding:6px;" ${shards < 200 ? 'disabled' : ''}>BUY</button>
+        </div>
+      </div>
+
+      ${canClaimDailyRoll() ? `
+      <h2 style="font-family:'Teko',sans-serif;font-size:22px;color:#fbbf24;margin:24px 0 12px;">DAILY FREE CHAMPION</h2>
+      <div style="background:var(--panel);border:2px solid #fbbf24;border-radius:8px;padding:16px;text-align:center;max-width:300px;">
+        <div style="font-size:14px;color:#fbbf24;margin-bottom:8px;">Free champion roll! (90% C, 8% U, 2% R)</div>
+        <button onclick="handleDailyRoll()" class="action-btn" style="background:#fbbf24;color:#000;width:100%;font-size:14px;padding:8px;">CLAIM FREE ROLL</button>
+      </div>` : ''}
+    </div>
+  `;
+  document.body.appendChild(overlay);
+}
+
+async function handleBuyChampionPack(tier) {
+  const result = await buyChampionPack(tier);
+  if (!result.ok) { showStatus(result.error, 'error'); return; }
+  showPackReveal([result.champion], 'champion');
+}
+
+async function handleBuyCardPack(tier) {
+  const result = await buyCardPack(tier);
+  if (!result.ok) { showStatus(result.error, 'error'); return; }
+  showPackReveal(result.cards, 'card');
+}
+
+async function handleDailyRoll() {
+  const result = await claimDailyRoll();
+  if (!result.ok) { showStatus(result.error, 'error'); return; }
+  showPackReveal([result.champion], 'champion');
+}
+
+function showPackReveal(items, type) {
+  // Refresh shop after purchase
+  document.getElementById('shop-overlay')?.remove();
+  const overlay = document.createElement('div');
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.9);z-index:3000;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:16px;';
+  const title = type === 'champion' ? 'NEW CHAMPION!' : 'CARDS OBTAINED!';
+  let html = `<div style="font-family:'Teko',sans-serif;font-size:36px;color:var(--accent);">${title}</div><div style="display:flex;gap:16px;flex-wrap:wrap;justify-content:center;">`;
+  for (const item of items) {
+    if (type === 'champion') {
+      const rc = item.rarity === 'Common' ? '#aaa' : item.rarity === 'Uncommon' ? '#4ade80' : item.rarity === 'Rare' ? '#60a5fa' : item.rarity === 'Epic' ? '#c084fc' : '#fbbf24';
+      html += `<div style="background:var(--panel);border:2px solid ${rc};border-radius:8px;padding:20px;text-align:center;min-width:200px;">
+        <div style="font-family:'Teko',sans-serif;font-size:24px;color:${rc};">${item.name}</div>
+        <div style="font-size:11px;color:#888;">${item.title}</div>
+        <div style="font-size:12px;color:${rc};margin:4px 0;">${item.rarity} · ${item.faction}</div>
+        <div style="font-size:11px;color:#ccc;margin-top:8px;">W:${item.wallLimit} H:${item.handSize} D:${item.cardDraw} U:${item.ultimateCost}</div>
+        <div style="font-size:11px;color:#888;margin-top:4px;">${item.passiveName} · ${item.ultimateName}</div>
+      </div>`;
+    } else {
+      const rc = item.rarity === 'Common' ? '#aaa' : item.rarity === 'Uncommon' ? '#4ade80' : item.rarity === 'Rare' ? '#60a5fa' : '#fbbf24';
+      html += `<div style="background:var(--panel);border:1px solid ${rc};border-radius:6px;padding:12px;text-align:center;width:140px;">
+        <div style="font-family:'Teko',sans-serif;font-size:16px;color:${rc};">${item.name}</div>
+        <div style="font-size:10px;color:#888;">${item.rarity} · ${item.faction}</div>
+      </div>`;
+    }
+  }
+  html += `</div><button onclick="this.parentElement.remove();showShopScreen();" class="action-btn" style="margin-top:20px;font-size:14px;padding:8px 24px;">CONTINUE</button>`;
+  overlay.innerHTML = html;
+  document.body.appendChild(overlay);
+}
+
+// ── Roster UI ────────────────────────────────────────────────────────
+function showRosterScreen() {
+  const overlay = document.createElement('div');
+  overlay.id = 'roster-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;background:var(--bg);z-index:2000;overflow-y:auto;padding:20px;';
+  const roster = _userProfile?.roster || [];
+
+  const rarityColor = r => r==='Common'?'#aaa':r==='Uncommon'?'#4ade80':r==='Rare'?'#60a5fa':r==='Epic'?'#c084fc':r==='Legendary'?'#fbbf24':'#ccc';
+
+  let html = `<div style="max-width:900px;margin:0 auto;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
+      <h1 style="font-family:'Teko',sans-serif;font-size:32px;color:var(--accent);margin:0;">ROSTER</h1>
+      <button onclick="document.getElementById('roster-overlay')?.remove()" class="action-btn" style="font-size:13px;padding:6px 16px;">BACK</button>
+    </div>
+
+    <h2 style="font-family:'Teko',sans-serif;font-size:18px;color:#888;margin:16px 0 8px;">TEMPLATE CHAMPIONS (Always Available)</h2>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;margin-bottom:24px;">`;
+
+  for (const [cid, cdef] of Object.entries(CHAMPIONS)) {
+    html += `<div style="background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:12px;text-align:center;">
+      <div style="font-family:'Teko',sans-serif;font-size:18px;color:#ccc;">${cdef.name}</div>
+      <div style="font-size:10px;color:#888;">${cdef.title} · ${cdef.faction}</div>
+      <div style="font-size:10px;color:#aaa;margin-top:4px;">W:${cdef.wallLimit} H:${cdef.handSize} D:${cdef.cardDraw} U:${cdef.ultimateCost}</div>
+    </div>`;
+  }
+
+  html += `</div><h2 style="font-family:'Teko',sans-serif;font-size:18px;color:#888;margin:16px 0 8px;">YOUR ROSTER (${roster.length} champions)</h2>`;
+
+  if (!roster.length) {
+    html += `<div style="color:#666;font-size:14px;padding:20px;text-align:center;">No generated champions yet. Visit the Shop to get your first!</div>`;
+  } else {
+    html += `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px;">`;
+    for (const c of roster) {
+      const rc = rarityColor(c.rarity);
+      html += `<div style="background:var(--panel);border:2px solid ${rc};border-radius:8px;padding:14px;cursor:pointer;" onclick="showChampionDetail('${c.id}')">
+        <div style="font-family:'Teko',sans-serif;font-size:20px;color:${rc};">${c.name}</div>
+        <div style="font-size:10px;color:#888;">${c.title}</div>
+        <div style="font-size:11px;color:${rc};margin:4px 0;">${c.rarity} · ${c.faction}</div>
+        <div style="font-size:10px;color:#aaa;">W:${c.wallLimit} H:${c.handSize} D:${c.cardDraw} U:${c.ultimateCost}</div>
+        <div style="font-size:10px;color:#888;margin-top:4px;">${c.passiveName} · ${c.ultimateName}</div>
+      </div>`;
+    }
+    html += `</div>`;
+  }
+
+  html += `</div>`;
+  overlay.innerHTML = html;
+  document.body.appendChild(overlay);
+}
+
+function showChampionDetail(champId) {
+  const champ = (_userProfile?.roster || []).find(c => c.id === champId);
+  if (!champ) return;
+  const rc = champ.rarity==='Common'?'#aaa':champ.rarity==='Uncommon'?'#4ade80':champ.rarity==='Rare'?'#60a5fa':champ.rarity==='Epic'?'#c084fc':'#fbbf24';
+  const modal = document.createElement('div');
+  modal.id = 'champ-detail-modal';
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:3000;display:flex;align-items:center;justify-content:center;';
+  modal.innerHTML = `<div style="background:var(--panel);border:2px solid ${rc};border-radius:12px;padding:28px;max-width:400px;width:90%;text-align:center;">
+    <div style="font-family:'Teko',sans-serif;font-size:28px;color:${rc};">${champ.name}</div>
+    <div style="font-size:13px;color:#888;margin-bottom:8px;">${champ.title} · ${champ.rarity} · ${champ.faction}</div>
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:12px 0;">
+      <div><div style="font-size:10px;color:#888;">WALLS</div><div style="font-size:18px;color:#ccc;">${champ.wallLimit}</div></div>
+      <div><div style="font-size:10px;color:#888;">HAND</div><div style="font-size:18px;color:#ccc;">${champ.handSize}</div></div>
+      <div><div style="font-size:10px;color:#888;">DRAW</div><div style="font-size:18px;color:#ccc;">${champ.cardDraw}</div></div>
+      <div><div style="font-size:10px;color:#888;">ULT COST</div><div style="font-size:18px;color:#ccc;">${champ.ultimateCost}</div></div>
+    </div>
+    <div style="text-align:left;margin:12px 0;padding:10px;background:rgba(255,255,255,0.03);border-radius:6px;">
+      <div style="font-size:12px;color:var(--accent);">${champ.passiveName}</div>
+      <div style="font-size:11px;color:#aaa;">${champ.passiveDesc}</div>
+    </div>
+    <div style="text-align:left;margin:12px 0;padding:10px;background:rgba(255,255,255,0.03);border-radius:6px;">
+      <div style="font-size:12px;color:#f59e0b;">${champ.ultimateName}</div>
+      <div style="font-size:11px;color:#aaa;">${champ.ultimateDesc}</div>
+    </div>
+    <div style="display:flex;gap:8px;justify-content:center;margin-top:16px;">
+      ${!champ.renamed ? `<button onclick="handleRenameChampion('${champ.id}')" class="action-btn" style="font-size:12px;padding:6px 14px;">RENAME</button>` : ''}
+      <button onclick="handleDestroyChampion('${champ.id}','${champ.name.replace(/'/g,"\\'")}')" class="action-btn" style="font-size:12px;padding:6px 14px;background:#dc2626;">DESTROY</button>
+      <button onclick="document.getElementById('champ-detail-modal')?.remove()" class="action-btn" style="font-size:12px;padding:6px 14px;">CLOSE</button>
+    </div>
+  </div>`;
+  document.body.appendChild(modal);
+}
+
+async function handleRenameChampion(champId) {
+  const newName = prompt('Enter new name for this champion:');
+  if (!newName || !newName.trim()) return;
+  await renameChampion(champId, newName);
+  document.getElementById('champ-detail-modal')?.remove();
+  document.getElementById('roster-overlay')?.remove();
+  showRosterScreen();
+}
+
+async function handleDestroyChampion(champId, champName) {
+  if (!confirm(`PERMANENTLY DESTROY ${champName}? This cannot be undone!`)) return;
+  await destroyChampion(champId);
+  document.getElementById('champ-detail-modal')?.remove();
+  document.getElementById('roster-overlay')?.remove();
+  showRosterScreen();
+  showStatus(`${champName} has been permanently destroyed`, 'error');
+}
+
 // ── Deck validation ───────────────────────────────────────────────────
 function validateDeck(championId, cardIds) {
   const errors  = [];
-  const champion = CHAMPIONS[championId];
+  // Support both template champions (by ID) and generated champions (by roster lookup)
+  let champion = CHAMPIONS[championId];
+  if (!champion) champion = (_userProfile?.roster || []).find(c => c.id === championId);
   if (!champion) return { valid: false, errors: ['Unknown champion'] };
   if (cardIds.length !== 20)
     errors.push(`Deck must be exactly 20 cards (currently ${cardIds.length})`);
@@ -13375,7 +14293,9 @@ function buildDeckForGame(championId, savedDeckCards) {
   if (savedDeckCards?.length > 0) {
     return shuffle(savedDeckCards.map(id => ({ ...CARDS[id] })).filter(Boolean));
   }
-  return buildStarterDeck(CHAMPIONS[championId]?.faction);
+  // Look up faction from template champions or generated roster
+  const champ = CHAMPIONS[championId] || resolveChampion(championId);
+  return buildStarterDeck(champ?.faction || 'Architects');
 }
 
 // ════════════════════════════════════════════════════════════════════
