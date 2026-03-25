@@ -4565,9 +4565,12 @@ function triggerTrap(trap, targetPi) {
 
   switch (trap.type) {
     case 'snare':
-      // Movement immediately stops (caller must handle this by stopping the move loop)
+      // Movement immediately stops AND prevents all further movement this turn
+      // (blocks both normal move and card-based movement)
       effect = 'movement_stop';
-      addLog(trap.owner, 'trap', `Snare triggered at (${trap.tile.row},${trap.tile.col}) — opponent movement stopped!`);
+      hasMoved = true; // Block normal movement
+      gameState._snaredThisTurn = targetPi; // Block card-based movement too
+      addLog(trap.owner, 'trap', `Snare triggered at (${trap.tile.row},${trap.tile.col}) — all movement stopped this turn!`);
       break;
 
     case 'pit':
@@ -7105,27 +7108,71 @@ function gauntletGetAvailableNodes() {
 }
 
 function startGauntletNode(nodeId) {
-  document.getElementById('gauntlet-map-overlay')?.remove();
-  document.getElementById('gauntlet-reward-overlay')?.remove();
   if (!_gauntletRun) return;
-
   const node = gauntletGetNode(nodeId);
   if (!node) return;
 
+  // Non-combat nodes start immediately
+  if (node.type === 'rest' || node.type === 'event') {
+    document.getElementById('gauntlet-map-overlay')?.remove();
+    _gauntletRun.currentNodeId = nodeId;
+    _gauntletRun.currentFloor = node.floor;
+    if (node.type === 'rest') showGauntletRestEvent();
+    else showGauntletRandomEvent();
+    return;
+  }
+
+  // Combat nodes: show preview first
+  const stage = _gauntletRun.stage;
+  const aiRarity = node.type === 'elite' ? (GAUNTLET_AI_RARITY[Math.min(stage + 2, 12)] || 'Uncommon')
+                 : (GAUNTLET_AI_RARITY[stage] || 'Common');
+  const deckStage = node.type === 'elite' ? Math.min(stage + 2, 12) : node.type === 'boss' ? Math.min(stage + 1, 12) : stage;
+  const deckDist = GAUNTLET_AI_DECK_DIST[deckStage] || GAUNTLET_AI_DECK_DIST[1];
+  const deckStr = Object.entries(deckDist).filter(([r,n])=>n>0).map(([r,n])=>`${n} ${r}`).join(', ');
+  const nodeType = GAUNTLET_NODE_TYPES[node.type] || GAUNTLET_NODE_TYPES.battle;
+  const boardInfo = (node.type === 'boss' && node.board) ? `<div style="font-size:11px;color:#e05050;margin-top:8px;">Board: ${node.board.name} — ${node.board.desc}</div>` : '';
+
+  // Show preview modal over the map
+  document.getElementById('gauntlet-preview')?.remove();
+  const preview = document.createElement('div');
+  preview.id = 'gauntlet-preview';
+  preview.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.85);display:flex;align-items:center;justify-content:center;z-index:300;';
+  preview.innerHTML = `
+    <div style="background:var(--surface);border:2px solid ${nodeType.color};padding:24px 32px;max-width:380px;text-align:center;">
+      <div style="font-size:24px;margin-bottom:4px;">${nodeType.icon}</div>
+      <div style="font-family:'Teko',sans-serif;font-size:26px;color:${nodeType.color};margin-bottom:8px;">${nodeType.label.toUpperCase()} BATTLE</div>
+      <div style="font-size:12px;color:#ccc;margin-bottom:4px;">Enemy: <span style="color:${aiRarity==='Common'?'#aaa':aiRarity==='Uncommon'?'#4ade80':aiRarity==='Rare'?'#60a5fa':aiRarity==='Epic'?'#c084fc':'#fbbf24'}">${aiRarity}</span> champion</div>
+      <div style="font-size:11px;color:#888;margin-bottom:4px;">Deck: ${deckStr}</div>
+      ${node.type === 'boss' ? '<div style="font-size:11px;color:#e05050;">Counter-faction opponent · Hard AI</div>' : ''}
+      ${boardInfo}
+      <div style="display:flex;gap:12px;justify-content:center;margin-top:16px;">
+        <button class="landing-btn amber" style="width:140px;" onclick="document.getElementById('gauntlet-preview')?.remove();confirmGauntletNode('${nodeId}');">
+          FIGHT
+        </button>
+        <button class="landing-btn muted" style="width:100px;font-size:11px;" onclick="document.getElementById('gauntlet-preview')?.remove();">
+          BACK
+        </button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(preview);
+}
+
+function confirmGauntletNode(nodeId) {
+  document.getElementById('gauntlet-map-overlay')?.remove();
+  if (!_gauntletRun) return;
+  const node = gauntletGetNode(nodeId);
+  if (!node) return;
   _gauntletRun.currentNodeId = nodeId;
   _gauntletRun.currentFloor = node.floor;
-
-  if (node.type === 'battle' || node.type === 'elite' || node.type === 'boss') {
-    startGauntletCombat(node);
-  } else if (node.type === 'rest') {
-    showGauntletRestEvent();
-  } else if (node.type === 'event') {
-    showGauntletRandomEvent();
-  }
+  startGauntletCombat(node);
 }
 
 function startGauntletCombat(node) {
   const stage = _gauntletRun.stage;
+  const deckStage = node.type === 'elite' ? Math.min(stage + 2, 12)
+                  : node.type === 'boss' ? Math.min(stage + 1, 12)
+                  : stage;
   const aiRarity = node.type === 'elite' ? (GAUNTLET_AI_RARITY[Math.min(stage + 2, 12)] || 'Uncommon')
                  : (GAUNTLET_AI_RARITY[stage] || 'Common');
 
@@ -7135,13 +7182,18 @@ function startGauntletCombat(node) {
     preferredFaction = FACTION_COUNTER[_gauntletRun.champion.faction] || null;
   }
   const aiChamp = generateChampion(aiRarity, preferredFaction);
-  const aiDeck = buildGauntletAIDeck(stage, aiChamp.faction);
+  const aiDeck = buildGauntletAIDeck(deckStage, aiChamp.faction);
 
   // Store node info for board mods
   _gauntletRun._currentNode = node;
   if (_userProfile) saveUserProfile({ gauntlet_run: _gauntletRun });
 
   initGauntletGame(_gauntletRun.champion, aiChamp, _gauntletRun.deck, aiDeck);
+
+  // Boss: always use hardest AI difficulty
+  if (node.type === 'boss') {
+    aiDifficulty = 'hard';
+  }
 
   // Apply boss board modifiers after init
   if (node.type === 'boss' && node.board) {
@@ -7239,23 +7291,23 @@ async function gauntletRestSkip() {
 
 // Random event: bonus shards, random card, or a trade
 function showGauntletRandomEvent() {
-  const events = [
-    { title:'WANDERING MERCHANT', desc:'A merchant offers a rare card from your faction.', action:'card',
+  const faction = _gauntletRun.champion.faction;
+  const goodEvents = [
+    { title:'WANDERING MERCHANT', desc:'A merchant offers a rare card from your faction.', good:true,
       execute: () => {
-        const faction = _gauntletRun.champion.faction;
-        const pool = Object.values(CARDS).filter(c => (c.faction === faction || c.faction === 'Basic') && c.rarity !== 'Legendary');
-        const card = pool[Math.floor(Math.random() * pool.length)];
+        const pool = Object.values(CARDS).filter(c => (c.faction === faction || c.faction === 'Basic') && (c.rarity === 'Rare' || c.rarity === 'Uncommon'));
+        const card = pool.length ? pool[Math.floor(Math.random() * pool.length)] : Object.values(CARDS)[0];
         _gauntletRun.deck.push(card.id);
-        return `Added ${card.name} to your deck!`;
+        return `Added ${card.name} (${card.rarity}) to your deck!`;
       }},
-    { title:'SHARD CACHE', desc:'You discover a hidden cache of shards.', action:'shards',
+    { title:'SHARD CACHE', desc:'You discover a hidden cache of shards.', good:true,
       execute: () => {
         const amount = 20 + Math.floor(Math.random() * 30);
         _gauntletRun.earnedShards += amount;
         grantShards(amount);
         return `Found ${amount} shards!`;
       }},
-    { title:'TRAINING GROUNDS', desc:'You practice and hone your skills.', action:'upgrade',
+    { title:'TRAINING GROUNDS', desc:'You practice and hone your skills.', good:true,
       execute: () => {
         const stats = ['wallLimit','handSize','cardDraw'];
         const stat = stats[Math.floor(Math.random() * stats.length)];
@@ -7263,17 +7315,76 @@ function showGauntletRandomEvent() {
         _gauntletRun.champion[stat] = (_gauntletRun.champion[stat] || 3) + 1;
         return `+1 ${labels[stat]}!`;
       }},
+    { title:'FOREIGN DIPLOMAT', desc:'An emissary from another faction offers a card.', good:true,
+      execute: () => {
+        const otherFactions = Object.keys(FACTION_COUNTER).filter(f => f !== faction);
+        const otherFaction = otherFactions[Math.floor(Math.random() * otherFactions.length)];
+        const pool = Object.values(CARDS).filter(c => c.faction === otherFaction);
+        const card = pool.length ? pool[Math.floor(Math.random() * pool.length)] : Object.values(CARDS)[0];
+        _gauntletRun.deck.push(card.id);
+        return `Added ${card.name} (${card.faction}) to your deck!`;
+      }},
+    { title:'REST STOP', desc:'A quiet place to remove a weak card from your deck.', good:true,
+      execute: () => {
+        // Auto-remove weakest common card
+        const idx = _gauntletRun.deck.findIndex(id => CARDS[id] && CARDS[id].rarity === 'Common');
+        if (idx >= 0) {
+          const removed = CARDS[_gauntletRun.deck[idx]];
+          _gauntletRun.deck.splice(idx, 1);
+          return `Removed ${removed.name} from your deck!`;
+        }
+        return 'No common cards to remove.';
+      }},
   ];
-  const event = events[Math.floor(Math.random() * events.length)];
+  const badEvents = [
+    { title:'DECK FLOOD', desc:'A chaotic surge fills your deck with weak cards.', good:false,
+      execute: () => {
+        const weakCards = ['BB','BB','BB','CB'];
+        for (const id of weakCards) _gauntletRun.deck.push(id);
+        return `4 basic cards added to your deck! Deck bloated to ${_gauntletRun.deck.length} cards.`;
+      }},
+    { title:'STAT DRAIN', desc:'A dark force weakens your champion.', good:false,
+      execute: () => {
+        const stats = ['wallLimit','handSize','cardDraw'];
+        const stat = stats[Math.floor(Math.random() * stats.length)];
+        const labels = {wallLimit:'Wall Limit',handSize:'Hand Size',cardDraw:'Card Draw'};
+        _gauntletRun.champion[stat] = Math.max(2, (_gauntletRun.champion[stat] || 3) - 1);
+        return `-1 ${labels[stat]}! Champion weakened.`;
+      }},
+    { title:'CURSED SHRINE', desc:'The shrine demands a sacrifice from your deck.', good:false,
+      execute: () => {
+        // Force remove a random non-basic card
+        const nonBasic = _gauntletRun.deck.map((id, i) => ({id, i})).filter(x => CARDS[x.id] && CARDS[x.id].faction !== 'Basic');
+        if (nonBasic.length > 0) {
+          const victim = nonBasic[Math.floor(Math.random() * nonBasic.length)];
+          const removed = CARDS[victim.id];
+          _gauntletRun.deck.splice(victim.i, 1);
+          return `The shrine consumed ${removed.name}!`;
+        }
+        return 'The shrine finds nothing worthy to take.';
+      }},
+    { title:'AMBUSH', desc:'Bandits steal some of your shards.', good:false,
+      execute: () => {
+        const stolen = Math.min(15 + Math.floor(Math.random() * 20), _gauntletRun.earnedShards);
+        _gauntletRun.earnedShards = Math.max(0, _gauntletRun.earnedShards - stolen);
+        return `Bandits stole ${stolen} shards!`;
+      }},
+  ];
 
+  // 55% good, 45% bad
+  const isGood = Math.random() < 0.55;
+  const pool = isGood ? goodEvents : badEvents;
+  const event = pool[Math.floor(Math.random() * pool.length)];
+
+  const eventColor = event.good ? '#c084fc' : '#e05050';
   const overlay = document.createElement('div');
   overlay.id = 'gauntlet-event-overlay';
   overlay.style.cssText = 'position:fixed;inset:0;background:var(--bg);display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:200;padding:40px 24px;text-align:center;';
   overlay.innerHTML = `
-    <div style="font-size:48px;margin-bottom:8px;">?</div>
-    <div style="font-family:'Teko',sans-serif;font-size:32px;color:#c084fc;margin-bottom:8px;">${event.title}</div>
+    <div style="font-size:48px;margin-bottom:8px;">${event.good ? '?' : '!'}</div>
+    <div style="font-family:'Teko',sans-serif;font-size:32px;color:${eventColor};margin-bottom:8px;">${event.title}</div>
     <div style="font-size:13px;color:var(--text);margin-bottom:24px;">${event.desc}</div>
-    <button class="landing-btn" style="width:200px;background:rgba(192,132,252,0.15);color:#c084fc;border:1px solid rgba(192,132,252,0.3);"
+    <button class="landing-btn" style="width:200px;background:rgba(192,132,252,0.15);color:${eventColor};border:1px solid ${eventColor}40;"
       onclick="gauntletResolveEvent(this);">
       PROCEED
     </button>
@@ -7285,15 +7396,17 @@ function showGauntletRandomEvent() {
 async function gauntletResolveEvent(btn) {
   const overlay = document.getElementById('gauntlet-event-overlay');
   if (!overlay?._event) return;
-  const result = overlay._event.execute();
+  const event = overlay._event;
+  const result = event.execute();
   _gauntletRun.visitedNodeIds.push(_gauntletRun.currentNodeId);
   _gauntletRun.currentFloor++;
   _gauntletRun.stage = Math.min(_gauntletRun.stage + 1, 12);
   if (_userProfile) await saveUserProfile({ gauntlet_run: _gauntletRun });
 
+  const resultColor = event.good ? '#4ade80' : '#e05050';
   overlay.innerHTML = `
-    <div style="font-family:'Teko',sans-serif;font-size:28px;color:#c084fc;margin-bottom:12px;">EVENT COMPLETE</div>
-    <div style="font-size:14px;color:var(--amber);margin-bottom:24px;">${result}</div>
+    <div style="font-family:'Teko',sans-serif;font-size:28px;color:${resultColor};margin-bottom:12px;">${event.good ? 'EVENT COMPLETE' : 'MISFORTUNE'}</div>
+    <div style="font-size:14px;color:${resultColor};margin-bottom:24px;">${result}</div>
     <button class="landing-btn amber" style="width:200px;" onclick="document.getElementById('gauntlet-event-overlay')?.remove();showGauntletMap(false);">CONTINUE</button>
   `;
 }
@@ -7354,10 +7467,10 @@ function generateGauntletCardRewards(stage, faction) {
 function showGauntletCardReward(shardsEarned) {
   const stage = _gauntletRun.stage;
   const faction = _gauntletRun.champion.faction;
-  const cards = generateGauntletCardRewards(stage, faction);
-  const removalCost = GAUNTLET_REMOVAL_COST[stage] ?? 0;
+  const currentNode = _gauntletRun.currentNodeId ? gauntletGetNode(_gauntletRun.currentNodeId) : null;
+  const isElite = currentNode && currentNode.type === 'elite';
+  const cards = isElite ? generateGauntletCardRewards(Math.min(stage + 2, 12), faction) : generateGauntletCardRewards(stage, faction);
   let cardPicked = false;
-  let cardRemoved = false;
 
   const overlay = document.createElement('div');
   overlay.id = 'gauntlet-reward-overlay';
@@ -7375,28 +7488,33 @@ function showGauntletCardReward(shardsEarned) {
       </div>`;
     }).join('');
 
-    // Current deck display for removal
-    const deckHtml = _gauntletRun.deck.map((id, i) => {
+    // Show deck read-only
+    const deckHtml = _gauntletRun.deck.map((id) => {
       const c = CARDS[id];
       if (!c) return '';
       return `<div style="display:inline-block;background:var(--surface);border:1px solid var(--border);padding:4px 8px;margin:2px;font-size:10px;color:#ccc;">
         ${c.name} <span style="color:#888;font-size:9px;">${c.rarity}</span>
-        ${!cardRemoved ? `<span onclick="gauntletRemoveCard(${i})" style="color:#e05050;cursor:pointer;margin-left:4px;" title="Remove this card">✕</span>` : ''}
       </div>`;
     }).join('');
 
+    // Elite stat boost
+    const eliteStatHtml = isElite && cardPicked ? `
+      <div style="font-size:12px;color:#f59e0b;margin-bottom:16px;">Elite bonus: +1 to a random stat!</div>
+    ` : '';
+
     overlay.innerHTML = `
-      <div style="font-family:'Teko',sans-serif;font-size:28px;color:var(--amber);margin-bottom:4px;">STAGE ${stage} COMPLETE</div>
+      <div style="font-family:'Teko',sans-serif;font-size:28px;color:var(--amber);margin-bottom:4px;">${isElite ? '⚡ ELITE' : 'STAGE'} ${stage} COMPLETE</div>
       <div style="font-size:14px;color:var(--amber);margin-bottom:20px;">+${shardsEarned} ◆ SHARDS</div>
       ${!cardPicked ? `
-        <div style="font-size:12px;color:var(--text-dim);margin-bottom:12px;">Pick a card to add to your deck</div>
+        <div style="font-size:12px;color:var(--text-dim);margin-bottom:12px;">Pick a card to add to your deck${isElite ? ' (elite rewards)' : ''}</div>
         <div style="display:flex;gap:12px;margin-bottom:24px;flex-wrap:wrap;justify-content:center;">${cardHtml}</div>
       ` : `
-        <div style="font-size:12px;color:#4ade80;margin-bottom:16px;">Card added to deck!</div>
+        <div style="font-size:12px;color:#4ade80;margin-bottom:8px;">Card added to deck!</div>
+        ${eliteStatHtml}
       `}
-      <div style="font-size:11px;color:var(--text-dim);margin-bottom:8px;">YOUR DECK (${_gauntletRun.deck.length} cards) ${removalCost > 0 && !cardRemoved ? `· Removal cost: ${removalCost} shards` : !cardRemoved ? '· Free removal available' : ''}</div>
+      <div style="font-size:11px;color:var(--text-dim);margin-bottom:8px;">YOUR DECK (${_gauntletRun.deck.length} cards)</div>
       <div style="max-width:600px;margin-bottom:20px;">${deckHtml}</div>
-      ${cardPicked ? `<button class="landing-btn amber" style="width:220px;" onclick="gauntletAdvanceStage();">NEXT STAGE →</button>` : ''}
+      ${cardPicked ? `<button class="landing-btn amber" style="width:220px;" onclick="gauntletAdvanceStage();">CONTINUE →</button>` : ''}
       <button class="landing-btn muted" style="width:160px;margin-top:8px;font-size:11px;" onclick="showGauntletMap(false);">VIEW MAP</button>
     `;
   }
@@ -7405,9 +7523,7 @@ function showGauntletCardReward(shardsEarned) {
   overlay._cards = cards;
   overlay._cardPicked = () => cardPicked;
   overlay._setCardPicked = () => { cardPicked = true; };
-  overlay._cardRemoved = () => cardRemoved;
-  overlay._setCardRemoved = () => { cardRemoved = true; };
-  overlay._removalCost = removalCost;
+  overlay._isElite = isElite;
 
   document.body.appendChild(overlay);
   render();
@@ -7419,19 +7535,13 @@ async function gauntletPickCard(idx) {
   const card = overlay._cards[idx];
   if (!card) return;
   _gauntletRun.deck.push(card.id);
+  // Elite stat boost: +1 to a random stat
+  if (overlay._isElite) {
+    const stats = ['wallLimit','handSize','cardDraw'];
+    const stat = stats[Math.floor(Math.random() * stats.length)];
+    _gauntletRun.champion[stat] = (_gauntletRun.champion[stat] || 3) + 1;
+  }
   overlay._setCardPicked();
-  if (_userProfile) await saveUserProfile({ gauntlet_run: _gauntletRun });
-  overlay._render();
-}
-
-async function gauntletRemoveCard(idx) {
-  const overlay = document.getElementById('gauntlet-reward-overlay');
-  if (!overlay || overlay._cardRemoved()) return;
-  const cost = overlay._removalCost;
-  if (cost > 0 && (_userProfile?.shards ?? 0) < cost) { showStatus('Not enough shards', 'error'); return; }
-  if (cost > 0) await spendShards(cost);
-  _gauntletRun.deck.splice(idx, 1);
-  overlay._setCardRemoved();
   if (_userProfile) await saveUserProfile({ gauntlet_run: _gauntletRun });
   overlay._render();
 }
@@ -7448,54 +7558,119 @@ async function gauntletAdvanceStage() {
 // ── Boss Reward Screen ──────────────────────────────────────────────
 function showGauntletBossReward(shardsEarned) {
   const stage = _gauntletRun.stage;
-  const upgrades = GAUNTLET_BOSS_UPGRADES[stage] || GAUNTLET_BOSS_UPGRADES[3];
-  // Pick 3 random from the pool
+  const faction = _gauntletRun.champion.faction;
+  const isLastBoss = stage >= 12;
+  let upgrades = [...(GAUNTLET_BOSS_UPGRADES[stage] || GAUNTLET_BOSS_UPGRADES[3])];
+  // Final boss can offer speed upgrade
+  if (isLastBoss || stage >= 9) {
+    upgrades.push({id:'speed1',label:'+1 Move Speed',stat:'moveSpeed',delta:1});
+  }
+  // Pick 3 random stat upgrades
   const shuffled = [...upgrades].sort(() => Math.random() - 0.5).slice(0, 3);
+
+  // Generate 3 card picks — Rare for early bosses, Legendary for later
+  const cardRarity = stage >= 9 ? 'Legendary' : 'Rare';
+  const cardPool = Object.values(CARDS).filter(c =>
+    (c.faction === faction || c.faction === 'Basic') && c.rarity === cardRarity);
+  const fallbackPool = Object.values(CARDS).filter(c =>
+    (c.faction === faction || c.faction === 'Basic') && (c.rarity === 'Rare' || c.rarity === 'Legendary'));
+  const pool = cardPool.length >= 3 ? cardPool : fallbackPool;
+  const bossCards = [];
+  const usedIds = new Set();
+  for (let i = 0; i < 3 && pool.length; i++) {
+    const filtered = pool.filter(c => !usedIds.has(c.id));
+    if (!filtered.length) break;
+    const pick = filtered[Math.floor(Math.random() * filtered.length)];
+    bossCards.push(pick);
+    usedIds.add(pick.id);
+  }
 
   const overlay = document.createElement('div');
   overlay.id = 'gauntlet-reward-overlay';
   overlay.style.cssText = 'position:fixed;inset:0;background:var(--bg);display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:200;padding:20px;overflow-y:auto;';
 
-  const upgradeCards = shuffled.map((u, i) => `
+  const rarityColor = r => r==='Common'?'#aaa':r==='Uncommon'?'#4ade80':r==='Rare'?'#60a5fa':r==='Legendary'?'#fbbf24':'#ccc';
+
+  const upgradeHtml = shuffled.map((u, i) => `
     <div onclick="gauntletPickUpgrade(${i})" style="cursor:pointer;background:var(--surface);border:2px solid #fbbf24;
-      padding:20px;width:180px;text-align:center;transition:transform 0.15s;"
+      padding:16px;width:150px;text-align:center;transition:transform 0.15s;"
       onmouseover="this.style.transform='scale(1.05)'" onmouseout="this.style.transform='scale(1)'">
-      <div style="font-family:'Teko',sans-serif;font-size:20px;color:#fbbf24;">${u.label}</div>
-      <div style="font-size:11px;color:#aaa;margin-top:4px;">Permanent upgrade</div>
+      <div style="font-family:'Teko',sans-serif;font-size:18px;color:#fbbf24;">${u.label}</div>
+      <div style="font-size:10px;color:#aaa;margin-top:4px;">Permanent upgrade</div>
     </div>
   `).join('');
+
+  const cardHtml = bossCards.map((c, i) => {
+    const rc = rarityColor(c.rarity);
+    return `<div onclick="gauntletPickBossCard(${i})" style="cursor:pointer;background:var(--surface);border:2px solid ${rc};
+      padding:14px;width:150px;text-align:center;transition:transform 0.15s;"
+      onmouseover="this.style.transform='scale(1.05)'" onmouseout="this.style.transform='scale(1)'">
+      <div style="font-family:'Teko',sans-serif;font-size:16px;color:${rc};">${c.name}</div>
+      <div style="font-size:9px;color:#888;">${c.rarity} · ${c.faction}</div>
+      <div style="font-size:10px;color:var(--text);margin-top:4px;line-height:1.3;">${c.desc}</div>
+    </div>`;
+  }).join('');
 
   overlay.innerHTML = `
     <div style="font-family:'Teko',sans-serif;font-size:36px;color:#fbbf24;margin-bottom:4px;">☠ BOSS DEFEATED</div>
     <div style="font-size:14px;color:var(--amber);margin-bottom:4px;">Stage ${stage} Complete</div>
-    <div style="font-size:14px;color:var(--amber);margin-bottom:24px;">+${shardsEarned} ◆ SHARDS (Boss Bonus!)</div>
-    <div style="font-size:12px;color:var(--text-dim);margin-bottom:12px;">Choose a permanent champion upgrade</div>
-    <div style="display:flex;gap:16px;margin-bottom:32px;">${upgradeCards}</div>
+    <div style="font-size:14px;color:var(--amber);margin-bottom:20px;">+${shardsEarned} ◆ SHARDS (Boss Bonus!)</div>
+    <div style="font-size:12px;color:var(--text-dim);margin-bottom:8px;">Choose a permanent champion upgrade</div>
+    <div style="display:flex;gap:12px;margin-bottom:24px;flex-wrap:wrap;justify-content:center;">${upgradeHtml}</div>
+    <div style="font-size:12px;color:var(--text-dim);margin-bottom:8px;">Pick a ${cardRarity} card for your deck</div>
+    <div style="display:flex;gap:12px;margin-bottom:24px;flex-wrap:wrap;justify-content:center;">${cardHtml}</div>
   `;
   overlay._upgrades = shuffled;
+  overlay._bossCards = bossCards;
+  overlay._upgradePicked = false;
+  overlay._cardPicked = false;
   document.body.appendChild(overlay);
+}
+
+async function gauntletPickBossCard(idx) {
+  const overlay = document.getElementById('gauntlet-reward-overlay');
+  if (!overlay || overlay._cardPicked) return;
+  const card = overlay._bossCards[idx];
+  if (!card) return;
+  _gauntletRun.deck.push(card.id);
+  overlay._cardPicked = true;
+  if (_userProfile) await saveUserProfile({ gauntlet_run: _gauntletRun });
+  // Check if both rewards picked
+  if (overlay._upgradePicked) showGauntletBossLeaveChoice();
+  else showStatus('Card added! Now pick a stat upgrade.', 'success');
 }
 
 async function gauntletPickUpgrade(idx) {
   const overlay = document.getElementById('gauntlet-reward-overlay');
-  if (!overlay?._upgrades) return;
+  if (!overlay?._upgrades || overlay._upgradePicked) return;
   const upgrade = overlay._upgrades[idx];
   // Apply upgrade
   _gauntletRun.champion[upgrade.stat] = Math.max(2, Math.min(15, (_gauntletRun.champion[upgrade.stat] || 0) + upgrade.delta));
   _gauntletRun.bossUpgrades.push(upgrade.id);
+  overlay._upgradePicked = true;
   if (_userProfile) await saveUserProfile({ gauntlet_run: _gauntletRun });
 
-  // Show leave/continue choice
+  // Check if both rewards picked
+  if (overlay._cardPicked) {
+    showGauntletBossLeaveChoice();
+  } else {
+    showStatus(`Upgrade applied: ${upgrade.label}! Now pick a card.`, 'success');
+  }
+}
+
+function showGauntletBossLeaveChoice() {
+  const overlay = document.getElementById('gauntlet-reward-overlay');
+  if (!overlay) return;
   const stage = _gauntletRun.stage;
   const promotedRarity = GAUNTLET_BOSS_PROMOTION[stage];
-  const isLastBoss = stage === 12;
+  const isLastBoss = stage >= 12;
 
   overlay.innerHTML = `
-    <div style="font-family:'Teko',sans-serif;font-size:28px;color:#fbbf24;margin-bottom:8px;">UPGRADE APPLIED: ${upgrade.label}</div>
+    <div style="font-family:'Teko',sans-serif;font-size:28px;color:#fbbf24;margin-bottom:8px;">BOSS REWARDS CLAIMED</div>
     <div style="font-size:12px;color:#aaa;margin-bottom:24px;">${_gauntletRun.champion.name} grows stronger</div>
     <div style="background:var(--surface);border:1px solid var(--border);padding:16px 24px;margin-bottom:24px;text-align:center;">
       <div style="font-size:10px;color:var(--text-dim);margin-bottom:8px;">CHAMPION STATS</div>
-      <div style="font-size:12px;color:#ccc;">W:${_gauntletRun.champion.wallLimit} H:${_gauntletRun.champion.handSize} D:${_gauntletRun.champion.cardDraw} U:${_gauntletRun.champion.ultimateCost}</div>
+      <div style="font-size:12px;color:#ccc;">W:${_gauntletRun.champion.wallLimit} H:${_gauntletRun.champion.handSize} D:${_gauntletRun.champion.cardDraw} U:${_gauntletRun.champion.ultimateCost} SPD:${_gauntletRun.champion.moveSpeed || 1}</div>
     </div>
     <div style="font-size:13px;color:var(--text-dim);margin-bottom:16px;">
       ${isLastBoss ? 'You have conquered the Gauntlet!' : `Leave now to save your champion as ${promotedRarity}, or risk it all going deeper.`}
@@ -7897,6 +8072,11 @@ function enterMoveMode() {
     showStatus('Bound! A Binding Wall prevents your move this turn', 'error');
     return;
   }
+  // Snare trap: all movement blocked this turn
+  if (gameState._snaredThisTurn === pi) {
+    showStatus('Snared! No movement allowed this turn', 'error');
+    return;
+  }
   // Magnus (Master Mason): cannot move if already played 2 cards this turn
   if (champId === 'magnus' && cardsPlayedThisTurn >= 2) {
     showStatus('Already played 2 cards — cannot also move this turn', 'error');
@@ -7976,7 +8156,7 @@ function handleWallClick(anchor, orientation, length, isPhantom, isDurable) {
   const isRedirectPlace = (selectedCard?._redirectOwner !== undefined);
   // Skip limit check for redirected walls (wall was already counted, just moving it)
   // Also skip for free walls (Corner Block 2nd wall, Doppelganger 2nd phantom)
-  const isFreeWallPlace = !!(selectedCard?._freeWall) || !!(selectedCard?._freePhantom);
+  const isFreeWallPlace = !!(selectedCard?._freeWall) || !!(selectedCard?._freePhantom) || !!(selectedCard?._temporalMazeWall);
   if (!isRedirectPlace && !isFreeWallPlace && wallOwnerState.wallsInPlay >= wallOwnerState.wallLimitCurrent) {
     // Doppelganger: if 2nd wall can't be placed, remove the free 1st wall too
     if (selectedCard && selectedCard.id === 'PH10' && gameState._doppelgangerCount >= 1) {
@@ -8231,7 +8411,11 @@ function isTurnDone() {
   if (champId === 'soren') {
     if (gameState._sorenSecondMove && hasMoved) return true;             // moved twice
     if (hasMoved && cardsPlayedThisTurn >= 1) return true;               // moved + played card
-    if (p.hand.length === 0 && hasMoved) return true;                    // hand empty, moved
+    // Hand empty and already used second move → done
+    if (p.hand.length === 0 && gameState._sorenSecondMove && hasMoved) return true;
+    // Hand empty but haven't used second move yet → NOT done (Soren can still move again)
+    if (p.hand.length === 0 && hasMoved && !gameState._sorenSecondMove) return false;
+    if (p.hand.length === 0 && hasMoved) return true;                    // fallback
     return false;
   }
 
@@ -8260,6 +8444,7 @@ function resetTurnState() {
   gameState._vexEchoPending = false;
   gameState._vexTemporalFold = false;  // Reset so Vex's ult can delay turn-end again next time
   gameState._mpOppHandDirty = false;
+  gameState._snaredThisTurn = null;    // Clear snare trap movement block
   gameState._shrinkTargetWall = null;  // Clear any pending wall shrink selection
   gameState._pendingDejaVu = null;     // Clear any pending Déjà Vu
   gameState._freePlayActive = false;   // Clear free-play flag
@@ -14916,7 +15101,20 @@ async function buyCardPack(tier) {
 // ── Daily Free Champion Roll ─────────────────────────────────────────
 function canClaimDailyRoll() {
   if (!_userProfile) return false;
-  return true; // Always available — no time limit
+  const today = new Date().toISOString().slice(0, 10);
+  return (_userProfile.dailyRollDate || '') !== today;
+}
+
+function getDailyRollCountdown() {
+  const now = new Date();
+  const tomorrow = new Date(now);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  tomorrow.setHours(0, 0, 0, 0);
+  const diff = tomorrow - now;
+  const h = Math.floor(diff / 3600000);
+  const m = Math.floor((diff % 3600000) / 60000);
+  const s = Math.floor((diff % 60000) / 1000);
+  return `${h}h ${m}m ${s}s`;
 }
 
 async function claimDailyRoll() {
@@ -14975,15 +15173,28 @@ function showShopScreen() {
         </div>
       </div>
 
-      ${canClaimDailyRoll() ? `
-      <h2 style="font-family:'Teko',sans-serif;font-size:22px;color:#fbbf24;margin:24px 0 12px;">FREE CHAMPION</h2>
-      <div style="background:var(--panel);border:2px solid #fbbf24;border-radius:8px;padding:16px;text-align:center;max-width:300px;">
-        <div style="font-size:14px;color:#fbbf24;margin-bottom:8px;">Claim a free champion!</div>
-        <button onclick="handleDailyRoll()" class="action-btn" style="background:#fbbf24;color:#000;width:100%;font-size:14px;padding:8px;">CLAIM FREE ROLL</button>
-      </div>` : ''}
+      <h2 style="font-family:'Teko',sans-serif;font-size:22px;color:#fbbf24;margin:24px 0 12px;">DAILY FREE CHAMPION</h2>
+      <div style="background:var(--panel);border:2px solid ${canClaimDailyRoll()?'#fbbf24':'#555'};border-radius:8px;padding:16px;text-align:center;max-width:300px;">
+        ${canClaimDailyRoll() ? `
+          <div style="font-size:14px;color:#fbbf24;margin-bottom:8px;">Claim a free champion!</div>
+          <button onclick="handleDailyRoll()" class="action-btn" style="background:#fbbf24;color:#000;width:100%;font-size:14px;padding:8px;">CLAIM FREE ROLL</button>
+        ` : `
+          <div style="font-size:13px;color:#888;margin-bottom:6px;">Already claimed today</div>
+          <div style="font-size:16px;color:#fbbf24;font-family:'Teko',sans-serif;letter-spacing:.1em;" id="daily-roll-countdown">Next in: ${getDailyRollCountdown()}</div>
+        `}
+      </div>
     </div>
   `;
   document.body.appendChild(overlay);
+
+  // Start countdown timer if daily roll not available
+  if (!canClaimDailyRoll()) {
+    const _shopTimer = setInterval(() => {
+      const el = document.getElementById('daily-roll-countdown');
+      if (!el || !document.getElementById('shop-overlay')) { clearInterval(_shopTimer); return; }
+      el.textContent = 'Next in: ' + getDailyRollCountdown();
+    }, 1000);
+  }
 }
 
 async function handleBuyChampionPack(tier) {
@@ -15046,7 +15257,7 @@ function showRosterScreen() {
   let html = `<div style="max-width:900px;margin:0 auto;">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
       <h1 style="font-family:'Teko',sans-serif;font-size:32px;color:var(--accent);margin:0;">ROSTER</h1>
-      <button onclick="document.getElementById('roster-overlay')?.remove();showLandingScreen();" class="action-btn" style="font-size:13px;padding:6px 16px;">BACK</button>
+      <button onclick="document.getElementById('roster-overlay')?.remove();showLandingScreen();" style="font-size:11px;padding:4px 12px;background:transparent;border:1px solid var(--text-dim);color:var(--text-dim);cursor:pointer;letter-spacing:.1em;font-family:'JetBrains Mono',monospace;">BACK</button>
     </div>
 
     <h2 style="font-family:'Teko',sans-serif;font-size:18px;color:#888;margin:16px 0 8px;">TEMPLATE CHAMPIONS (Always Available)</h2>
