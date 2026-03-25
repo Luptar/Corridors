@@ -2470,7 +2470,7 @@ const CARDS = {
   AR11:{ id:'AR11',name:'Keystone',        faction:'Architects', rarity:'Rare',      type:'Wall',
          desc:'Place a 1-tile reinforced permanent wall. All your walls within 2 tiles become reinforced for 3 turns.', wallLen:1, reinforced:true, special:'keystone' },
   AR12:{ id:'AR12',name:'Controlled Collapse', faction:'Architects', rarity:'Uncommon', type:'Disruption',
-         desc:'Remove one of your own reinforced walls. Place two 2-tile non-reinforced walls anywhere (both must be legal).' },
+         desc:'Demolish one of your own walls. If reinforced: place two 2-tile walls. If not reinforced: place one 2-tile wall.' },
   AR13:{ id:'AR13',name:'Mortar Bond',     faction:'Architects', rarity:'Common',   type:'Disruption',
          desc:'Merge two of your adjacent walls into one (combined tile length). Frees 1 wall slot.' },
   AR15:{ id:'AR15',name:'The Grand Design', faction:'Architects', rarity:'Legendary', type:'Wall',
@@ -4771,6 +4771,19 @@ function endTurn() {
     return w;
   });
 
+  // Tick Keystone temporary reinforcement durations
+  gameState.walls = gameState.walls.map(w => {
+    if (w._tempReinforceTurns && w._tempReinforceTurns > 0) {
+      const newTurns = w._tempReinforceTurns - 1;
+      if (newTurns <= 0) {
+        // Reinforcement expires — remove reinforced/immune unless wall is permanently reinforced
+        return {...w, _tempReinforceTurns: 0, reinforced: !!w.permanent, immune: !!w.permanent};
+      }
+      return {...w, _tempReinforceTurns: newTurns};
+    }
+    return w;
+  });
+
   // Tick trap durations (traps belonging to the player whose turn is ending)
   tickTraps(pi);
 
@@ -5096,8 +5109,21 @@ async function runAI() {
 
   const st = snap();
 
+  // ── AI GUARD: embargo & Warden's Decree ────────────────────────────
+  // If AI's card phase is skipped (Warden's Decree / skip_full_turn), skip all card evaluation
+  const _aiCardPhaseBlocked = isCardPhaseSkipped(pi);
+  // If AI is under embargo, determine which card type is blocked
+  const _aiEmbargo = (gameState._embargo && gameState._embargo[pi]) ? gameState._embargo[pi] : null;
+  const _aiEmbargoType = (_aiEmbargo && _aiEmbargo.turnsRemaining > 0) ? _aiEmbargo.type : null;
+  if (_aiCardPhaseBlocked) {
+    console.log('[AI] Card phase blocked (Warden\'s Decree / skip_full_turn) — skipping all card evaluation');
+  }
+  if (_aiEmbargoType) {
+    console.log('[AI] Embargo active — ' + _aiEmbargoType + ' cards blocked');
+  }
+
   // ── A: Wall cards (real placement) ────────────────────────────────
-  if (st.aiWalls < st.aiLimit) {
+  if (st.aiWalls < st.aiLimit && !_aiCardPhaseBlocked && _aiEmbargoType !== 'Wall') {
     const wallCards = st.aiHand.filter(c =>
       c.type === 'Wall' && !c.phantom && !c.special
     );
@@ -5119,7 +5145,7 @@ async function runAI() {
   }
 
   // ── B: Phantom wall cards (Phantoms faction) ────────────────────────
-  if (aiFaction === 'Phantoms' && st.aiWalls < st.aiLimit) {
+  if (aiFaction === 'Phantoms' && st.aiWalls < st.aiLimit && !_aiCardPhaseBlocked && _aiEmbargoType !== 'Wall') {
     const phantomCards = st.aiHand.filter(c => c.type === 'Wall' && c.phantom && !c.special);
     for (const card of phantomCards) {
       const len = 2;
@@ -5140,7 +5166,7 @@ async function runAI() {
   }
 
   // ── C: Special wall cards (Double Bluff, Corner Piece) ────────────
-  if (st.aiWalls < st.aiLimit) {
+  if (st.aiWalls < st.aiLimit && !_aiCardPhaseBlocked && _aiEmbargoType !== 'Wall') {
     const specialCards = st.aiHand.filter(c => c.type === 'Wall' && c.special);
     for (const card of specialCards) {
       // Treat as a standard wall of the base length for scoring
@@ -5164,7 +5190,7 @@ async function runAI() {
   // Key improvement: compare the card's best destination against what the BASE move
   // can reach. If the AI is blocked (dist=Infinity) or the card unlocks cells the
   // base move cannot reach (tunnel/extra speed), treat that as a large bonus.
-  {
+  if (!_aiCardPhaseBlocked && _aiEmbargoType !== 'Movement') {
     const moveCards = st.aiHand.filter(c => c.type === 'Movement');
     // Compute base legal moves so we can detect what the card uniquely unlocks
     const baseMoves = getLegalMoves({...gameState, walls: st.walls}, pi);
@@ -5210,7 +5236,8 @@ async function runAI() {
   }
 
   // ── D: Disruption cards ───────────────────────────────────────────
-  const dispCards = st.aiHand.filter(c => c.type === 'Disruption');
+  const dispCards = (!_aiCardPhaseBlocked && _aiEmbargoType !== 'Disruption')
+    ? st.aiHand.filter(c => c.type === 'Disruption') : [];
   for (const card of dispCards) {
 
     // RC Reconstruction / A3 Reclaim: removes oldest own wall, draws 1.
@@ -5427,11 +5454,13 @@ async function runAI() {
       }
     }
 
-    // AR12 Controlled Collapse: remove reinforced, place 2 standard
+    // AR12 Controlled Collapse: demolish own wall, place 1-2 new walls
     if (card.id === 'AR12') {
-      const reinforced = st.walls.filter(w => w.owner===pi && w.reinforced && !w.isPhantom);
-      if (reinforced.length) {
-        const s = 5; // net +1 wall, flexibility
+      const myWalls = st.walls.filter(w => w.owner===pi && !w.isPhantom);
+      if (myWalls.length) {
+        // Higher value if there's a reinforced wall to sacrifice (grants 2 placements vs 1)
+        const hasReinforced = myWalls.some(w => w.reinforced);
+        const s = hasReinforced ? 5 : 3;
         if (s > bestCardScore) { secondBestCardScore = bestCardScore; secondBestCardAction = bestCardAction; bestCardScore = s; bestCardAction = {kind:'disruption', subkind:'collapse', card}; }
       }
     }
@@ -6264,6 +6293,11 @@ function enterMoveMode() {
     showStatus('Bound! A Binding Wall prevents your move this turn', 'error');
     return;
   }
+  // Magnus (Master Mason): cannot move if already played 2 cards this turn
+  if (champId === 'magnus' && cardsPlayedThisTurn >= 2) {
+    showStatus('Already played 2 cards — cannot also move this turn', 'error');
+    return;
+  }
   // Soren (Fleetfoot): can take a 2nd move INSTEAD of playing a card (if no card played yet)
   const sorenSecondMovePending = hasMoved && champId === 'soren' && cardsPlayedThisTurn === 0 && !gameState._sorenSecondMove;
   if (sorenSecondMovePending) {
@@ -6626,6 +6660,8 @@ function resetTurnState() {
   gameState._bonusMovePi = null;
   gameState._freePlayQueue = null;     // Clear any pending Infinite Recursion queue
   gameState._emergencyBarrierMode = false;  // Clear Emergency Barrier placement flag
+  gameState._collapsePickPending = false;   // Clear Controlled Collapse pick state
+  gameState._collapseWallsRemaining = 0;    // Clear Controlled Collapse wall counter
   gameState._slipstreamActive = false;      // Clear Slipstream wall-ignore flag
   gameState._slipstreamCard = false;        // Clear Slipstream orthogonal-move flag
   gameState._trapperStrideFrom = null;      // Clear Trapper's Stride tracking
@@ -6796,9 +6832,10 @@ function selectCard(cardId, idx) {
   if (rule.cardOrMove && hasMoved) {
     showStatus('Already moved — this faction plays cards OR moves, not both', 'error'); return;
   }
-  // Magnus (Master Mason): can play 2 cards (or 1 card + 1 move)
+  // Magnus (Master Mason): can play 2 cards OR 1 card + 1 move (NOT 2 cards + 1 move)
   const _dvB=(gameState.players[pi].statusEffects||[]).some(e=>e.type==='deja_vu'&&e.turnsRemaining>0)?1:0;
-  const maxCards=((champId==='magnus')?2:rule.cardPlays)+_dvB;
+  const magnusMax = hasMoved ? 1 : 2; // if already moved, only 1 card allowed
+  const maxCards=((champId==='magnus')?magnusMax:rule.cardPlays)+_dvB;
   // Instant cards bypass the card-budget check — they are always free to play
   // Also includes _instantOnce from Infinite Recursion (CH11)
   const isInstantCard = !!(card && (card.instant || card._instantOnce));
@@ -7186,11 +7223,14 @@ function onWallPlaced(pi, fromCardId, _wasDelayedCard) {
   const isDelayedWall = !!_wasDelayedCard;
   // Chained wall placements (Corner Block 2nd wall, Veil Lattice 2nd wall, Echo Strike mirror)
   // are part of the SAME card play — don't count again
+  // AR12 Controlled Collapse: subsequent walls are chained from the same card
+  const isCollapseChain = !!(selectedCard && selectedCard.id === 'AR12' && gameState._collapseWallsRemaining > 0);
   const isChainedWall = selectedCard && (
     selectedCard.id === 'CB_second' ||
     selectedCard.id === 'PH3_real' ||
     (selectedCard.id === 'PH4' && gameState._veilCount >= 2) ||
-    (selectedCard.id === 'PH10' && gameState._doppelgangerCount >= 1)
+    (selectedCard.id === 'PH10' && gameState._doppelgangerCount >= 1) ||
+    isCollapseChain
   );
   if (!isT2Phantom && !isSeizureChain && !isDelayedWall && !isChainedWall) countCardPlayed(pi);
   gameState._t2phantomPending = false;
@@ -7233,7 +7273,27 @@ function onWallPlaced(pi, fromCardId, _wasDelayedCard) {
     if (!gameState._veilCount) gameState._veilCount = 0;
     gameState._veilCount++;
     if (gameState._veilCount < 2) {
-      // First wall was phantom — now place the real wall
+      if (!isHumanSeat(pi)) {
+        // AI: auto-place the second (real) wall
+        const oppPos = gameState.players[1 - pi].position;
+        const cands = generateWallCandidates(oppPos, 2);
+        let placed = false;
+        for (const {anchor, orientation} of cands) {
+          if (isWallLegal(anchor, orientation, 2, gameState.walls,
+              gameState.players[0].position, gameState.players[1].position, false)) {
+            selectedCard = { id:'PH4', idx:-1, length:2, isPhantom:false, isDurable:false };
+            executePlaceWall(anchor, orientation, 2, false, false, 'PH4');
+            placed = true;
+            break;
+          }
+        }
+        if (!placed) {
+          addLog(pi, 'card', 'Veil Lattice: no legal placement for real wall');
+          gameState._veilCount = 0;
+        }
+        return;
+      }
+      // Human: enter wall placement mode for the real wall
       selectedCard = { id:'PH4', idx:-1, length:2, isPhantom:false, isDurable:false };
       uiMode = 'wall';
       renderAll(); showStatus('Veil Lattice: now place the real wall', 'active'); return;
@@ -7267,6 +7327,19 @@ function onWallPlaced(pi, fromCardId, _wasDelayedCard) {
   }
   gameState._cornerSecond = false;
   gameState._cornerFirstWall = null;
+
+  // AR12 Controlled Collapse: chain placement of replacement walls
+  if (fromCardId === 'AR12' && gameState._collapseWallsRemaining > 0) {
+    gameState._collapseWallsRemaining--;
+    if (gameState._collapseWallsRemaining > 0) {
+      selectedCard = { id: 'AR12', idx: -1, length: 2, isPhantom: false, isDurable: false };
+      uiMode = 'wall';
+      renderAll();
+      showStatus(`Controlled Collapse — place wall ${2 - gameState._collapseWallsRemaining + 1} of 2`, 'active');
+      return;
+    }
+    gameState._collapseWallsRemaining = 0;
+  }
 
   // PH12 Nightmare Maze: convert all EXISTING phantoms to real (exclude the one just placed)
   if (fromCardId === 'PH12') {
@@ -7308,6 +7381,96 @@ function onWallPlaced(pi, fromCardId, _wasDelayedCard) {
   }
 
 
+
+  // AR11 Keystone: all your walls within 2 tiles become reinforced for 3 turns
+  if (fromCardId === 'AR11') {
+    const keystoneWall = gameState.walls[gameState.walls.length - 1];
+    if (keystoneWall) {
+      // Make the keystone wall itself permanent + reinforced (from card def, but ensure)
+      gameState.walls = gameState.walls.map(w =>
+        w.id === keystoneWall.id ? {...w, reinforced:true, immune:true, permanent:true} : w
+      );
+      // Find all owned walls within 2 tiles (manhattan distance of any segment endpoint)
+      let reinforcedCount = 0;
+      const ksSegs = wallEdges(keystoneWall);
+      gameState.walls = gameState.walls.map(w => {
+        if (w.id === keystoneWall.id || w.owner !== pi || w.isPhantom || w.reinforced) return w;
+        const wSegs = wallEdges(w);
+        // Check if any segment endpoint of w is within 2 tiles of any segment endpoint of keystone
+        let nearby = false;
+        for (const ks of ksSegs) {
+          for (const ws of wSegs) {
+            for (const kp of [ks.a, ks.b]) {
+              for (const wp of [ws.a, ws.b]) {
+                if (Math.abs(kp.row - wp.row) + Math.abs(kp.col - wp.col) <= 2) {
+                  nearby = true;
+                }
+              }
+            }
+          }
+        }
+        if (!nearby) return w;
+        reinforcedCount++;
+        // Temporary reinforcement for 3 turns — use _tempReinforced tracking
+        return {...w, reinforced:true, immune:true, _tempReinforceTurns: 3};
+      });
+      if (reinforcedCount > 0)
+        addLog(pi, 'card', `Keystone: reinforced ${reinforcedCount} nearby wall(s) for 3 turns!`);
+    }
+  }
+
+  // AR15 The Grand Design: up to 2 other walls become permanently reinforced and gain +1 tile each
+  if (fromCardId === 'AR15') {
+    const gdWall = gameState.walls[gameState.walls.length - 1];
+    if (gdWall) {
+      // Make the Grand Design wall itself permanently reinforced (from card def, but ensure)
+      gameState.walls = gameState.walls.map(w =>
+        w.id === gdWall.id ? {...w, reinforced:true, immune:true, permanent:true} : w
+      );
+      // Find up to 2 owned non-reinforced walls to buff
+      const candidates = gameState.walls.filter(w =>
+        w.id !== gdWall.id && w.owner === pi && !w.isPhantom && !w.reinforced
+      );
+      let buffed = 0;
+      for (const target of candidates) {
+        if (buffed >= 2) break;
+        // Try extending by +1 tile (from end first, then start)
+        const newLen = target.length + 1;
+        const testWalls = gameState.walls.filter(w => w.id !== target.id);
+        let extended = false;
+        if (wallInBounds(target.anchor, target.orientation, newLen) &&
+            isWallLegal(target.anchor, target.orientation, newLen, testWalls,
+              gameState.players[0].position, gameState.players[1].position, false)) {
+          gameState.walls = gameState.walls.map(w =>
+            w.id === target.id ? {...w, length: newLen, reinforced:true, immune:true, permanent:true} : w
+          );
+          extended = true;
+        } else {
+          // Try extending from the other end
+          const altAnchor = target.orientation === 'H'
+            ? {row: target.anchor.row, col: target.anchor.col - 1}
+            : {row: target.anchor.row - 1, col: target.anchor.col};
+          if (wallInBounds(altAnchor, target.orientation, newLen) &&
+              isWallLegal(altAnchor, target.orientation, newLen, testWalls,
+                gameState.players[0].position, gameState.players[1].position, false)) {
+            gameState.walls = gameState.walls.map(w =>
+              w.id === target.id ? {...w, anchor: altAnchor, length: newLen, reinforced:true, immune:true, permanent:true} : w
+            );
+            extended = true;
+          }
+        }
+        if (!extended) {
+          // Can't extend, but still reinforce
+          gameState.walls = gameState.walls.map(w =>
+            w.id === target.id ? {...w, reinforced:true, immune:true, permanent:true} : w
+          );
+        }
+        buffed++;
+      }
+      if (buffed > 0)
+        addLog(pi, 'card', `Grand Design: ${buffed} wall(s) permanently reinforced${buffed > 0 ? ' and extended' : ''}!`);
+    }
+  }
 
   // ── Pusher wall specials ──────────────────────────────────────────
   // PU4 Gust Wall: push opponent 1 space perpendicular to wall, away from wall
@@ -7936,21 +8099,29 @@ async function applyDisruptionCard(pi, card, idx) {
     return;
   }
 
-  // ── AR12: Controlled Collapse — remove reinforced, place 2 standard ──
+  // ── AR12: Controlled Collapse — pick any owned wall to demolish ──
+  // Reinforced → place 2 new 2-tile walls. Non-reinforced → place 1 new 2-tile wall.
   if (card.id === 'AR12') {
-    const reinforcedWalls = gameState.walls.filter(w => w.owner === pi && w.reinforced && !w.isPhantom);
-    if (!reinforcedWalls.length) { showStatus('No reinforced walls to collapse', 'error'); return; }
-    // For now: auto-pick the oldest reinforced wall, remove it, give 2 wall placements
-    const target = reinforcedWalls[0];
-    gameState.walls = gameState.walls.filter(w => w.id !== target.id);
-    gameState.players[pi] = {...gameState.players[pi], wallsInPlay: Math.max(0, gameState.players[pi].wallsInPlay - 1)};
-    addLog(pi, 'card', `Controlled Collapse: removed reinforced wall, placing 2 new walls`);
-    discardCard(pi, idx); countCardPlayed(pi);
+    const myWalls = gameState.walls.filter(w => w.owner === pi && !w.isPhantom);
+    if (!myWalls.length) { showStatus('No walls to collapse', 'error'); return; }
     if (!isHumanSeat(pi)) {
-      // AI: place 2 standard walls near opponent
+      // AI: pick the wall that benefits least (smallest distance impact)
+      let bestTarget = myWalls[0];
+      let bestVal = Infinity;
+      for (const w of myWalls) {
+        const wallsWithout = gameState.walls.filter(x => x.id !== w.id);
+        const oppGain = bfsDistanceFor(gameState.players[0].position, 0, gameState.walls, 0) -
+                        bfsDistanceFor(gameState.players[0].position, 0, wallsWithout, 0);
+        if (oppGain < bestVal) { bestVal = oppGain; bestTarget = w; }
+      }
+      const wasReinforced = !!bestTarget.reinforced;
+      const numWalls = wasReinforced ? 2 : 1;
+      gameState.walls = gameState.walls.filter(w => w.id !== bestTarget.id);
+      gameState.players[pi] = {...gameState.players[pi], wallsInPlay: Math.max(0, gameState.players[pi].wallsInPlay - 1)};
+      discardCard(pi, idx); countCardPlayed(pi);
       const oppPos = gameState.players[1-pi].position;
       let wallsPlaced = 0;
-      for (let attempt = 0; attempt < 2; attempt++) {
+      for (let attempt = 0; attempt < numWalls; attempt++) {
         const cands = generateWallCandidates(oppPos, 2);
         for (const {anchor, orientation} of cands) {
           if (isWallLegal(anchor, orientation, 2, gameState.walls,
@@ -7961,17 +8132,18 @@ async function applyDisruptionCard(pi, card, idx) {
           }
         }
       }
-      addLog(pi, 'card', `Controlled Collapse: placed ${wallsPlaced} wall(s)`);
+      addLog(pi, 'card', `Controlled Collapse: demolished ${wasReinforced ? 'reinforced' : 'standard'} wall, placed ${wallsPlaced} wall(s)`);
       selectedCard = null;
       if (isTurnDone()) gameState.phase = 'end_turn';
       renderAll(); return;
     }
-    // Grant 2 wall placements using BB
-    gameState._collapseWallsRemaining = 2;
-    selectedCard = { id: 'BB', idx: -1, length: 2, isPhantom: false, isDurable: false };
-    uiMode = 'wall';
+    // Human: enter wall pick mode — click one of your walls to demolish it
+    discardCard(pi, idx); countCardPlayed(pi);
+    gameState._collapsePickPending = true;
+    uiMode = 'wallPick';
+    selectedCard = { id: 'AR12', idx: -1 };
     renderAll();
-    showStatus('Controlled Collapse — place wall 1 of 2', 'active');
+    showStatus('Controlled Collapse — click one of your walls to demolish', 'active');
     return;
   }
 
@@ -8238,7 +8410,7 @@ async function applyDisruptionCard(pi, card, idx) {
 
   // ── WD12: Conscription — draw 2, opponent draws 1 ──
   if (card.id === 'WD12') {
-    discardCard(pi, idx); selectedCard = null; countCardPlayed(pi);
+    discardCard(pi, idx); countCardPlayed(pi); selectedCard = null;
     drawCards(pi, 2, true); // ignoreLimit: Conscription always draws 2
     // In MP: we can't reliably draw from opponent's private deck.
     // Instead, flag that they should get a bonus draw on their next turn.
@@ -9902,7 +10074,7 @@ function renderWalls() {
 
     const el = document.createElement('div');
     const _activePi = gameState.activePlayer;
-    const isPickable    = uiMode === 'wallPick'      && wall.owner === _activePi && !wall.isPhantom && !wall.permanent;
+    const isPickable    = uiMode === 'wallPick'      && wall.owner === _activePi && !wall.isPhantom && (!wall.permanent || gameState._collapsePickPending);
     // Eviction (WD3) can target any non-reinforced opponent wall, including phantoms & binding walls
     const isRedirect    = uiMode === 'wallRedirect'  && wall.owner === (1-_activePi) && !wall.reinforced && !wall.immune;
     const isSealable    = uiMode === 'wallSeal'      && wall.owner === _activePi && !wall.isPhantom && !wall.permanent;
@@ -10044,6 +10216,23 @@ function renderWalls() {
 function pickWallForRedeploy(wall) {
   if (uiMode !== 'wallPick') return;
   const pi = gameState.activePlayer;
+
+  // ── AR12 Controlled Collapse: demolish the picked wall ──
+  if (gameState._collapsePickPending) {
+    gameState._collapsePickPending = false;
+    const wasReinforced = !!wall.reinforced;
+    const numWalls = wasReinforced ? 2 : 1;
+    gameState.walls = gameState.walls.filter(w => w.id !== wall.id);
+    gameState.players[pi] = {...gameState.players[pi], wallsInPlay: Math.max(0, gameState.players[pi].wallsInPlay - 1)};
+    addLog(pi, 'card', `Controlled Collapse: demolished ${wasReinforced ? 'reinforced' : 'standard'} wall — placing ${numWalls} new wall(s)`);
+    gameState._collapseWallsRemaining = numWalls;
+    selectedCard = { id: 'AR12', idx: -1, length: 2, isPhantom: false, isDurable: false };
+    uiMode = 'wall';
+    renderAll();
+    showStatus(`Controlled Collapse — place wall 1 of ${numWalls}`, 'active');
+    return;
+  }
+
   const cardIdx = gameState._redeployCardIdx;
   const cardId = gameState._redeployCardId || 'A4';
 
@@ -12070,6 +12259,18 @@ function mpEndTurnLocal() {
     if (w._frozen && w._frozenTurns > 0) {
       const newTurns = w._frozenTurns - 1;
       return newTurns <= 0 ? {...w, _frozen: false, _frozenTurns: 0, immune: w.reinforced} : {...w, _frozenTurns: newTurns};
+    }
+    return w;
+  });
+
+  // Tick Keystone temporary reinforcement durations
+  gameState.walls = gameState.walls.map(w => {
+    if (w._tempReinforceTurns && w._tempReinforceTurns > 0) {
+      const newTurns = w._tempReinforceTurns - 1;
+      if (newTurns <= 0) {
+        return {...w, _tempReinforceTurns: 0, reinforced: !!w.permanent, immune: !!w.permanent};
+      }
+      return {...w, _tempReinforceTurns: newTurns};
     }
     return w;
   });
