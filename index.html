@@ -2557,7 +2557,7 @@ const CARDS = {
 
   // ── PUSHERS ──────────────────────────────────────────────────────────
   PU2: { id:'PU2', name:'Shoulder Check', faction:'Pushers', rarity:'Uncommon', type:'Movement',
-         desc:'Move up to 2 spaces. If adjacent to opponent after, push them 1 away. If NOT adjacent, exhausted (skip move next turn).', overrideSpeed:2, special:'shoulderCheck' },
+         desc:'Choose a cardinal direction. Move up to 2 spaces in a straight line. If adjacent to opponent after, push them 1 away. If NOT adjacent, exhausted (skip move next turn).', overrideSpeed:2, special:'shoulderCheck' },
   PU3: { id:'PU3', name:'Battering Ram',  faction:'Pushers', rarity:'Uncommon', type:'Movement',
          desc:'Move 1 space toward opponent. If adjacent, push them 2 spaces in that direction. Walls stop.', overrideSpeed:1, special:'batteringRam' },
   PU4: { id:'PU4', name:'Gust Wall',      faction:'Pushers', rarity:'Common',   type:'Wall',
@@ -5843,7 +5843,7 @@ async function runAI() {
       // Card no longer in hand — skip
     } else if (kind === 'movement') {
       // Direction-based movement cards: AI picks best direction
-      if (card.special === 'wreckingBall' || card.special === 'bulldoze') {
+      if (card.special === 'wreckingBall' || card.special === 'bulldoze' || card.special === 'shoulderCheck') {
         const dirs = ['N','S','W','E'];
         const DMAP = {N:{r:-1,c:0},S:{r:1,c:0},W:{r:0,c:-1},E:{r:0,c:1}};
         const oppGoalRow = 0; // opponent (seat 0) wants row 0
@@ -5873,6 +5873,11 @@ async function runAI() {
           gameState._bulldozeState = { pi, cardIdx };
           uiMode = card.special === 'wreckingBall' ? 'wreckingBallDir' : 'bulldozeDir';
           if (card.special === 'wreckingBall') wreckingBallFireDir(bestDir);
+          else if (card.special === 'shoulderCheck') {
+            gameState._shoulderCheckState = { pi, cardIdx };
+            uiMode = 'shoulderCheckDir';
+            shoulderCheckFireDir(bestDir);
+          }
           else bulldozeFireDir(bestDir);
         }
       } else {
@@ -6742,6 +6747,9 @@ function resetTurnState() {
   gameState._grappleState = null;           // Clear Grapple Hook state
   gameState._wreckingBallState = null;     // Clear Wrecking Ball state
   gameState._bulldozeState = null;         // Clear Bulldoze state
+  gameState._eyeSlideWall = null;          // Clear Architect's Eye state
+  gameState._eyeSlideCardIdx = null;
+  gameState._shoulderCheckState = null;    // Clear Shoulder Check state
   gameState._shortcutTargets = null;          // Clear Shortcut targets
   gameState._emergencyBarrierBonusTargets = null; // Clear Emergency Barrier bonus targets
   gameState._wallVaultActive = false;        // Clear Wall Vault flag
@@ -6883,6 +6891,25 @@ function selectCard(cardId, idx) {
     uiMode = 'idle';
     renderAll();
     showStatus('Bulldoze cancelled', '');
+    return;
+  }
+  // Architect's Eye cancel
+  if (selectedCard && selectedCard.id === 'AR9' && (uiMode === 'wallEyeSlide' || uiMode === 'eyeSlideDir')) {
+    gameState._eyeSlideWall = null;
+    gameState._eyeSlideCardIdx = null;
+    selectedCard = null;
+    uiMode = 'idle';
+    renderAll();
+    showStatus('Architect\'s Eye cancelled', '');
+    return;
+  }
+  // Shoulder Check cancel
+  if (selectedCard && selectedCard.id === 'PU2' && uiMode === 'shoulderCheckDir') {
+    gameState._shoulderCheckState = null;
+    selectedCard = null;
+    uiMode = 'idle';
+    renderAll();
+    showStatus('Shoulder Check cancelled', '');
     return;
   }
   // Different card clicked while a wall/pick mode is pending: cancel (wall budget not yet counted).
@@ -7454,15 +7481,23 @@ function onWallPlaced(pi, fromCardId, _wasDelayedCard) {
     const coreWall = gameState.walls[gameState.walls.length - 1];
     if (coreWall) {
       let reinforcedCount = 0;
+      const coreEdges = wallEdges(coreWall);
+      // Collect all cell positions that the core wall touches (both sides of each edge)
+      const coreCells = new Set();
+      for (const e of coreEdges) {
+        coreCells.add(`${e.a.row},${e.a.col}`);
+        coreCells.add(`${e.b.row},${e.b.col}`);
+      }
       gameState.walls = gameState.walls.map(w => {
         if (w.id === coreWall.id || w.owner !== pi || w.isPhantom || w.reinforced) return w;
-        // Adjacent = same orientation, touching or overlapping tile range
-        if (w.orientation !== coreWall.orientation) return w;
-        const dr = Math.abs(w.anchor.row - coreWall.anchor.row);
-        const dc = Math.abs(w.anchor.col - coreWall.anchor.col);
-        const adjacent = (w.orientation === 'H')
-          ? (dr === 0 && dc <= coreWall.length + w.length)
-          : (dc === 0 && dr <= coreWall.length + w.length);
+        // Check if any cell touched by this wall also touches the core wall
+        const wEdges = wallEdges(w);
+        let adjacent = false;
+        for (const e of wEdges) {
+          if (coreCells.has(`${e.a.row},${e.a.col}`) || coreCells.has(`${e.b.row},${e.b.col}`)) {
+            adjacent = true; break;
+          }
+        }
         if (!adjacent) return w;
         reinforcedCount++;
         return {...w, reinforced:true, immune:true, permanent:true};
@@ -7921,6 +7956,16 @@ function applyMovementCard(pi, card, idx) {
     return;
   }
 
+  // PU2 Shoulder Check: direction-picker UI — straight-line move with push/exhaust
+  if (card.id === 'PU2') {
+    selectedCard = { id: 'PU2', idx, _pendingMove: false, _shoulderCheckCardIdx: idx };
+    gameState._shoulderCheckState = { pi, cardIdx: idx };
+    uiMode = 'shoulderCheckDir';
+    renderAll();
+    showStatus('Shoulder Check — click a direction arrow (N/S/W/E), or click the card to cancel', 'active');
+    return;
+  }
+
   // PF12 Slipstream: flag for post-move bonus-move check (no wall phasing)
   if (card.id === 'PF12') { gameState._slipstreamActive = true; gameState._slipstreamCard = true; }
   // B01 Detour: allow all 8 directions (diagonal + orthogonal)
@@ -8018,6 +8063,57 @@ function grappleExecute() {
   }
   if (isTurnDone()) gameState.phase='end_turn';
   renderAll(); showStatus('Grapple Hook: landed!','success');
+}
+
+// ── Architect's Eye slide helpers ─────────────────────────────────────
+function pickWallForEyeSlide(wall) {
+  if (uiMode !== 'wallEyeSlide') return;
+  const pi = gameState.activePlayer;
+  if (wall.owner !== pi || wall.isPhantom) return;
+
+  // Store the selected wall and show direction arrows
+  gameState._eyeSlideWall = wall.id;
+  uiMode = 'eyeSlideDir';
+  renderAll();
+  showStatus('Architect\'s Eye — click a direction arrow to slide the wall (up to 2 tiles)', 'active');
+}
+
+function eyeSlideFireDir(dir) {
+  if (uiMode !== 'eyeSlideDir' || !gameState._eyeSlideWall) return;
+  const pi = gameState.activePlayer;
+  const wall = gameState.walls.find(w => w.id === gameState._eyeSlideWall);
+  if (!wall) return;
+
+  const DIRS = { N:{r:-1,c:0}, S:{r:1,c:0}, W:{r:0,c:-1}, E:{r:0,c:1} };
+  const d = DIRS[dir]; if (!d) return;
+
+  // Try sliding 2 first, then 1
+  let slid = false;
+  for (let dist = 2; dist >= 1; dist--) {
+    const newAnchor = {row: wall.anchor.row + d.r*dist, col: wall.anchor.col + d.c*dist};
+    const testWalls = gameState.walls.filter(w => w.id !== wall.id);
+    if (!wallInBounds(newAnchor, wall.orientation, wall.length)) continue;
+    if (!isWallLegal(newAnchor, wall.orientation, wall.length, testWalls,
+        gameState.players[0].position, gameState.players[1].position, wall.isPhantom)) continue;
+    gameState.walls = gameState.walls.map(w =>
+      w.id === wall.id ? {...w, anchor: newAnchor} : w);
+    addLog(pi, 'card', `Architect's Eye: wall slid ${dist} tile(s) ${dir}`);
+    slid = true;
+    break;
+  }
+  if (!slid) {
+    showStatus(`Can't slide wall ${dir} — blocked`, 'error');
+    return;
+  }
+
+  const idx = gameState._eyeSlideCardIdx;
+  discardCard(pi, idx); countCardPlayed(pi);
+  gameState._eyeSlideWall = null;
+  gameState._eyeSlideCardIdx = null;
+  selectedCard = null; uiMode = 'idle';
+  if (isTurnDone()) gameState.phase = 'end_turn';
+  if (gameMode === 'mp') mpPushState();
+  renderAll(); showStatus('Architect\'s Eye: wall slid!', 'success');
 }
 
 // ── Grand Design wall buff helper ─────────────────────────────────────
@@ -8232,6 +8328,68 @@ function bulldozeFireDir(dir) {
   renderAll(); showStatus('Bulldoze: charge complete!', 'success');
 }
 
+// ── Shoulder Check helpers ────────────────────────────────────────────
+function shoulderCheckFireDir(dir) {
+  const pi = gameState.activePlayer;
+  if (!gameState._shoulderCheckState || uiMode !== 'shoulderCheckDir') return;
+  const myPos = gameState.players[pi].position;
+  const opp = 1 - pi;
+  const oppPos = gameState.players[opp].position;
+  const DIRS = { N:{r:-1,c:0}, S:{r:1,c:0}, W:{r:0,c:-1}, E:{r:0,c:1} };
+  const d = DIRS[dir]; if (!d) return;
+  const blocked = buildBlockedEdges(gameState.walls, pi);
+  const maxSteps = 2;
+
+  let finalPos = {...myPos};
+  for (let step = 1; step <= maxSteps; step++) {
+    const next = {row: finalPos.row + d.r, col: finalPos.col + d.c};
+    if (next.row < 0 || next.row >= BOARD_SIZE || next.col < 0 || next.col >= BOARD_SIZE) break;
+    if (isEdgeBlocked(finalPos, next, blocked)) break;
+    if (next.row === oppPos.row && next.col === oppPos.col) break; // stop before opponent
+    finalPos = next;
+  }
+
+  if (finalPos.row === myPos.row && finalPos.col === myPos.col) {
+    showStatus(`Shoulder Check: can't move ${dir} — blocked!`, 'error');
+    return;
+  }
+
+  const { cardIdx } = gameState._shoulderCheckState;
+  if (cardIdx !== undefined && cardIdx >= 0) {
+    discardCard(pi, cardIdx);
+    countCardPlayed(pi);
+  }
+
+  gameState.players[pi] = {...gameState.players[pi], position: finalPos};
+  hasMoved = true;
+
+  // Check if adjacent to opponent after move
+  const dr = oppPos.row - finalPos.row;
+  const dc = oppPos.col - finalPos.col;
+  const isAdj = (Math.abs(dr) + Math.abs(dc)) === 1;
+
+  if (isAdj) {
+    // Push opponent 1 space away (opposite of direction from us to them)
+    const pushDir = { r: dr, c: dc }; // push them further in the direction they are from us
+    const r = executeForceMove(opp, pushDir, 1);
+    if (r.spacesMoved > 0) addLog(pi, 'card', `Shoulder Check: pushed opponent away!`);
+    else addLog(pi, 'card', 'Shoulder Check: adjacent but opponent couldn\'t be pushed');
+  } else {
+    addStatusEffect(pi, 'skip_move', 2);
+    addLog(pi, 'card', 'Shoulder Check: missed! Exhausted — movement skipped next turn');
+  }
+
+  gameState._shoulderCheckState = null; selectedCard = null; uiMode = 'idle';
+  const goalRow = pi === 0 ? 0 : BOARD_SIZE - 1;
+  if (finalPos.row === goalRow) {
+    gameState.winner = pi; gameState.phase = 'ended';
+    addLog(pi, 'system', `PLAYER ${pi} WINS via Shoulder Check!`);
+    renderAll(); showVictory(pi); return;
+  }
+  if (isTurnDone()) gameState.phase = 'end_turn';
+  renderAll(); showStatus(isAdj ? 'Shoulder Check: impact!' : 'Shoulder Check: missed — exhausted!', isAdj ? 'success' : 'error');
+}
+
 // ── Disruption card handler ───────────────────────────────────────────
 async function applyDisruptionCard(pi, card, idx) {
   const opp = 1 - pi;
@@ -8404,13 +8562,42 @@ async function applyDisruptionCard(pi, card, idx) {
   if (card.id === 'AR9') {
     const myWalls = gameState.walls.filter(w => w.owner === pi && !w.isPhantom);
     if (!myWalls.length) { showStatus('No walls to slide', 'error'); return; }
-    discardCard(pi, idx); countCardPlayed(pi);
-    selectedCard = { id: 'AR9', idx: -1 };
-    uiMode = 'wallPick'; // pick which wall to slide, then Blueprint Shift logic handles it
-    gameState._redeployCardIdx = -1;
-    gameState._redeployCardId = 'AR9';
+    if (!isHumanSeat(pi)) {
+      // AI: try sliding each wall in each direction, pick best
+      let bestScore = -Infinity, bestSlide = null;
+      for (const w of myWalls) {
+        const dirs = w.orientation === 'H'
+          ? [{r:0,c:-1},{r:0,c:1},{r:-1,c:0},{r:1,c:0}]
+          : [{r:-1,c:0},{r:1,c:0},{r:0,c:-1},{r:0,c:1}];
+        for (const d of dirs) {
+          for (let dist = 1; dist <= 2; dist++) {
+            const newAnchor = {row: w.anchor.row + d.r*dist, col: w.anchor.col + d.c*dist};
+            const testWalls = gameState.walls.filter(x => x.id !== w.id);
+            if (!wallInBounds(newAnchor, w.orientation, w.length)) continue;
+            if (!isWallLegal(newAnchor, w.orientation, w.length, testWalls,
+                gameState.players[0].position, gameState.players[1].position, w.isPhantom)) continue;
+            const simWalls = [...testWalls, {...w, anchor: newAnchor}];
+            const s = scoreAction({type:'wall', anchor:newAnchor, orientation:w.orientation, length:w.length},
+                                  simWalls, gameState.players[1].position, gameState.players[0].position);
+            if (s > bestScore) { bestScore = s; bestSlide = {wallId: w.id, newAnchor, reinforced: w.reinforced}; }
+          }
+        }
+      }
+      if (bestSlide) {
+        gameState.walls = gameState.walls.map(w =>
+          w.id === bestSlide.wallId ? {...w, anchor: bestSlide.newAnchor} : w);
+        addLog(pi, 'card', 'Architect\'s Eye: wall slid');
+      }
+      discardCard(pi, idx); countCardPlayed(pi); selectedCard = null;
+      if (isTurnDone()) gameState.phase = 'end_turn';
+      renderAll(); return;
+    }
+    // Human: enter wall pick mode for slide
+    gameState._eyeSlideCardIdx = idx;
+    selectedCard = { id: 'AR9', idx };
+    uiMode = 'wallEyeSlide';
     renderAll();
-    showStatus('Architect\'s Eye — click one of your walls to slide it', 'active');
+    showStatus('Architect\'s Eye — click one of your walls to slide it (up to 2 tiles)', 'active');
     return;
   }
 
@@ -10377,19 +10564,41 @@ function renderBoard() {
   {
     const ov = document.getElementById('wall-overlay');
     const existSvg = ov?.querySelector('svg.grapple-svg');
-    // Shared direction arrow renderer for grappleDir, wreckingBallDir, bulldozeDir
+    // Shared direction arrow renderer for grappleDir, wreckingBallDir, bulldozeDir, eyeSlideDir, shoulderCheckDir
     const dirMode = uiMode === 'grappleDir' ? 'grapple'
                   : uiMode === 'wreckingBallDir' ? 'wreckingBall'
-                  : uiMode === 'bulldozeDir' ? 'bulldoze' : null;
+                  : uiMode === 'bulldozeDir' ? 'bulldoze'
+                  : uiMode === 'eyeSlideDir' ? 'eyeSlide'
+                  : uiMode === 'shoulderCheckDir' ? 'shoulderCheck' : null;
     const dirState = dirMode === 'grapple' ? gameState._grappleState
                    : dirMode === 'wreckingBall' ? gameState._wreckingBallState
-                   : dirMode === 'bulldoze' ? gameState._bulldozeState : null;
-    const dirColor = dirMode === 'grapple' ? '#22c55e' : dirMode === 'wreckingBall' ? '#ef4444' : '#f59e0b';
+                   : dirMode === 'bulldoze' ? gameState._bulldozeState
+                   : dirMode === 'eyeSlide' ? { pi: gameState.activePlayer }
+                   : dirMode === 'shoulderCheck' ? gameState._shoulderCheckState : null;
+    const dirColor = dirMode === 'grapple' ? '#22c55e'
+                   : dirMode === 'wreckingBall' ? '#ef4444'
+                   : dirMode === 'eyeSlide' ? '#8b5cf6'
+                   : dirMode === 'shoulderCheck' ? '#ef4444' : '#f59e0b';
     const dirCallback = dirMode === 'grapple' ? 'grappleFireDir'
                       : dirMode === 'wreckingBall' ? 'wreckingBallFireDir'
-                      : dirMode === 'bulldoze' ? 'bulldozeFireDir' : null;
+                      : dirMode === 'bulldoze' ? 'bulldozeFireDir'
+                      : dirMode === 'eyeSlide' ? 'eyeSlideFireDir'
+                      : dirMode === 'shoulderCheck' ? 'shoulderCheckFireDir' : null;
     if (dirMode && dirState && ov) {
-      const p2  = gameState.players[dirState.pi].position;
+      // For eye slide, center on the wall midpoint; for others, center on player
+      let p2;
+      if (dirMode === 'eyeSlide' && gameState._eyeSlideWall) {
+        const w = gameState.walls.find(x => x.id === gameState._eyeSlideWall);
+        if (w) {
+          const midR = w.orientation === 'V' ? w.anchor.row + w.length/2 : w.anchor.row + 0.5;
+          const midC = w.orientation === 'H' ? w.anchor.col + w.length/2 : w.anchor.col + 0.5;
+          p2 = {row: midR, col: midC};
+        } else {
+          p2 = gameState.players[dirState.pi].position;
+        }
+      } else {
+        p2 = gameState.players[dirState.pi].position;
+      }
       const stp = CELL+GAP;
       const cx  = p2.col*stp + CELL/2, cy = p2.row*stp + CELL/2;
       const R   = CELL*0.78;
@@ -10425,7 +10634,7 @@ function renderWalls() {
   if (!layer) return;
   layer.innerHTML = '';
   // Toggle pick-mode class to enable/disable clicks
-  if (uiMode === 'wallPick' || uiMode === 'wallRedirect' || uiMode === 'wallSeal' || uiMode === 'wallPunch' || uiMode === 'wallReinforce' || uiMode === 'wallReconstruct' || uiMode === 'wallRepossess' || uiMode === 'wallRepurpose' || uiMode === 'wallShrink' || uiMode === 'wallFortify' || uiMode === 'wallGrandDesign') {
+  if (uiMode === 'wallPick' || uiMode === 'wallRedirect' || uiMode === 'wallSeal' || uiMode === 'wallPunch' || uiMode === 'wallReinforce' || uiMode === 'wallReconstruct' || uiMode === 'wallRepossess' || uiMode === 'wallRepurpose' || uiMode === 'wallShrink' || uiMode === 'wallFortify' || uiMode === 'wallGrandDesign' || uiMode === 'wallEyeSlide') {
     layer.classList.add('pick-mode');
   } else {
     layer.classList.remove('pick-mode');
@@ -10448,6 +10657,7 @@ function renderWalls() {
                               && (!gameState._vaultShrinkWalls || gameState._vaultShrinkWalls.includes(wall.id));
     const isFortifiable     = uiMode === 'wallFortify'     && wall.owner === gameState.activePlayer && !wall.isPhantom && !wall.reinforced && wall.length < 3;
     const isGrandDesignPick = uiMode === 'wallGrandDesign' && wall.owner === gameState.activePlayer && !wall.isPhantom && !wall.reinforced && wall.id !== gameState._grandDesignGdWallId;
+    const isEyeSlidePick = uiMode === 'wallEyeSlide' && wall.owner === gameState.activePlayer && !wall.isPhantom;
     // Owner of a phantom wall sees it with a distinct teal tint
     const localPlayer = (gameMode === 'mp') ? mp_localSeat : 0;
     const isOwnPhantom = wall.isPhantom && wall.owner === localPlayer;
@@ -10470,6 +10680,7 @@ function renderWalls() {
     if (isShrinkable)       cls += ' wall-pickable wall-shrinkable';
     if (isFortifiable)      cls += ' wall-pickable wall-fortifiable';
     if (isGrandDesignPick)  cls += ' wall-pickable wall-reinforceable';
+    if (isEyeSlidePick)     cls += ' wall-pickable';
     el.className = cls;
     Object.assign(el.style, wallVisualPos(wall));
 
@@ -10552,6 +10763,10 @@ function renderWalls() {
     if (isGrandDesignPick) {
       el.style.cursor = 'pointer';
       el.addEventListener('click', () => handleGrandDesignWallClick(wall.id));
+    }
+    if (isEyeSlidePick) {
+      el.style.cursor = 'pointer';
+      el.addEventListener('click', () => pickWallForEyeSlide(wall));
     }
     if (isPunchable) {
       // Render each tile as a separate hoverable/clickable segment
