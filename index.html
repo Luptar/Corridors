@@ -2349,6 +2349,65 @@ function getAdjacentFactions(faction) {
   return [FACTION_WHEEL[(idx - 1 + 7) % 7], FACTION_WHEEL[(idx + 1) % 7]];
 }
 
+// ── GAUNTLET CONFIGURATION ───────────────────────────────────────────
+const GAUNTLET_STAGES = 12;
+const GAUNTLET_BOSS_STAGES = [3, 6, 9, 12];
+
+const GAUNTLET_AI_RARITY = {
+  1:'Common',2:'Common',3:'Uncommon',
+  4:'Uncommon',5:'Uncommon',6:'Rare',
+  7:'Rare',8:'Rare',9:'Epic',
+  10:'Epic',11:'Epic',12:'Legendary',
+};
+
+const GAUNTLET_SHARD_REWARDS = {
+  1:[10,20],2:[10,20],3:[15,25],
+  4:[25,40],5:[25,40],6:[30,45],
+  7:[50,70],8:[50,70],9:[55,75],
+  10:[80,120],11:[80,120],12:[90,130],
+};
+
+const GAUNTLET_CARD_WEIGHTS = {
+  1:{Common:.70,Uncommon:.25,Rare:.05,Legendary:0},
+  2:{Common:.65,Uncommon:.30,Rare:.05,Legendary:0},
+  3:{Common:.50,Uncommon:.35,Rare:.15,Legendary:0},
+  4:{Common:.40,Uncommon:.40,Rare:.18,Legendary:.02},
+  5:{Common:.30,Uncommon:.40,Rare:.25,Legendary:.05},
+  6:{Common:.20,Uncommon:.35,Rare:.35,Legendary:.10},
+  7:{Common:.10,Uncommon:.30,Rare:.45,Legendary:.15},
+  8:{Common:.05,Uncommon:.25,Rare:.50,Legendary:.20},
+  9:{Common:.05,Uncommon:.20,Rare:.45,Legendary:.30},
+  10:{Common:0,Uncommon:.15,Rare:.45,Legendary:.40},
+  11:{Common:0,Uncommon:.10,Rare:.40,Legendary:.50},
+  12:{Common:0,Uncommon:.05,Rare:.35,Legendary:.60},
+};
+
+const GAUNTLET_REMOVAL_COST = {1:0,2:0,3:0,4:0,5:0,6:10,7:15,8:20,9:25,10:30,11:30,12:30};
+
+const GAUNTLET_BOSS_PROMOTION = {3:'Uncommon',6:'Rare',9:'Epic',12:'Legendary'};
+
+const GAUNTLET_BOSS_UPGRADES = {
+  3:[{id:'wall2',label:'+2 Wall Limit',stat:'wallLimit',delta:2},{id:'hand1',label:'+1 Hand Size',stat:'handSize',delta:1},{id:'draw1',label:'+1 Card Draw',stat:'cardDraw',delta:1},{id:'ult1',label:'-1 Ultimate Cost',stat:'ultimateCost',delta:-1}],
+  6:[{id:'wall3',label:'+3 Wall Limit',stat:'wallLimit',delta:3},{id:'hand1',label:'+1 Hand Size',stat:'handSize',delta:1},{id:'draw1',label:'+1 Card Draw',stat:'cardDraw',delta:1},{id:'ult2',label:'-2 Ultimate Cost',stat:'ultimateCost',delta:-2}],
+  9:[{id:'wall3',label:'+3 Wall Limit',stat:'wallLimit',delta:3},{id:'hand2',label:'+2 Hand Size',stat:'handSize',delta:2},{id:'draw2',label:'+2 Card Draw',stat:'cardDraw',delta:2},{id:'ult2',label:'-2 Ultimate Cost',stat:'ultimateCost',delta:-2}],
+  12:[{id:'wall4',label:'+4 Wall Limit',stat:'wallLimit',delta:4},{id:'hand2',label:'+2 Hand Size',stat:'handSize',delta:2},{id:'draw2',label:'+2 Card Draw',stat:'cardDraw',delta:2},{id:'ult3',label:'-3 Ultimate Cost',stat:'ultimateCost',delta:-3}],
+};
+
+const GAUNTLET_AI_DECK_DIST = {
+  1:{Common:14,Uncommon:5,Rare:1,Legendary:0},
+  2:{Common:12,Uncommon:6,Rare:2,Legendary:0},
+  3:{Common:10,Uncommon:6,Rare:4,Legendary:0},
+  4:{Common:8,Uncommon:7,Rare:4,Legendary:1},
+  5:{Common:6,Uncommon:7,Rare:5,Legendary:2},
+  6:{Common:4,Uncommon:6,Rare:7,Legendary:3},
+  7:{Common:3,Uncommon:5,Rare:8,Legendary:4},
+  8:{Common:2,Uncommon:4,Rare:9,Legendary:5},
+  9:{Common:1,Uncommon:3,Rare:9,Legendary:7},
+  10:{Common:0,Uncommon:3,Rare:10,Legendary:7},
+  11:{Common:0,Uncommon:2,Rare:10,Legendary:8},
+  12:{Common:0,Uncommon:1,Rare:9,Legendary:10},
+};
+
 // ── Champions (7 — one per faction) ─────────────────────────────────
 const CHAMPIONS = {
   // Architects: maze-building, indestructible walls, double-card passive
@@ -2798,7 +2857,53 @@ function buildStarterDeck(faction) {
   return shuffle([...base]);
 }
 
+function buildGauntletAIDeck(stage, faction) {
+  const dist = GAUNTLET_AI_DECK_DIST[stage] || GAUNTLET_AI_DECK_DIST[1];
+  const pool = Object.values(CARDS).filter(c => c.faction === faction || c.faction === 'Basic');
+  const byRarity = {};
+  for (const c of pool) { (byRarity[c.rarity] = byRarity[c.rarity] || []).push(c); }
 
+  const deck = [];
+  const rarityOrder = ['Legendary','Rare','Uncommon','Common'];
+
+  for (const rarity of rarityOrder) {
+    let needed = dist[rarity] || 0;
+    const available = byRarity[rarity] || [];
+    for (let i = 0; i < needed; i++) {
+      if (available.length) {
+        deck.push({...available[Math.floor(Math.random() * available.length)]});
+      } else {
+        // Overflow: fill from next-lower rarity
+        const fallbackIdx = rarityOrder.indexOf(rarity);
+        for (let f = fallbackIdx + 1; f < rarityOrder.length; f++) {
+          const fb = byRarity[rarityOrder[f]] || [];
+          if (fb.length) { deck.push({...fb[Math.floor(Math.random() * fb.length)]}); break; }
+        }
+      }
+    }
+  }
+
+  // Boss stages: ensure wall/disruption presence
+  if (GAUNTLET_BOSS_STAGES.includes(stage)) {
+    const wallCount = deck.filter(c => c.type === 'Wall').length;
+    const dispCount = deck.filter(c => c.type === 'Disruption').length;
+    const wallPool = pool.filter(c => c.type === 'Wall');
+    const dispPool = pool.filter(c => c.type === 'Disruption');
+    // Replace weakest commons with walls/disruptions if short
+    let replaceIdx = deck.length - 1;
+    while (wallCount + (20 - replaceIdx) < 6 && replaceIdx >= 0 && wallPool.length) {
+      if (deck[replaceIdx].type !== 'Wall') deck[replaceIdx] = {...wallPool[Math.floor(Math.random() * wallPool.length)]};
+      replaceIdx--;
+    }
+  }
+
+  // Ensure exactly 20 cards
+  while (deck.length < 20) {
+    const fallback = pool.length ? pool[Math.floor(Math.random() * pool.length)] : Object.values(CARDS)[0];
+    deck.push({...fallback});
+  }
+  return shuffle(deck.slice(0, 20));
+}
 
 // ── State ───────────────────────────────────────────────────────────
 let gameState = null;
@@ -2821,6 +2926,7 @@ let aiThinking = false;
 
 // ── Tutorial state ───────────────────────────────────────────────────
 let _tutorialState = null;
+let _gauntletRun = null;
 const TUTORIAL_MATCHES = {
   1: { title:'THE BASICS', subtitle:'Movement & Wall Placement',
        playerStart:{row:5,col:4}, aiStart:{row:2,col:4},
@@ -3015,6 +3121,45 @@ function initTutorialMatch(matchNum) {
     queueTutorialTooltips(matchNum);
     showNextTooltip();
   }, 500);
+}
+
+// ── Gauntlet Match Init ─────────────────────────────────────────────
+function initGauntletGame(playerChamp, aiChamp, playerDeckIds, aiDeckCards) {
+  gameMode = 'gauntlet';
+  mp_isMultiplayer = false;
+  mp_gameId = null; mp_localSeat = null; mp_opponentName = null;
+  if (mp_subscription && _sb) { _sb.removeChannel(mp_subscription); mp_subscription = null; }
+  aiDifficulty = 'hard';
+
+  gameState = {
+    players: [
+      createPlayer(0, playerChamp, playerChamp.faction, null),
+      createPlayer(1, aiChamp, aiChamp.faction, null),
+    ],
+    walls: [], decoyTokens: [], trapTokens: [],
+    activePlayer: 0, turnNumber: 1, phase: 'draw', winner: null,
+    log: [], nextWallId: 1, nextTokenId: 1, firstDraw: [true, true],
+  };
+
+  // Override decks (bypass buildDeckForGame)
+  gameState.players[0].deck = shuffle(playerDeckIds.map(id => ({...CARDS[id]})).filter(Boolean));
+  gameState.players[1].deck = shuffle(aiDeckCards.map(c => ({...c})));
+
+  uiMode = 'idle'; selectedCard = null;
+  hasMoved = false; hasPlayedCard = false; aiThinking = false;
+  aiProbedWallIds.clear(); cardsPlayedThisTurn = 0;
+
+  gameState.activePlayer = Math.random() < 0.5 ? 0 : 1;
+
+  const p0Label = document.querySelector('#panel-p0 .panel-label');
+  const p1Label = document.querySelector('#panel-p1 .panel-label');
+  if (p0Label) p0Label.textContent = 'YOU';
+  if (p1Label) p1Label.textContent = 'OPPONENT';
+
+  renderAll();
+  const stageLabel = GAUNTLET_BOSS_STAGES.includes(_gauntletRun.stage) ? 'BOSS STAGE' : 'STAGE';
+  addLog(0, 'system', `Gauntlet ${stageLabel} ${_gauntletRun.stage}: ${playerChamp.name} vs ${aiChamp.name}`);
+  performDraw();
 }
 
 // ── BFS pathfinding ─────────────────────────────────────────────────
@@ -6460,8 +6605,9 @@ function showLandingScreen() {
               class="landing-btn blue">
         ⚡ MULTIPLAYER
       </button>
-      <button disabled class="landing-btn muted" style="opacity:0.4;cursor:not-allowed;" title="Coming soon!">
-        ☠ GAUNTLET (COMING SOON)
+      <button onclick="document.getElementById('landing-overlay').remove();showGauntletEntry();"
+              class="landing-btn" style="background:rgba(224,80,80,0.15);color:#e05050;border:1px solid rgba(224,80,80,0.3);">
+        ☠ GAUNTLET${(_gauntletRun || _userProfile?.gauntlet_run) ? ' <span style="font-size:9px;color:#fbbf24;">(IN PROGRESS)</span>' : ''}
       </button>
     </div>
 
@@ -6725,6 +6871,451 @@ function showTutorialCompleteScreen() {
     <button class="landing-btn amber" style="width:240px;" onclick="document.getElementById('tutorial-complete-overlay').remove();showLandingScreen();">CONTINUE</button>
   `;
   document.body.appendChild(overlay);
+}
+
+// ════════════════════════════════════════════════════════════════════
+// ── GAUNTLET MODE ────────────────────────────────────────────────────
+// ════════════════════════════════════════════════════════════════════
+
+function showGauntletEntry() {
+  // Resume existing run?
+  if (_gauntletRun || _userProfile?.gauntlet_run) {
+    const run = _gauntletRun || _userProfile.gauntlet_run;
+    _gauntletRun = run;
+    const overlay = document.createElement('div');
+    overlay.id = 'gauntlet-entry-overlay';
+    overlay.style.cssText = 'position:fixed;inset:0;background:var(--bg);display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:200;padding:40px 24px;text-align:center;';
+    overlay.innerHTML = `
+      <div style="font-family:'Teko',sans-serif;font-size:42px;color:#e05050;letter-spacing:.2em;margin-bottom:8px;">THE GAUNTLET</div>
+      <div style="font-size:12px;color:var(--text-dim);margin-bottom:24px;">Run in progress</div>
+      <div style="background:var(--surface);border:1px solid var(--border);padding:16px 24px;margin-bottom:24px;">
+        <div style="font-family:'Teko',sans-serif;font-size:22px;color:var(--amber);">${run.champion.name}</div>
+        <div style="font-size:11px;color:#aaa;">${run.champion.faction} · ${run.champion.rarity} · Stage ${run.stage} of 12</div>
+        <div style="font-size:10px;color:#888;margin-top:4px;">Deck: ${run.deck.length} cards · Shards earned: ${run.earnedShards}</div>
+      </div>
+      <div style="display:flex;gap:12px;">
+        <button class="landing-btn amber" style="width:160px;" onclick="document.getElementById('gauntlet-entry-overlay')?.remove();startGauntletStage();">RESUME</button>
+        <button class="landing-btn muted" style="width:160px;" onclick="if(confirm('Abandon run? Your champion will be lost.')){abandonGauntletRun();}">ABANDON</button>
+      </div>
+      <button class="landing-btn muted" style="width:140px;margin-top:16px;font-size:11px;" onclick="document.getElementById('gauntlet-entry-overlay')?.remove();showLandingScreen();">BACK</button>
+    `;
+    document.body.appendChild(overlay);
+    return;
+  }
+
+  // New run: pick from 3 random Common champions
+  const picks = [];
+  const usedFactions = new Set();
+  for (let i = 0; i < 3; i++) {
+    let champ;
+    for (let tries = 0; tries < 10; tries++) {
+      champ = generateChampion('Common');
+      if (!usedFactions.has(champ.faction)) break;
+    }
+    usedFactions.add(champ.faction);
+    picks.push(champ);
+  }
+
+  const overlay = document.createElement('div');
+  overlay.id = 'gauntlet-entry-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;background:var(--bg);display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:200;padding:40px 24px;text-align:center;overflow-y:auto;';
+
+  const factionColors = {Architects:'var(--wall-arch)',Pathfinders:'var(--wall-path)',Wardens:'var(--wall-ward)',Phantoms:'var(--wall-phan)',Pushers:'var(--wall-push)',Trappers:'var(--wall-trap)',Chronists:'var(--wall-chro)'};
+
+  const champCards = picks.map((c, i) => {
+    const col = factionColors[c.faction] || '#ccc';
+    return `<div onclick="gauntletPickChampion(${i})" style="cursor:pointer;background:var(--surface);border:1px solid var(--border);
+      padding:16px;width:200px;text-align:center;transition:border-color 0.2s;"
+      onmouseover="this.style.borderColor='var(--amber)'" onmouseout="this.style.borderColor='var(--border)'">
+      <div style="font-family:'Teko',sans-serif;font-size:22px;color:${col};">${c.name}</div>
+      <div style="font-size:9px;color:var(--text-dim);letter-spacing:.12em;margin-bottom:6px;">${c.title} · ${c.faction}</div>
+      <div style="font-size:10px;color:#aaa;">W:${c.wallLimit} H:${c.handSize} D:${c.cardDraw} U:${c.ultimateCost}</div>
+      <div style="font-size:11px;color:var(--amber);margin-top:6px;">${c.passiveName}</div>
+      <div style="font-size:10px;color:var(--text);line-height:1.3;margin-top:2px;">${c.passiveDesc}</div>
+      <div style="font-size:11px;color:#f59e0b;margin-top:6px;">${c.ultimateName}</div>
+      <div style="font-size:10px;color:var(--text);line-height:1.3;margin-top:2px;">${c.ultimateDesc}</div>
+    </div>`;
+  }).join('');
+
+  overlay.innerHTML = `
+    <div style="font-family:'Teko',sans-serif;font-size:42px;color:#e05050;letter-spacing:.2em;margin-bottom:4px;">THE GAUNTLET</div>
+    <div style="font-size:11px;color:var(--text-dim);letter-spacing:.15em;margin-bottom:32px;">12 stages · Permadeath · One chance</div>
+    <div style="font-size:12px;color:var(--text-dim);margin-bottom:16px;">Choose your champion</div>
+    <div style="display:flex;gap:16px;margin-bottom:24px;flex-wrap:wrap;justify-content:center;">${champCards}</div>
+    <button class="landing-btn muted" style="width:140px;font-size:11px;" onclick="document.getElementById('gauntlet-entry-overlay')?.remove();showLandingScreen();">BACK</button>
+  `;
+  overlay._gauntletPicks = picks;
+  document.body.appendChild(overlay);
+}
+
+function gauntletPickChampion(idx) {
+  const overlay = document.getElementById('gauntlet-entry-overlay');
+  if (!overlay?._gauntletPicks) return;
+  const champion = overlay._gauntletPicks[idx];
+  overlay.remove();
+  startGauntletRun(champion);
+}
+
+async function startGauntletRun(champion) {
+  const starterDeck = buildStarterDeck(champion.faction);
+  const deckIds = starterDeck.map(c => c.id);
+
+  _gauntletRun = {
+    stage: 1,
+    champion: { ...champion },
+    deck: deckIds,
+    earnedShards: 0,
+    bossUpgrades: [],
+    startedAt: new Date().toISOString(),
+  };
+
+  if (_userProfile) await saveUserProfile({ gauntlet_run: _gauntletRun });
+  showGauntletMap(true);
+}
+
+async function abandonGauntletRun() {
+  _gauntletRun = null;
+  if (_userProfile) await saveUserProfile({ gauntlet_run: null });
+  document.getElementById('gauntlet-entry-overlay')?.remove();
+  showLandingScreen();
+}
+
+function startGauntletStage() {
+  document.getElementById('gauntlet-entry-overlay')?.remove();
+  document.getElementById('gauntlet-map-overlay')?.remove();
+  document.getElementById('gauntlet-reward-overlay')?.remove();
+  if (!_gauntletRun) return;
+
+  const stage = _gauntletRun.stage;
+  const aiRarity = GAUNTLET_AI_RARITY[stage] || 'Common';
+
+  // Boss stages: pick counter-faction
+  let preferredFaction = null;
+  if (GAUNTLET_BOSS_STAGES.includes(stage)) {
+    preferredFaction = FACTION_COUNTER[_gauntletRun.champion.faction] || null;
+  }
+  const aiChamp = generateChampion(aiRarity, preferredFaction);
+  const aiDeck = buildGauntletAIDeck(stage, aiChamp.faction);
+
+  initGauntletGame(_gauntletRun.champion, aiChamp, _gauntletRun.deck, aiDeck);
+}
+
+// ── Gauntlet Victory ────────────────────────────────────────────────
+async function showGauntletVictory(winner) {
+  if (!_gauntletRun) return;
+  const stage = _gauntletRun.stage;
+  const isBoss = GAUNTLET_BOSS_STAGES.includes(stage);
+
+  if (winner !== 0) {
+    showGauntletDeath();
+    return;
+  }
+
+  // Calculate and grant shards
+  const [min, max] = GAUNTLET_SHARD_REWARDS[stage] || [10,20];
+  let shards = min + Math.floor(Math.random() * (max - min + 1));
+  if (isBoss) shards = Math.floor(shards * 1.5);
+  await grantShards(shards);
+  _gauntletRun.earnedShards += shards;
+  if (_userProfile) await saveUserProfile({ gauntlet_run: _gauntletRun });
+
+  if (isBoss) {
+    showGauntletBossReward(shards);
+  } else {
+    showGauntletCardReward(shards);
+  }
+}
+
+// ── Card Reward Screen (regular stages) ─────────────────────────────
+function generateGauntletCardRewards(stage, faction) {
+  const weights = GAUNTLET_CARD_WEIGHTS[stage] || GAUNTLET_CARD_WEIGHTS[1];
+  const pool = Object.values(CARDS).filter(c => c.faction === faction || c.faction === 'Basic');
+  const rewards = [];
+  const usedIds = new Set();
+  for (let i = 0; i < 3; i++) {
+    const roll = Math.random();
+    let cum = 0, targetRarity = 'Common';
+    for (const [r, w] of Object.entries(weights)) { cum += w; if (roll < cum) { targetRarity = r; break; } }
+    let candidates = pool.filter(c => c.rarity === targetRarity && !usedIds.has(c.id));
+    if (!candidates.length) candidates = pool.filter(c => !usedIds.has(c.id));
+    if (candidates.length) {
+      const pick = candidates[Math.floor(Math.random() * candidates.length)];
+      rewards.push(pick);
+      usedIds.add(pick.id);
+    }
+  }
+  return rewards;
+}
+
+function showGauntletCardReward(shardsEarned) {
+  const stage = _gauntletRun.stage;
+  const faction = _gauntletRun.champion.faction;
+  const cards = generateGauntletCardRewards(stage, faction);
+  const removalCost = GAUNTLET_REMOVAL_COST[stage] ?? 0;
+  let cardPicked = false;
+  let cardRemoved = false;
+
+  const overlay = document.createElement('div');
+  overlay.id = 'gauntlet-reward-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;background:var(--bg);display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:200;padding:20px;overflow-y:auto;';
+
+  function render() {
+    const rarityColor = r => r==='Common'?'#aaa':r==='Uncommon'?'#4ade80':r==='Rare'?'#60a5fa':r==='Legendary'?'#fbbf24':'#ccc';
+    const cardHtml = cards.map((c, i) => {
+      const rc = rarityColor(c.rarity);
+      return `<div onclick="gauntletPickCard(${i})" style="cursor:pointer;background:var(--surface);border:2px solid ${rc};
+        padding:14px;width:160px;text-align:center;transition:transform 0.15s;" onmouseover="this.style.transform='scale(1.05)'" onmouseout="this.style.transform='scale(1)'">
+        <div style="font-family:'Teko',sans-serif;font-size:18px;color:${rc};">${c.name}</div>
+        <div style="font-size:9px;color:#888;">${c.rarity} · ${c.faction}</div>
+        <div style="font-size:10px;color:var(--text);margin-top:6px;line-height:1.3;">${c.desc}</div>
+      </div>`;
+    }).join('');
+
+    // Current deck display for removal
+    const deckHtml = _gauntletRun.deck.map((id, i) => {
+      const c = CARDS[id];
+      if (!c) return '';
+      return `<div style="display:inline-block;background:var(--surface);border:1px solid var(--border);padding:4px 8px;margin:2px;font-size:10px;color:#ccc;">
+        ${c.name} <span style="color:#888;font-size:9px;">${c.rarity}</span>
+        ${!cardRemoved ? `<span onclick="gauntletRemoveCard(${i})" style="color:#e05050;cursor:pointer;margin-left:4px;" title="Remove this card">✕</span>` : ''}
+      </div>`;
+    }).join('');
+
+    overlay.innerHTML = `
+      <div style="font-family:'Teko',sans-serif;font-size:28px;color:var(--amber);margin-bottom:4px;">STAGE ${stage} COMPLETE</div>
+      <div style="font-size:14px;color:var(--amber);margin-bottom:20px;">+${shardsEarned} ◆ SHARDS</div>
+      ${!cardPicked ? `
+        <div style="font-size:12px;color:var(--text-dim);margin-bottom:12px;">Pick a card to add to your deck</div>
+        <div style="display:flex;gap:12px;margin-bottom:24px;flex-wrap:wrap;justify-content:center;">${cardHtml}</div>
+      ` : `
+        <div style="font-size:12px;color:#4ade80;margin-bottom:16px;">Card added to deck!</div>
+      `}
+      <div style="font-size:11px;color:var(--text-dim);margin-bottom:8px;">YOUR DECK (${_gauntletRun.deck.length} cards) ${removalCost > 0 && !cardRemoved ? `· Removal cost: ${removalCost} shards` : !cardRemoved ? '· Free removal available' : ''}</div>
+      <div style="max-width:600px;margin-bottom:20px;">${deckHtml}</div>
+      ${cardPicked ? `<button class="landing-btn amber" style="width:220px;" onclick="gauntletAdvanceStage();">NEXT STAGE →</button>` : ''}
+      <button class="landing-btn muted" style="width:160px;margin-top:8px;font-size:11px;" onclick="showGauntletMap(false);">VIEW MAP</button>
+    `;
+  }
+
+  overlay._render = render;
+  overlay._cards = cards;
+  overlay._cardPicked = () => cardPicked;
+  overlay._setCardPicked = () => { cardPicked = true; };
+  overlay._cardRemoved = () => cardRemoved;
+  overlay._setCardRemoved = () => { cardRemoved = true; };
+  overlay._removalCost = removalCost;
+
+  document.body.appendChild(overlay);
+  render();
+}
+
+async function gauntletPickCard(idx) {
+  const overlay = document.getElementById('gauntlet-reward-overlay');
+  if (!overlay || overlay._cardPicked()) return;
+  const card = overlay._cards[idx];
+  if (!card) return;
+  _gauntletRun.deck.push(card.id);
+  overlay._setCardPicked();
+  if (_userProfile) await saveUserProfile({ gauntlet_run: _gauntletRun });
+  overlay._render();
+}
+
+async function gauntletRemoveCard(idx) {
+  const overlay = document.getElementById('gauntlet-reward-overlay');
+  if (!overlay || overlay._cardRemoved()) return;
+  const cost = overlay._removalCost;
+  if (cost > 0 && (_userProfile?.shards ?? 0) < cost) { showStatus('Not enough shards', 'error'); return; }
+  if (cost > 0) await spendShards(cost);
+  _gauntletRun.deck.splice(idx, 1);
+  overlay._setCardRemoved();
+  if (_userProfile) await saveUserProfile({ gauntlet_run: _gauntletRun });
+  overlay._render();
+}
+
+async function gauntletAdvanceStage() {
+  _gauntletRun.stage++;
+  if (_userProfile) await saveUserProfile({ gauntlet_run: _gauntletRun });
+  document.getElementById('gauntlet-reward-overlay')?.remove();
+  showGauntletMap(true);
+}
+
+// ── Boss Reward Screen ──────────────────────────────────────────────
+function showGauntletBossReward(shardsEarned) {
+  const stage = _gauntletRun.stage;
+  const upgrades = GAUNTLET_BOSS_UPGRADES[stage] || GAUNTLET_BOSS_UPGRADES[3];
+  // Pick 3 random from the pool
+  const shuffled = [...upgrades].sort(() => Math.random() - 0.5).slice(0, 3);
+
+  const overlay = document.createElement('div');
+  overlay.id = 'gauntlet-reward-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;background:var(--bg);display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:200;padding:20px;overflow-y:auto;';
+
+  const upgradeCards = shuffled.map((u, i) => `
+    <div onclick="gauntletPickUpgrade(${i})" style="cursor:pointer;background:var(--surface);border:2px solid #fbbf24;
+      padding:20px;width:180px;text-align:center;transition:transform 0.15s;"
+      onmouseover="this.style.transform='scale(1.05)'" onmouseout="this.style.transform='scale(1)'">
+      <div style="font-family:'Teko',sans-serif;font-size:20px;color:#fbbf24;">${u.label}</div>
+      <div style="font-size:11px;color:#aaa;margin-top:4px;">Permanent upgrade</div>
+    </div>
+  `).join('');
+
+  overlay.innerHTML = `
+    <div style="font-family:'Teko',sans-serif;font-size:36px;color:#fbbf24;margin-bottom:4px;">☠ BOSS DEFEATED</div>
+    <div style="font-size:14px;color:var(--amber);margin-bottom:4px;">Stage ${stage} Complete</div>
+    <div style="font-size:14px;color:var(--amber);margin-bottom:24px;">+${shardsEarned} ◆ SHARDS (Boss Bonus!)</div>
+    <div style="font-size:12px;color:var(--text-dim);margin-bottom:12px;">Choose a permanent champion upgrade</div>
+    <div style="display:flex;gap:16px;margin-bottom:32px;">${upgradeCards}</div>
+  `;
+  overlay._upgrades = shuffled;
+  document.body.appendChild(overlay);
+}
+
+async function gauntletPickUpgrade(idx) {
+  const overlay = document.getElementById('gauntlet-reward-overlay');
+  if (!overlay?._upgrades) return;
+  const upgrade = overlay._upgrades[idx];
+  // Apply upgrade
+  _gauntletRun.champion[upgrade.stat] = Math.max(2, Math.min(15, (_gauntletRun.champion[upgrade.stat] || 0) + upgrade.delta));
+  _gauntletRun.bossUpgrades.push(upgrade.id);
+  if (_userProfile) await saveUserProfile({ gauntlet_run: _gauntletRun });
+
+  // Show leave/continue choice
+  const stage = _gauntletRun.stage;
+  const promotedRarity = GAUNTLET_BOSS_PROMOTION[stage];
+  const isLastBoss = stage === 12;
+
+  overlay.innerHTML = `
+    <div style="font-family:'Teko',sans-serif;font-size:28px;color:#fbbf24;margin-bottom:8px;">UPGRADE APPLIED: ${upgrade.label}</div>
+    <div style="font-size:12px;color:#aaa;margin-bottom:24px;">${_gauntletRun.champion.name} grows stronger</div>
+    <div style="background:var(--surface);border:1px solid var(--border);padding:16px 24px;margin-bottom:24px;text-align:center;">
+      <div style="font-size:10px;color:var(--text-dim);margin-bottom:8px;">CHAMPION STATS</div>
+      <div style="font-size:12px;color:#ccc;">W:${_gauntletRun.champion.wallLimit} H:${_gauntletRun.champion.handSize} D:${_gauntletRun.champion.cardDraw} U:${_gauntletRun.champion.ultimateCost}</div>
+    </div>
+    <div style="font-size:13px;color:var(--text-dim);margin-bottom:16px;">
+      ${isLastBoss ? 'You have conquered the Gauntlet!' : `Leave now to save your champion as ${promotedRarity}, or risk it all going deeper.`}
+    </div>
+    <div style="display:flex;gap:16px;">
+      <button class="landing-btn" style="width:220px;background:rgba(74,222,128,0.15);color:#4ade80;border:1px solid rgba(74,222,128,0.3);"
+        onclick="gauntletLeaveAlive();">
+        ${isLastBoss ? 'CLAIM LEGENDARY CHAMPION' : 'LEAVE THE GAUNTLET'}
+        <div style="font-size:9px;color:#aaa;margin-top:2px;">Champion → ${promotedRarity}</div>
+      </button>
+      ${!isLastBoss ? `
+        <button class="landing-btn" style="width:220px;background:rgba(224,80,80,0.15);color:#e05050;border:1px solid rgba(224,80,80,0.3);"
+          onclick="gauntletContinueDeeper();">
+          CONTINUE DEEPER
+          <div style="font-size:9px;color:#aaa;margin-top:2px;">Stage ${stage + 1} awaits</div>
+        </button>
+      ` : ''}
+    </div>
+  `;
+}
+
+async function gauntletLeaveAlive() {
+  const stage = _gauntletRun.stage;
+  const promotedRarity = GAUNTLET_BOSS_PROMOTION[stage] || 'Uncommon';
+  const champion = { ..._gauntletRun.champion, rarity: promotedRarity };
+  await addToRoster(champion);
+  _gauntletRun = null;
+  if (_userProfile) await saveUserProfile({ gauntlet_run: null });
+
+  document.getElementById('gauntlet-reward-overlay')?.remove();
+  const overlay = document.createElement('div');
+  overlay.id = 'gauntlet-complete-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;background:var(--bg);display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:200;padding:40px 24px;text-align:center;';
+  const rc = promotedRarity==='Uncommon'?'#4ade80':promotedRarity==='Rare'?'#60a5fa':promotedRarity==='Epic'?'#c084fc':'#fbbf24';
+  overlay.innerHTML = `
+    <div style="font-family:'Teko',sans-serif;font-size:42px;color:${rc};margin-bottom:8px;">CHAMPION SAVED</div>
+    <div style="font-size:14px;color:var(--amber);margin-bottom:4px;">${champion.name} promoted to ${promotedRarity}</div>
+    <div style="font-size:12px;color:var(--text-dim);margin-bottom:24px;">Added to your roster</div>
+    <div style="background:var(--surface);border:2px solid ${rc};padding:20px 28px;margin-bottom:24px;">
+      <div style="font-family:'Teko',sans-serif;font-size:24px;color:${rc};">${champion.name}</div>
+      <div style="font-size:11px;color:#888;">${champion.title} · ${champion.faction}</div>
+      <div style="font-size:11px;color:#ccc;margin-top:6px;">W:${champion.wallLimit} H:${champion.handSize} D:${champion.cardDraw} U:${champion.ultimateCost}</div>
+    </div>
+    <button class="landing-btn amber" style="width:200px;" onclick="document.getElementById('gauntlet-complete-overlay')?.remove();showLandingScreen();">CONTINUE</button>
+  `;
+  document.body.appendChild(overlay);
+}
+
+async function gauntletContinueDeeper() {
+  _gauntletRun.stage++;
+  if (_userProfile) await saveUserProfile({ gauntlet_run: _gauntletRun });
+  document.getElementById('gauntlet-reward-overlay')?.remove();
+  showGauntletMap(true);
+}
+
+// ── Gauntlet Death ──────────────────────────────────────────────────
+async function showGauntletDeath() {
+  const stage = _gauntletRun?.stage || 1;
+  const champName = _gauntletRun?.champion?.name || 'Unknown';
+  const earned = _gauntletRun?.earnedShards || 0;
+
+  _gauntletRun = null;
+  if (_userProfile) await saveUserProfile({ gauntlet_run: null });
+
+  const overlay = document.getElementById('victory-overlay');
+  if (overlay) overlay.style.display = 'none';
+
+  const deathOvl = document.createElement('div');
+  deathOvl.id = 'gauntlet-death-overlay';
+  deathOvl.style.cssText = 'position:fixed;inset:0;background:linear-gradient(180deg,#1a0000 0%,var(--bg) 100%);display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:200;padding:40px 24px;text-align:center;';
+  deathOvl.innerHTML = `
+    <div style="font-size:64px;margin-bottom:8px;">☠</div>
+    <div style="font-family:'Teko',sans-serif;font-size:42px;color:#e05050;letter-spacing:.15em;margin-bottom:8px;">CHAMPION FALLEN</div>
+    <div style="font-size:14px;color:var(--text);margin-bottom:4px;">${champName} was destroyed in Stage ${stage}</div>
+    <div style="font-size:12px;color:var(--text-dim);margin-bottom:24px;">Stages survived: ${stage - 1} · Shards earned: ${earned} (kept)</div>
+    <button class="landing-btn" style="width:200px;background:rgba(224,80,80,0.15);color:#e05050;border:1px solid rgba(224,80,80,0.3);"
+      onclick="document.getElementById('gauntlet-death-overlay')?.remove();showLandingScreen();">RETURN TO MENU</button>
+  `;
+  document.body.appendChild(deathOvl);
+}
+
+// ── Gauntlet Map ────────────────────────────────────────────────────
+function showGauntletMap(autoClose) {
+  document.getElementById('gauntlet-map-overlay')?.remove();
+  if (!_gauntletRun) return;
+
+  const overlay = document.createElement('div');
+  overlay.id = 'gauntlet-map-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.92);display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:250;padding:20px;';
+
+  let nodesHtml = '';
+  for (let s = GAUNTLET_STAGES; s >= 1; s--) {
+    const isBoss = GAUNTLET_BOSS_STAGES.includes(s);
+    const isCurrent = s === _gauntletRun.stage;
+    const isCompleted = s < _gauntletRun.stage;
+    const aiRarity = GAUNTLET_AI_RARITY[s];
+    const rc = aiRarity==='Common'?'#aaa':aiRarity==='Uncommon'?'#4ade80':aiRarity==='Rare'?'#60a5fa':aiRarity==='Epic'?'#c084fc':'#fbbf24';
+
+    const bg = isCompleted ? 'rgba(212,144,58,0.15)' : isCurrent ? 'rgba(212,144,58,0.25)' : 'rgba(255,255,255,0.03)';
+    const border = isCurrent ? 'var(--amber)' : isCompleted ? 'rgba(212,144,58,0.4)' : 'var(--border)';
+    const textCol = isCompleted ? 'var(--amber)' : isCurrent ? '#fff' : '#555';
+
+    nodesHtml += `<div style="display:flex;align-items:center;gap:10px;padding:6px 16px;background:${bg};border:1px solid ${border};
+      margin-bottom:3px;width:300px;${isCurrent ? 'box-shadow:0 0 8px rgba(212,144,58,0.3);' : ''}">
+      <div style="width:24px;font-family:'Teko',sans-serif;font-size:16px;color:${textCol};">${s}</div>
+      <div style="flex:1;font-size:11px;color:${textCol};">${isBoss ? '☠ BOSS' : 'Stage'} ${s}</div>
+      <div style="font-size:10px;color:${rc};">${aiRarity}</div>
+      ${isCurrent ? '<div style="font-size:9px;color:var(--amber);">← YOU</div>' : ''}
+      ${isCompleted ? '<div style="font-size:9px;color:var(--amber);">✓</div>' : ''}
+    </div>`;
+  }
+
+  overlay.innerHTML = `
+    <div style="font-family:'Teko',sans-serif;font-size:28px;color:#e05050;letter-spacing:.15em;margin-bottom:4px;">THE GAUNTLET</div>
+    <div style="font-size:11px;color:var(--text-dim);margin-bottom:16px;">${_gauntletRun.champion.name} · ${_gauntletRun.champion.faction} · Deck: ${_gauntletRun.deck.length} cards</div>
+    ${nodesHtml}
+    ${!autoClose ? '<button class="landing-btn muted" style="width:140px;margin-top:12px;font-size:11px;" onclick="document.getElementById(\'gauntlet-map-overlay\')?.remove();">CLOSE</button>' : ''}
+  `;
+  document.body.appendChild(overlay);
+
+  if (autoClose) {
+    setTimeout(() => {
+      document.getElementById('gauntlet-map-overlay')?.remove();
+      startGauntletStage();
+    }, 2000);
+  }
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -7206,7 +7797,7 @@ function handleWallClick(anchor, orientation, length, isPhantom, isDurable) {
   updateActionBar();
 
   // If it's AI's turn after this (shouldn't happen, but safety)
-  if (gameMode === 'sp' && gameState.phase === 'end_turn' && gameState.activePlayer === AI_PLAYER) {
+  if ((gameMode === 'sp' || gameMode === 'gauntlet') && gameState.phase === 'end_turn' && gameState.activePlayer === AI_PLAYER) {
     setTimeout(endTurn, 400);
   }
   // In MP, if a win was scored, push state immediately
@@ -12102,6 +12693,8 @@ async function saveGameRecord(record) {
 function showVictory(winner) {
   // ── Tutorial mode: use tutorial victory display ──
   if (gameMode === 'tutorial') { showTutorialVictory(winner); return; }
+  // ── Gauntlet mode: use gauntlet victory display ──
+  if (gameMode === 'gauntlet') { showGauntletVictory(winner); return; }
   // ── MP mode: use multiplayer victory display ──
   if (gameMode === 'mp') {
     mpShowVictory(winner);
@@ -12249,9 +12842,11 @@ function resetGame() {
   cardsPlayedThisTurn = 0;
   _tutorialState = null;
 
-  // Clean up any tutorial overlays
+  // Clean up any tutorial/gauntlet overlays
   ['tutorial-backdrop','tutorial-tooltip','tutorial-spotlight',
-   'tutorial-intro-overlay','tutorial-champ-overlay','tutorial-complete-overlay'].forEach(id => {
+   'tutorial-intro-overlay','tutorial-champ-overlay','tutorial-complete-overlay',
+   'gauntlet-entry-overlay','gauntlet-map-overlay','gauntlet-reward-overlay',
+   'gauntlet-death-overlay','gauntlet-complete-overlay'].forEach(id => {
     document.getElementById(id)?.remove();
   });
 
@@ -13785,6 +14380,8 @@ async function loadUserProfile() {
     dailyRollDate: data.daily_roll_date ?? data.dailyRollDate ?? null,
     tutorialComplete: data.tutorial_complete ?? data.tutorialComplete ?? false,
   };
+  // Resume Gauntlet run if one exists
+  if (_userProfile.gauntlet_run) _gauntletRun = _userProfile.gauntlet_run;
   return _userProfile;
 }
 
