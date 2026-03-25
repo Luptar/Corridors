@@ -2410,72 +2410,76 @@ const GAUNTLET_AI_DECK_DIST = {
 
 // ── Boss Board Modifiers ────────────────────────────────────────────
 // Bosses have unique board configurations making them harder
+// ── BOSS ENCOUNTERS ─────────────────────────────────────────────────
+// Each boss has: a unique name, title, fixed faction/abilities, a custom board,
+// a tailored deck that exploits that board, and boosted stats.
 // Boss boards use permanent indestructible walls to reshape the 9x9 grid.
-// "Boundary" walls along edges effectively narrow the board.
-// "Interior" walls create corridors, mazes, and chokepoints.
-const GAUNTLET_BOSS_BOARDS = {
+const GAUNTLET_BOSSES = {
   3: [
-    { name:'THE NARROW', desc:'Walled-off edges — only 5 columns of play',
-      // Seal off columns 0 and 7-8 with vertical walls along their inner edges
+    { bossName:'Kael', bossTitle:'the Wallwright', faction:'Architects',
+      passiveId:'magnus', ultimateId:'magnus', // Master Mason passive + ult
+      stats:{wallLimit:12, handSize:7, cardDraw:5, moveSpeed:1, ultimateCost:4},
+      // Tailored deck: heavy wall cards to exploit the narrow board
+      deck:['AR1','AR1','AR1','BB','BB','BB','BB','CB','CB','AR2','AR2','AR3','AR5','AR9','RC','AV','B08','B08','B07','B04'],
+      boardName:'THE NARROW', boardDesc:'Walled-off edges create a 5-column corridor. Kael fills it with walls.',
       preWalls:[
         {anchor:{row:0,col:1},orientation:'V',length:2},{anchor:{row:2,col:1},orientation:'V',length:2},
         {anchor:{row:4,col:1},orientation:'V',length:2},{anchor:{row:6,col:1},orientation:'V',length:2},
         {anchor:{row:0,col:6},orientation:'V',length:2},{anchor:{row:2,col:6},orientation:'V',length:2},
         {anchor:{row:4,col:6},orientation:'V',length:2},{anchor:{row:6,col:6},orientation:'V',length:2},
       ]},
-    { name:'THE MAZE', desc:'Staggered walls force a winding path',
+    { bossName:'Vael', bossTitle:'the Maze Keeper', faction:'Architects',
+      passiveId:'magnus', ultimateId:'thorne',
+      stats:{wallLimit:10, handSize:6, cardDraw:5, moveSpeed:1, ultimateCost:5},
+      deck:['AR1','AR1','BB','BB','BB','BB','CB','CB','AR3','AR3','AR2','AR5','AR9','AR11','RC','RC','AV','B08','B07','B04'],
+      boardName:'THE MAZE', boardDesc:'Staggered walls force a winding path. Vael knows every shortcut.',
       preWalls:[
         {anchor:{row:1,col:0},orientation:'H',length:4},
         {anchor:{row:3,col:4},orientation:'H',length:4},
         {anchor:{row:5,col:0},orientation:'H',length:4},
         {anchor:{row:7,col:4},orientation:'H',length:4},
       ]},
-    { name:'THE SPRINT', desc:'Sealed top and bottom — short race to the finish',
-      // Horizontal walls at rows 1 and 7 seal off the outer rows
-      preWalls:[
-        {anchor:{row:1,col:0},orientation:'H',length:3},{anchor:{row:1,col:3},orientation:'H',length:3},{anchor:{row:1,col:6},orientation:'H',length:2},
-        {anchor:{row:6,col:0},orientation:'H',length:3},{anchor:{row:6,col:3},orientation:'H',length:3},{anchor:{row:6,col:6},orientation:'H',length:2},
-      ]},
   ],
   6: [
-    { name:'THE CORRIDOR', desc:'Tight 3-column passage with chokepoints',
+    { bossName:'Ghrel', bossTitle:'the Cage Master', faction:'Wardens',
+      passiveId:'thorne', ultimateId:'thorne', // Reveal + Reposition walls
+      stats:{wallLimit:8, handSize:7, cardDraw:5, moveSpeed:1, ultimateCost:5},
+      deck:['WD1','WD1','WD2','WD2','WD3','WD3','WD4','WD6','WD8','WD12','BB','BB','BB','RC','RC','AV','AV','CB','B07','B09'],
+      boardName:'THE CAGE', boardDesc:'A walled box dominates the center. Ghrel controls the edges.',
       preWalls:[
-        // Seal off cols 0-1 and 6-8
-        {anchor:{row:0,col:2},orientation:'V',length:2},{anchor:{row:2,col:2},orientation:'V',length:2},
-        {anchor:{row:4,col:2},orientation:'V',length:2},{anchor:{row:6,col:2},orientation:'V',length:2},
-        {anchor:{row:0,col:5},orientation:'V',length:2},{anchor:{row:2,col:5},orientation:'V',length:2},
-        {anchor:{row:4,col:5},orientation:'V',length:2},{anchor:{row:6,col:5},orientation:'V',length:2},
-        // Chokepoints in the middle
-        {anchor:{row:3,col:3},orientation:'H',length:1},{anchor:{row:5,col:3},orientation:'H',length:1},
-      ]},
-    { name:'THE CAGE', desc:'Center walled off — fight around the edges',
-      preWalls:[
-        // Box in the center (rows 3-5, cols 3-5)
         {anchor:{row:2,col:3},orientation:'H',length:3},
         {anchor:{row:5,col:3},orientation:'H',length:3},
         {anchor:{row:3,col:2},orientation:'V',length:3},
         {anchor:{row:3,col:5},orientation:'V',length:3},
       ]},
-    { name:'THE FUNNEL', desc:'Wide at edges, narrow in the middle',
+    { bossName:'Nira', bossTitle:'the Phantom Queen', faction:'Phantoms',
+      passiveId:'nyx', ultimateId:'nyx', // Illusory Trail + Invisibility
+      stats:{wallLimit:9, handSize:6, cardDraw:5, moveSpeed:1, ultimateCost:3},
+      deck:['PH1','PH1','PH1','PH2','PH2','PH3','PH3','PH4','PH8','PH10','PH16','BB','BB','RC','AV','AV','QS','QS','B01','B07'],
+      boardName:'THE FUNNEL', boardDesc:'Wide at edges, narrow in the center. Nira vanishes through the gap.',
       preWalls:[
-        // Vertical walls narrowing at row 4
         {anchor:{row:3,col:0},orientation:'V',length:3},{anchor:{row:3,col:1},orientation:'V',length:3},
         {anchor:{row:3,col:7},orientation:'V',length:3},{anchor:{row:3,col:8},orientation:'V',length:3},
-        // Extra horizontal choke
         {anchor:{row:4,col:2},orientation:'H',length:2},{anchor:{row:4,col:5},orientation:'H',length:2},
       ]},
   ],
   9: [
-    { name:'THE PIT', desc:'Walled-off perimeter — tiny 5x5 arena',
+    { bossName:'Ruk', bossTitle:'the Pit Fighter', faction:'Pushers',
+      passiveId:'pushaman', ultimateId:'pushaman', // Chad Aura + Breach
+      stats:{wallLimit:8, handSize:6, cardDraw:5, moveSpeed:1, ultimateCost:4},
+      deck:['PU2','PU2','PU3','PU3','PU4','PU4','PU7','PU9','PU9','PU11','PU12','BB','BB','BB','RC','AV','AV','AV','CB','B07'],
+      boardName:'THE PIT', boardDesc:'A tiny walled arena. Nowhere to hide from Ruk.',
       preWalls:[
-        // Seal rows 0-1 and 7-8
         {anchor:{row:1,col:0},orientation:'H',length:3},{anchor:{row:1,col:3},orientation:'H',length:3},{anchor:{row:1,col:6},orientation:'H',length:2},
         {anchor:{row:6,col:0},orientation:'H',length:3},{anchor:{row:6,col:3},orientation:'H',length:3},{anchor:{row:6,col:6},orientation:'H',length:2},
-        // Seal cols 0-1 and 7-8
         {anchor:{row:2,col:1},orientation:'V',length:2},{anchor:{row:4,col:1},orientation:'V',length:2},
         {anchor:{row:2,col:6},orientation:'V',length:2},{anchor:{row:4,col:6},orientation:'V',length:2},
       ]},
-    { name:'THE LABYRINTH', desc:'Dense permanent walls — every path is a puzzle',
+    { bossName:'Wyrd', bossTitle:'the Timeweaver', faction:'Chronists',
+      passiveId:'vex', ultimateId:'vex', // Echo Chamber + Temporal Fold
+      stats:{wallLimit:9, handSize:8, cardDraw:6, moveSpeed:1, ultimateCost:3},
+      deck:['CH1','CH1','CH3','CH3','CH6','CH6','CH8','CH10','CH12','CH13','BB','BB','BB','RC','RC','AV','AV','CB','B07','B12'],
+      boardName:'THE LABYRINTH', boardDesc:'Dense permanent walls form a puzzle. Wyrd warps time to navigate.',
       preWalls:[
         {anchor:{row:1,col:1},orientation:'H',length:2},{anchor:{row:1,col:5},orientation:'H',length:2},
         {anchor:{row:2,col:3},orientation:'V',length:2},
@@ -2487,14 +2491,16 @@ const GAUNTLET_BOSS_BOARDS = {
       ]},
   ],
   12: [
-    { name:'THE FINAL CORRIDOR', desc:'Deadly narrow with maze walls — no room for error',
+    { bossName:'Ozryn', bossTitle:'the Corridor Lord', faction:'Architects',
+      passiveId:'magnus', ultimateId:'pushaman', // Master Mason walls + Breach teleport
+      stats:{wallLimit:14, handSize:8, cardDraw:6, moveSpeed:1, ultimateCost:4},
+      deck:['AR1','AR1','AR1','AR11','AR15','BB','BB','BB','CB','CB','AR2','AR3','AR5','AR9','RC','RC','AV','AV','B08','B08'],
+      boardName:'THE FINAL CORRIDOR', boardDesc:'A deadly 3-column corridor. Ozryn seals every path.',
       preWalls:[
-        // Narrow to 3 columns
         {anchor:{row:0,col:2},orientation:'V',length:2},{anchor:{row:2,col:2},orientation:'V',length:2},
         {anchor:{row:4,col:2},orientation:'V',length:2},{anchor:{row:6,col:2},orientation:'V',length:2},
         {anchor:{row:0,col:5},orientation:'V',length:2},{anchor:{row:2,col:5},orientation:'V',length:2},
         {anchor:{row:4,col:5},orientation:'V',length:2},{anchor:{row:6,col:5},orientation:'V',length:2},
-        // Staggered chokepoints within the corridor
         {anchor:{row:2,col:3},orientation:'H',length:1},
         {anchor:{row:4,col:3},orientation:'H',length:2},
         {anchor:{row:6,col:3},orientation:'H',length:1},
@@ -2518,10 +2524,10 @@ function generateGauntletMap() {
   const map = [];
   for (let floor = 0; floor <= 12; floor++) {
     if (GAUNTLET_BOSS_STAGES.includes(floor)) {
-      // Boss floors always have exactly 1 node
-      const bossBoards = GAUNTLET_BOSS_BOARDS[floor] || GAUNTLET_BOSS_BOARDS[3];
-      const board = bossBoards[Math.floor(Math.random() * bossBoards.length)];
-      map.push([{ id:`f${floor}_0`, floor, type:'boss', board, connections:[] }]);
+      // Boss floors always have exactly 1 node with a specific named boss
+      const bosses = GAUNTLET_BOSSES[floor] || GAUNTLET_BOSSES[3];
+      const boss = bosses[Math.floor(Math.random() * bosses.length)];
+      map.push([{ id:`f${floor}_0`, floor, type:'boss', boss, connections:[] }]);
     } else if (floor === 0) {
       // Start floor: 1 node
       map.push([{ id:'f0_0', floor:0, type:'battle', connections:[] }]);
@@ -6743,14 +6749,14 @@ function showLandingScreen() {
     </div>
 
     <div style="display:flex;flex-direction:column;gap:12px;width:280px;">
-      ${!_userProfile?.tutorialComplete ? `
+      ${!(_userProfile?.tutorialComplete || _userProfile?.tutorial_complete) ? `
       <button onclick="document.getElementById('landing-overlay').remove();showTutorialMatchIntro(1);"
               class="landing-btn" style="background:rgba(212,144,58,0.15);color:var(--amber);border:2px solid var(--amber);
               font-size:15px;letter-spacing:.2em;box-shadow:0 0 12px rgba(212,144,58,0.2);">
         ⚔ BEGIN TRAINING
       </button>
       <div style="font-size:9px;color:var(--text-dim);text-align:center;cursor:pointer;text-decoration:underline;margin-bottom:8px;"
-           onclick="if(confirm('Skip tutorial? You will not receive the 100 shard reward.')){saveUserProfile({tutorialComplete:true,tutorial_complete:true});if(_userProfile)_userProfile.tutorialComplete=true;document.getElementById('landing-overlay').remove();showLandingScreen();}">SKIP TUTORIAL</div>
+           onclick="if(confirm('Skip tutorial? You will not receive the 100 shard reward.')){saveUserProfile({tutorialComplete:true,tutorial_complete:true});if(_userProfile){_userProfile.tutorialComplete=true;_userProfile.tutorial_complete=true;}document.getElementById('landing-overlay').remove();showLandingScreen();}">SKIP TUTORIAL</div>
       ` : ''}
       <button onclick="document.getElementById('landing-overlay').remove();showGauntletEntry();"
               class="landing-btn" style="background:rgba(224,80,80,0.15);color:#e05050;border:1px solid rgba(224,80,80,0.3);">
@@ -7209,13 +7215,43 @@ function startGauntletNode(nodeId) {
 
   // Combat nodes: show preview first
   const stage = _gauntletRun.stage;
-  const aiRarity = node.type === 'elite' ? (GAUNTLET_AI_RARITY[Math.min(stage + 2, 12)] || 'Uncommon')
-                 : (GAUNTLET_AI_RARITY[stage] || 'Common');
-  const deckStage = node.type === 'elite' ? Math.min(stage + 2, 12) : node.type === 'boss' ? Math.min(stage + 1, 12) : stage;
-  const deckDist = GAUNTLET_AI_DECK_DIST[deckStage] || GAUNTLET_AI_DECK_DIST[1];
-  const deckStr = Object.entries(deckDist).filter(([r,n])=>n>0).map(([r,n])=>`${n} ${r}`).join(', ');
   const nodeType = GAUNTLET_NODE_TYPES[node.type] || GAUNTLET_NODE_TYPES.battle;
-  const boardInfo = (node.type === 'boss' && node.board) ? `<div style="font-size:11px;color:#e05050;margin-top:8px;">Board: ${node.board.name} — ${node.board.desc}</div>` : '';
+
+  let previewBody = '';
+  if (node.type === 'boss' && node.boss) {
+    const b = node.boss;
+    const bossRarity = stage >= 12 ? 'Legendary' : stage >= 9 ? 'Epic' : stage >= 6 ? 'Rare' : 'Uncommon';
+    const rc = bossRarity==='Uncommon'?'#4ade80':bossRarity==='Rare'?'#60a5fa':bossRarity==='Epic'?'#c084fc':'#fbbf24';
+    previewBody = `
+      <div style="font-size:32px;margin-bottom:4px;">☠</div>
+      <div style="font-family:'Teko',sans-serif;font-size:30px;color:#e05050;margin-bottom:2px;">${b.bossName}</div>
+      <div style="font-size:11px;color:#888;letter-spacing:.1em;margin-bottom:12px;">${b.bossTitle}</div>
+      <div style="font-size:12px;color:${rc};margin-bottom:4px;">${bossRarity} · ${b.faction}</div>
+      <div style="font-size:11px;color:#ccc;margin-bottom:2px;">W:${b.stats.wallLimit} H:${b.stats.handSize} D:${b.stats.cardDraw} U:${b.stats.ultimateCost}</div>
+      <div style="font-size:10px;color:var(--amber);margin:6px 0 2px;">${CHAMPIONS[b.passiveId]?.passiveName || ''}</div>
+      <div style="font-size:10px;color:#888;margin-bottom:4px;">${CHAMPIONS[b.passiveId]?.passiveDesc || ''}</div>
+      <div style="font-size:10px;color:#f59e0b;margin-bottom:2px;">⚡ ${CHAMPIONS[b.ultimateId]?.ultimateName || ''}</div>
+      <div style="font-size:10px;color:#888;margin-bottom:8px;">${CHAMPIONS[b.ultimateId]?.ultimateDesc || ''}</div>
+      <div style="background:rgba(224,80,80,0.1);border:1px solid rgba(224,80,80,0.3);padding:8px 12px;margin-bottom:4px;">
+        <div style="font-family:'Teko',sans-serif;font-size:14px;color:#e05050;">${b.boardName}</div>
+        <div style="font-size:10px;color:#aaa;">${b.boardDesc}</div>
+      </div>
+      <div style="font-size:10px;color:#e05050;margin-bottom:4px;">Deck: ${b.deck.length} tailored cards · Hard AI</div>
+    `;
+  } else {
+    const aiRarity = node.type === 'elite' ? (GAUNTLET_AI_RARITY[Math.min(stage + 2, 12)] || 'Uncommon')
+                   : (GAUNTLET_AI_RARITY[stage] || 'Common');
+    const deckStage = node.type === 'elite' ? Math.min(stage + 2, 12) : stage;
+    const deckDist = GAUNTLET_AI_DECK_DIST[deckStage] || GAUNTLET_AI_DECK_DIST[1];
+    const deckStr = Object.entries(deckDist).filter(([r,n])=>n>0).map(([r,n])=>`${n} ${r}`).join(', ');
+    const rc = aiRarity==='Common'?'#aaa':aiRarity==='Uncommon'?'#4ade80':aiRarity==='Rare'?'#60a5fa':aiRarity==='Epic'?'#c084fc':'#fbbf24';
+    previewBody = `
+      <div style="font-size:24px;margin-bottom:4px;">${nodeType.icon}</div>
+      <div style="font-family:'Teko',sans-serif;font-size:26px;color:${nodeType.color};margin-bottom:8px;">${nodeType.label.toUpperCase()} BATTLE</div>
+      <div style="font-size:12px;color:#ccc;margin-bottom:4px;">Enemy: <span style="color:${rc}">${aiRarity}</span> champion</div>
+      <div style="font-size:11px;color:#888;margin-bottom:4px;">Deck: ${deckStr}</div>
+    `;
+  }
 
   // Show preview modal over the map
   document.getElementById('gauntlet-preview')?.remove();
@@ -7223,13 +7259,8 @@ function startGauntletNode(nodeId) {
   preview.id = 'gauntlet-preview';
   preview.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.85);display:flex;align-items:center;justify-content:center;z-index:300;';
   preview.innerHTML = `
-    <div style="background:var(--surface);border:2px solid ${nodeType.color};padding:24px 32px;max-width:380px;text-align:center;">
-      <div style="font-size:24px;margin-bottom:4px;">${nodeType.icon}</div>
-      <div style="font-family:'Teko',sans-serif;font-size:26px;color:${nodeType.color};margin-bottom:8px;">${nodeType.label.toUpperCase()} BATTLE</div>
-      <div style="font-size:12px;color:#ccc;margin-bottom:4px;">Enemy: <span style="color:${aiRarity==='Common'?'#aaa':aiRarity==='Uncommon'?'#4ade80':aiRarity==='Rare'?'#60a5fa':aiRarity==='Epic'?'#c084fc':'#fbbf24'}">${aiRarity}</span> champion</div>
-      <div style="font-size:11px;color:#888;margin-bottom:4px;">Deck: ${deckStr}</div>
-      ${node.type === 'boss' ? '<div style="font-size:11px;color:#e05050;">Counter-faction opponent · Hard AI</div>' : ''}
-      ${boardInfo}
+    <div style="background:var(--surface);border:2px solid ${nodeType.color};padding:24px 32px;max-width:400px;text-align:center;">
+      ${previewBody}
       <div style="display:flex;gap:12px;justify-content:center;margin-top:16px;">
         <button class="landing-btn amber" style="width:140px;" onclick="document.getElementById('gauntlet-preview')?.remove();confirmGauntletNode('${nodeId}');">
           FIGHT
@@ -7255,35 +7286,42 @@ function confirmGauntletNode(nodeId) {
 
 function startGauntletCombat(node) {
   const stage = _gauntletRun.stage;
-  const deckStage = node.type === 'elite' ? Math.min(stage + 2, 12)
-                  : node.type === 'boss' ? Math.min(stage + 1, 12)
-                  : stage;
-  const aiRarity = node.type === 'elite' ? (GAUNTLET_AI_RARITY[Math.min(stage + 2, 12)] || 'Uncommon')
-                 : (GAUNTLET_AI_RARITY[stage] || 'Common');
-
-  // Boss stages: pick counter-faction
-  let preferredFaction = null;
-  if (node.type === 'boss') {
-    preferredFaction = FACTION_COUNTER[_gauntletRun.champion.faction] || null;
-  }
-  const aiChamp = generateChampion(aiRarity, preferredFaction);
-  const aiDeck = buildGauntletAIDeck(deckStage, aiChamp.faction);
 
   // Store node info for board mods
   _gauntletRun._currentNode = node;
   if (_userProfile) saveUserProfile({ gauntlet_run: _gauntletRun });
 
-  initGauntletGame(_gauntletRun.champion, aiChamp, _gauntletRun.deck, aiDeck);
-
-  // Boss: always use hardest AI difficulty
-  if (node.type === 'boss') {
+  // ── BOSS: use the pre-defined boss champion, deck, and board ──
+  if (node.type === 'boss' && node.boss) {
+    const b = node.boss;
+    const bossChamp = {
+      id: 'boss_' + b.bossName.toLowerCase() + '_' + Date.now().toString(36),
+      name: b.bossName, title: b.bossTitle, faction: b.faction,
+      rarity: stage >= 12 ? 'Legendary' : stage >= 9 ? 'Epic' : stage >= 6 ? 'Rare' : 'Uncommon',
+      isGenerated: true,
+      wallLimit: b.stats.wallLimit, handSize: b.stats.handSize,
+      cardDraw: b.stats.cardDraw, moveSpeed: b.stats.moveSpeed,
+      ultimateCost: b.stats.ultimateCost,
+      passiveId: b.passiveId, ultimateId: b.ultimateId,
+      passiveName: CHAMPIONS[b.passiveId]?.passiveName || 'Unknown',
+      passiveDesc: CHAMPIONS[b.passiveId]?.passiveDesc || '',
+      ultimateName: CHAMPIONS[b.ultimateId]?.ultimateName || 'Unknown',
+      ultimateDesc: CHAMPIONS[b.ultimateId]?.ultimateDesc || '',
+    };
+    const bossDeck = b.deck.map(id => ({...CARDS[id]})).filter(Boolean);
+    initGauntletGame(_gauntletRun.champion, bossChamp, _gauntletRun.deck, bossDeck);
     aiDifficulty = 'hard';
+    applyBossBoard({ preWalls: b.preWalls });
+    return;
   }
 
-  // Apply boss board modifiers after init
-  if (node.type === 'boss' && node.board) {
-    applyBossBoard(node.board);
-  }
+  // ── ELITE / REGULAR battles ──
+  const deckStage = node.type === 'elite' ? Math.min(stage + 2, 12) : stage;
+  const aiRarity = node.type === 'elite' ? (GAUNTLET_AI_RARITY[Math.min(stage + 2, 12)] || 'Uncommon')
+                 : (GAUNTLET_AI_RARITY[stage] || 'Common');
+  const aiChamp = generateChampion(aiRarity);
+  const aiDeck = buildGauntletAIDeck(deckStage, aiChamp.faction);
+  initGauntletGame(_gauntletRun.champion, aiChamp, _gauntletRun.deck, aiDeck);
 }
 
 function applyBossBoard(board) {
@@ -7957,7 +7995,7 @@ function showGauntletMap(autoStartNext) {
       const clickHandler = isAvailable ? `onclick="startGauntletNode('${node.id}')"` : '';
       const hoverStyle = isAvailable ? `onmouseover="this.style.transform='scale(1.1)';this.style.boxShadow='0 0 12px ${nodeType.color}40'" onmouseout="this.style.transform='scale(1)';this.style.boxShadow='none'"` : '';
 
-      const bossLabel = node.type === 'boss' && node.board ? `<div style="font-size:8px;color:#e05050;margin-top:2px;">${node.board.name}</div>` : '';
+      const bossLabel = node.type === 'boss' && node.boss ? `<div style="font-size:8px;color:#e05050;margin-top:2px;">${node.boss.bossName}</div>` : '';
 
       html += `<div ${clickHandler} ${hoverStyle} style="
         background:${bg};border:2px solid ${border};padding:8px 14px;min-width:80px;text-align:center;
