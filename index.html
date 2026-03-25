@@ -2429,8 +2429,6 @@ const CARDS = {
         desc:'Move up to 2 spaces this turn. Cannot pass walls.', overrideSpeed:2 },
   QS: { id:'QS', name:'Quick Step',       faction:'Basic', rarity:'Common', type:'Movement',
         desc:'Move 1 space diagonally. Blocked by walls.', overrideSpeed:1, diagonal:true },
-  SW: { id:'SW', name:'Swift Leap',       faction:'Basic', rarity:'Rare',     type:'Movement',
-        desc:'Gain +1 move and may jump over the opponent this turn.', overrideSpeed:2 },
   WS: { id:'WS', name:'Wind Sprint',      faction:'Pathfinders', rarity:'Uncommon',     type:'Movement',
         desc:'Move up to 2 spaces this turn. May pass through your own walls.', overrideSpeed:2, ownWallsPassthrough:true },
   B07:{ id:'B07', name:'Undermine',       faction:'Basic', rarity:'Uncommon', type:'Disruption',
@@ -2471,16 +2469,14 @@ const CARDS = {
          desc:'Place a 1-tile reinforced permanent wall. All your walls within 2 tiles become reinforced for 3 turns.', wallLen:1, reinforced:true, special:'keystone' },
   AR12:{ id:'AR12',name:'Controlled Collapse', faction:'Architects', rarity:'Uncommon', type:'Disruption',
          desc:'Demolish one of your own walls. If reinforced: place two 2-tile walls. If not reinforced: place one 2-tile wall.' },
-  AR13:{ id:'AR13',name:'Mortar Bond',     faction:'Architects', rarity:'Common',   type:'Disruption',
-         desc:'Merge two of your adjacent walls into one (combined tile length). Frees 1 wall slot.' },
+  AR13:{ id:'AR13',name:'Mortar Bond',     faction:'Architects', rarity:'Rare',   type:'Disruption',
+         desc:'Fuse ALL your adjacent same-orientation walls into one. Frees 1 wall slot per fusion.' },
   AR15:{ id:'AR15',name:'The Grand Design', faction:'Architects', rarity:'Legendary', type:'Wall',
          desc:'Place a 3-tile reinforced wall. Up to 2 of your other walls become permanently reinforced and gain +1 tile each.', wallLen:3, reinforced:true, special:'grandDesign' },
 
   // ── PATHFINDERS ──────────────────────────────────────────────────────
   PF1: { id:'PF1', name:'Momentum',     faction:'Pathfinders', rarity:'Uncommon',   type:'Movement',
          desc:'Gain +2 orthogonal moves this turn.', overrideSpeed:3 },
-  PF2: { id:'PF2', name:'Leap',         faction:'Pathfinders', rarity:'Rare',       type:'Movement',
-         desc:'Gain +1 move and may jump over the opponent even if not adjacent.', overrideSpeed:2 },
   PF3: { id:'PF3', name:'Shortcut',     faction:'Pathfinders', rarity:'Uncommon', type:'Movement',
          desc:'Move 1 space diagonally. May slip through the crack between two adjacent walls.', overrideSpeed:1, special:'shortcut' },
   PF4: { id:'PF4', name:'Eternal Path', faction:'Pathfinders', rarity:'Rare',     type:'Movement',
@@ -2571,9 +2567,9 @@ const CARDS = {
   PU8: { id:'PU8', name:'Bulldoze',       faction:'Pushers', rarity:'Rare',     type:'Movement',
          desc:'Move up to 3 spaces in a straight line. Push any champion in your path ahead. Walls stop both.', overrideSpeed:3, special:'bulldoze' },
   PU9: { id:'PU9', name:'Displacement Wall', faction:'Pushers', rarity:'Uncommon', type:'Wall',
-         desc:'Place a 2-tile wall. Push opponent 2 spaces toward their starting row. Walls block.', wallLen:2, special:'displacementWall' },
+         desc:'Place a 2-tile wall. Push opponent 1 space toward their starting row. Walls block.', wallLen:2, special:'displacementWall' },
   PU11:{ id:'PU11',name:'Wrecking Ball',  faction:'Pushers', rarity:'Rare',     type:'Movement',
-         desc:'Move 3 spaces. If you run into the opponent, push them 3 spaces in your movement direction. Pushed into wall = wall shrunk by 1.', overrideSpeed:3, special:'wreckingBall' },
+         desc:'Choose a cardinal direction. Move up to 3 spaces in a straight line. If you hit the opponent, push them 3 spaces. Pushed into wall = wall shrunk by 1.', overrideSpeed:3, special:'wreckingBall' },
   PU12:{ id:'PU12',name:'Seismic Slam',   faction:'Pushers', rarity:'Legendary', type:'Disruption',
          desc:'Push opponent 4 spaces in chosen direction. Place 1-tile wall behind them in each vacated tile. Walls stop push.' },
 
@@ -2658,7 +2654,7 @@ function buildStarterDeck(faction) {
 
 // ── State ───────────────────────────────────────────────────────────
 let gameState = null;
-let uiMode = 'idle';       // 'idle' | 'move' | 'wall' | 'wallPick' | 'wallRedirect' | 'wallSeal' | 'wallPunch' | 'wallReinforce' | 'wallReconstruct' | 'wallRepossess' | 'wallRepurpose' | 'wallShrink' | 'wallFortify' | 'grappleDir' | 'grappleTarget'
+let uiMode = 'idle';       // 'idle' | 'move' | 'wall' | 'wallPick' | 'wallRedirect' | 'wallSeal' | 'wallPunch' | 'wallReinforce' | 'wallReconstruct' | 'wallRepossess' | 'wallRepurpose' | 'wallShrink' | 'wallFortify' | 'grappleDir' | 'grappleTarget' | 'wreckingBallDir' | 'bulldozeDir'
 let wallOrientation = 'H';
 let selectedCard = null;   // {id, idx, length, isPhantom, isDurable} or null
 let hasMoved = false;       // whether champion has moved this turn
@@ -3259,6 +3255,14 @@ function executeMove(to) {
     if (!gameState._nyxTrail) gameState._nyxTrail = [null, null];
     gameState._nyxTrail[pi] = { pos: { row: from.row, col: from.col }, turnsRemaining: 1 };
     addLog(pi, 'passive', 'Illusory Trail: previous position lingers for one turn');
+  }
+
+  // PH16 False Trail: place a decoy at the pre-move position after moving
+  if (gameState._falseTrailPending === pi) {
+    gameState._falseTrailPending = null;
+    if (!gameState._falseTrail) gameState._falseTrail = [null, null];
+    gameState._falseTrail[pi] = { pos: { row: from.row, col: from.col }, turnsRemaining: 1 };
+    addLog(pi, 'card', `False Trail: decoy placed at (${from.row},${from.col})`);
   }
 
 
@@ -4025,7 +4029,7 @@ function triggerTrap(trap, targetPi) {
   // Visual trigger animation (brief flash at tile)
   showTrapTriggerAnimation(trap.tile);
   // Show prominent UI notification
-  const _trapNames = {snare:'SNARE TRAP',pit:'PIT TRAP',root:'TANGLEROOT',spring:'SPRING TRAP',mine:'PROXIMITY MINE'};
+  const _trapNames = {snare:'SNARE TRAP',pit:'PIT TRAP',root:'TANGLEROOT',spring:'SPRING TRAP',mine:'PROXIMITY MINE',deadEnd:'DEAD END TRAP'};
   showTrapNotification(_trapNames[trap.type] || 'TRAP', trap.type);
 
   let effect = '';
@@ -4103,6 +4107,39 @@ function triggerTrap(trap, targetPi) {
       } else {
         addLog(trap.owner, 'trap', 'Proximity mine triggered but no nearby walls to damage');
         effect = 'mine_no_target';
+      }
+      break;
+    }
+
+    case 'deadEnd': {
+      // Spawn a 1-tile wall at the trap location (nearest legal position)
+      effect = 'movement_stop'; // also stops movement like snare
+      const owner = trap.owner;
+      const p = gameState.players[owner];
+      if (p.wallsInPlay < p.wallLimitCurrent) {
+        // Try horizontal then vertical orientation at the trap tile
+        let placed = false;
+        for (const orient of ['H', 'V']) {
+          if (wallInBounds(trap.tile, orient, 1) &&
+              isWallLegal(trap.tile, orient, 1, gameState.walls,
+                gameState.players[0].position, gameState.players[1].position, false)) {
+            const wallId = gameState.nextWallId++;
+            gameState.walls.push({
+              id: wallId, anchor: {...trap.tile}, orientation: orient, length: 1,
+              owner, isPhantom: false, placedOnTurn: gameState.turnNumber
+            });
+            gameState.players[owner] = {...gameState.players[owner],
+              wallsInPlay: gameState.players[owner].wallsInPlay + 1};
+            addLog(owner, 'trap', `Dead End trap triggered — 1-tile wall spawned at (${trap.tile.row},${trap.tile.col})!`);
+            placed = true;
+            break;
+          }
+        }
+        if (!placed) {
+          addLog(owner, 'trap', 'Dead End trap triggered — no legal wall position, movement stopped');
+        }
+      } else {
+        addLog(owner, 'trap', 'Dead End trap triggered — wall limit reached, movement stopped');
       }
       break;
     }
@@ -5805,13 +5842,48 @@ async function runAI() {
     if (cardIdx === -1) {
       // Card no longer in hand — skip
     } else if (kind === 'movement') {
-      // Execute movement card: discard it and use the boosted move destination
-      discardCard(pi, cardIdx);
-      countCardPlayed(pi);
-      addLog(pi, 'card', 'AI played: ' + card.name);
-      // Override best move with the card's boost
-      if (bestCardAction.dest) {
-        bestMoveDest = bestCardAction.dest;
+      // Direction-based movement cards: AI picks best direction
+      if (card.special === 'wreckingBall' || card.special === 'bulldoze') {
+        const dirs = ['N','S','W','E'];
+        const DMAP = {N:{r:-1,c:0},S:{r:1,c:0},W:{r:0,c:-1},E:{r:0,c:1}};
+        const oppGoalRow = 0; // opponent (seat 0) wants row 0
+        let bestDir = null, bestScore = -Infinity;
+        for (const dir of dirs) {
+          const d = DMAP[dir];
+          // Simulate: moving in this direction gets AI closer to goal (row BOARD_SIZE-1)
+          let simPos = {...st.aiPos};
+          const blocked = buildBlockedEdges(st.walls, pi);
+          for (let s = 1; s <= 3; s++) {
+            const next = {row: simPos.row+d.r, col: simPos.col+d.c};
+            if (next.row<0||next.row>=BOARD_SIZE||next.col<0||next.col>=BOARD_SIZE) break;
+            if (isEdgeBlocked(simPos, next, blocked)) break;
+            if (next.row===st.oppPos.row&&next.col===st.oppPos.col) {
+              simPos = {row: simPos.row, col: simPos.col}; // stop before opp
+              break;
+            }
+            simPos = next;
+          }
+          const score = (simPos.row - st.aiPos.row) * 10 + // closer to goal (row 8)
+            (simPos.row === st.oppPos.row+d.r && simPos.col === st.oppPos.col+d.c ? 5 : 0); // pushing bonus
+          if (score > bestScore) { bestScore = score; bestDir = dir; }
+        }
+        if (bestDir) {
+          addLog(pi, 'card', 'AI played: ' + card.name);
+          gameState._wreckingBallState = { pi, cardIdx };
+          gameState._bulldozeState = { pi, cardIdx };
+          uiMode = card.special === 'wreckingBall' ? 'wreckingBallDir' : 'bulldozeDir';
+          if (card.special === 'wreckingBall') wreckingBallFireDir(bestDir);
+          else bulldozeFireDir(bestDir);
+        }
+      } else {
+        // Standard movement card: discard it and use the boosted move destination
+        discardCard(pi, cardIdx);
+        countCardPlayed(pi);
+        addLog(pi, 'card', 'AI played: ' + card.name);
+        // Override best move with the card's boost
+        if (bestCardAction.dest) {
+          bestMoveDest = bestCardAction.dest;
+        }
       }
     } else if (kind === 'wall' || kind === 'phantom') {
       discardCard(pi, cardIdx);
@@ -6668,6 +6740,8 @@ function resetTurnState() {
   gameState._temporalMazeReady = null;      // Clear Temporal Maze MP clickable flag
   gameState._wallRide = false;              // Clear Wall Ride flag
   gameState._grappleState = null;           // Clear Grapple Hook state
+  gameState._wreckingBallState = null;     // Clear Wrecking Ball state
+  gameState._bulldozeState = null;         // Clear Bulldoze state
   gameState._shortcutTargets = null;          // Clear Shortcut targets
   gameState._emergencyBarrierBonusTargets = null; // Clear Emergency Barrier bonus targets
   gameState._wallVaultActive = false;        // Clear Wall Vault flag
@@ -6791,6 +6865,24 @@ function selectCard(cardId, idx) {
     uiMode = 'idle';
     renderAll();
     showStatus('Grapple Hook cancelled', '');
+    return;
+  }
+  // Wrecking Ball cancel
+  if (selectedCard && selectedCard.id === 'PU11' && uiMode === 'wreckingBallDir') {
+    gameState._wreckingBallState = null;
+    selectedCard = null;
+    uiMode = 'idle';
+    renderAll();
+    showStatus('Wrecking Ball cancelled', '');
+    return;
+  }
+  // Bulldoze cancel
+  if (selectedCard && selectedCard.id === 'PU8' && uiMode === 'bulldozeDir') {
+    gameState._bulldozeState = null;
+    selectedCard = null;
+    uiMode = 'idle';
+    renderAll();
+    showStatus('Bulldoze cancelled', '');
     return;
   }
   // Different card clicked while a wall/pick mode is pending: cancel (wall budget not yet counted).
@@ -7427,44 +7519,26 @@ function onWallPlaced(pi, fromCardId, _wasDelayedCard) {
       gameState.walls = gameState.walls.map(w =>
         w.id === gdWall.id ? {...w, reinforced:true, immune:true, permanent:true} : w
       );
-      // Find up to 2 owned non-reinforced walls to buff
       const candidates = gameState.walls.filter(w =>
         w.id !== gdWall.id && w.owner === pi && !w.isPhantom && !w.reinforced
       );
+
+      // Human player: interactive wall picker for up to 2 walls
+      if (isHumanSeat(pi) && candidates.length > 0) {
+        gameState._grandDesignPicks = 0;
+        gameState._grandDesignMaxPicks = Math.min(2, candidates.length);
+        gameState._grandDesignGdWallId = gdWall.id;
+        uiMode = 'wallGrandDesign';
+        renderAll();
+        showStatus(`Grand Design — click up to ${gameState._grandDesignMaxPicks} of your walls to reinforce + extend (or click board to skip)`, 'active');
+        return; // Don't continue to wallLenMismatch check below
+      }
+
+      // AI: auto-pick up to 2
       let buffed = 0;
       for (const target of candidates) {
         if (buffed >= 2) break;
-        // Try extending by +1 tile (from end first, then start)
-        const newLen = target.length + 1;
-        const testWalls = gameState.walls.filter(w => w.id !== target.id);
-        let extended = false;
-        if (wallInBounds(target.anchor, target.orientation, newLen) &&
-            isWallLegal(target.anchor, target.orientation, newLen, testWalls,
-              gameState.players[0].position, gameState.players[1].position, false)) {
-          gameState.walls = gameState.walls.map(w =>
-            w.id === target.id ? {...w, length: newLen, reinforced:true, immune:true, permanent:true} : w
-          );
-          extended = true;
-        } else {
-          // Try extending from the other end
-          const altAnchor = target.orientation === 'H'
-            ? {row: target.anchor.row, col: target.anchor.col - 1}
-            : {row: target.anchor.row - 1, col: target.anchor.col};
-          if (wallInBounds(altAnchor, target.orientation, newLen) &&
-              isWallLegal(altAnchor, target.orientation, newLen, testWalls,
-                gameState.players[0].position, gameState.players[1].position, false)) {
-            gameState.walls = gameState.walls.map(w =>
-              w.id === target.id ? {...w, anchor: altAnchor, length: newLen, reinforced:true, immune:true, permanent:true} : w
-            );
-            extended = true;
-          }
-        }
-        if (!extended) {
-          // Can't extend, but still reinforce
-          gameState.walls = gameState.walls.map(w =>
-            w.id === target.id ? {...w, reinforced:true, immune:true, permanent:true} : w
-          );
-        }
+        grandDesignBuffWall(target.id);
         buffed++;
       }
       if (buffed > 0)
@@ -7545,7 +7619,7 @@ function onWallPlaced(pi, fromCardId, _wasDelayedCard) {
       if (isAdjacent) {
         const oppStartRow = opp === 0 ? BOARD_SIZE - 1 : 0;
         const pushDir = oppStartRow > oppPos.row ? DIR.DOWN : DIR.UP;
-        const r = executeForceMove(opp, pushDir, 2);
+        const r = executeForceMove(opp, pushDir, 1);
         if (r.spacesMoved > 0) addLog(pi, 'card', `Displacement Wall: pushed opponent ${r.spacesMoved} toward start!`);
       } else {
         addLog(pi, 'card', 'Displacement Wall: opponent not adjacent — no push');
@@ -7596,26 +7670,35 @@ function onWallPlaced(pi, fromCardId, _wasDelayedCard) {
     }
   }
 
-  // TR11 Dead End: place traps on adjacent tiles that spawn walls when triggered
+  // TR11 Dead End: place deadEnd traps on adjacent tiles that spawn 1-tile walls when triggered
   if (fromCardId === 'TR11') {
     const lastWall = gameState.walls[gameState.walls.length - 1];
     if (lastWall) {
       let placed = 0;
-      for (let dr = -1; dr <= 1; dr++) {
-        for (let dc = -1; dc <= 1; dc++) {
-          if (dr === 0 && dc === 0) continue;
-          for (let i = 0; i < lastWall.length; i++) {
-            const baseR = lastWall.orientation === 'V' ? lastWall.anchor.row + i : lastWall.anchor.row + dr;
-            const baseC = lastWall.orientation === 'H' ? lastWall.anchor.col + i : lastWall.anchor.col + dc;
-            const t = {row: baseR, col: baseC};
-            if (t.row >= 0 && t.row < BOARD_SIZE && t.col >= 0 && t.col < BOARD_SIZE) {
-              const r = placeTrap(pi, t, 'snare', 3);
-              if (r.success) placed++;
-            }
+      // Place traps at the ends of the wall (not all around it)
+      const endTiles = [];
+      if (lastWall.orientation === 'H') {
+        // Tiles at each end of horizontal wall
+        for (const dc of [-1, lastWall.length]) {
+          for (const dr of [0, 1]) {
+            endTiles.push({row: lastWall.anchor.row + dr, col: lastWall.anchor.col + dc});
+          }
+        }
+      } else {
+        // Tiles at each end of vertical wall
+        for (const dr of [-1, lastWall.length]) {
+          for (const dc of [0, 1]) {
+            endTiles.push({row: lastWall.anchor.row + dr, col: lastWall.anchor.col + dc});
           }
         }
       }
-      addLog(pi, 'card', `Dead End: ${placed} traps around wall`);
+      for (const t of endTiles) {
+        if (t.row >= 0 && t.row < BOARD_SIZE && t.col >= 0 && t.col < BOARD_SIZE) {
+          const r = placeTrap(pi, t, 'deadEnd', 3);
+          if (r.success) placed++;
+        }
+      }
+      addLog(pi, 'card', `Dead End: ${placed} wall-spawn traps placed`);
     }
   }
 
@@ -7818,6 +7901,26 @@ function applyMovementCard(pi, card, idx) {
     return;
   }
 
+  // PU11 Wrecking Ball: direction-picker UI — straight-line move with push
+  if (card.id === 'PU11') {
+    selectedCard = { id: 'PU11', idx, _pendingMove: false, _wreckingBallCardIdx: idx };
+    gameState._wreckingBallState = { pi, cardIdx: idx };
+    uiMode = 'wreckingBallDir';
+    renderAll();
+    showStatus('Wrecking Ball — click a direction arrow (N/S/W/E), or click the card to cancel', 'active');
+    return;
+  }
+
+  // PU8 Bulldoze: direction-picker UI — straight-line move with push on contact
+  if (card.id === 'PU8') {
+    selectedCard = { id: 'PU8', idx, _pendingMove: false, _bulldozeCardIdx: idx };
+    gameState._bulldozeState = { pi, cardIdx: idx };
+    uiMode = 'bulldozeDir';
+    renderAll();
+    showStatus('Bulldoze — click a direction arrow (N/S/W/E), or click the card to cancel', 'active');
+    return;
+  }
+
   // PF12 Slipstream: flag for post-move bonus-move check (no wall phasing)
   if (card.id === 'PF12') { gameState._slipstreamActive = true; gameState._slipstreamCard = true; }
   // B01 Detour: allow all 8 directions (diagonal + orthogonal)
@@ -7915,6 +8018,218 @@ function grappleExecute() {
   }
   if (isTurnDone()) gameState.phase='end_turn';
   renderAll(); showStatus('Grapple Hook: landed!','success');
+}
+
+// ── Grand Design wall buff helper ─────────────────────────────────────
+function grandDesignBuffWall(wallId) {
+  const target = gameState.walls.find(w => w.id === wallId);
+  if (!target) return;
+  const newLen = target.length + 1;
+  const testWalls = gameState.walls.filter(w => w.id !== target.id);
+  let extended = false;
+  if (wallInBounds(target.anchor, target.orientation, newLen) &&
+      isWallLegal(target.anchor, target.orientation, newLen, testWalls,
+        gameState.players[0].position, gameState.players[1].position, false)) {
+    gameState.walls = gameState.walls.map(w =>
+      w.id === target.id ? {...w, length: newLen, reinforced:true, immune:true, permanent:true} : w);
+    extended = true;
+  } else {
+    const altAnchor = target.orientation === 'H'
+      ? {row: target.anchor.row, col: target.anchor.col - 1}
+      : {row: target.anchor.row - 1, col: target.anchor.col};
+    if (wallInBounds(altAnchor, target.orientation, newLen) &&
+        isWallLegal(altAnchor, target.orientation, newLen, testWalls,
+          gameState.players[0].position, gameState.players[1].position, false)) {
+      gameState.walls = gameState.walls.map(w =>
+        w.id === target.id ? {...w, anchor: altAnchor, length: newLen, reinforced:true, immune:true, permanent:true} : w);
+      extended = true;
+    }
+  }
+  if (!extended) {
+    gameState.walls = gameState.walls.map(w =>
+      w.id === target.id ? {...w, reinforced:true, immune:true, permanent:true} : w);
+  }
+  addLog(gameState.activePlayer, 'card', `Grand Design: wall ${extended ? 'extended and ' : ''}reinforced!`);
+}
+
+function handleGrandDesignWallClick(wallId) {
+  if (uiMode !== 'wallGrandDesign') return;
+  const pi = gameState.activePlayer;
+  const wall = gameState.walls.find(w => w.id === wallId);
+  if (!wall || wall.owner !== pi || wall.isPhantom || wall.reinforced) return;
+  if (wall.id === gameState._grandDesignGdWallId) return;
+
+  grandDesignBuffWall(wallId);
+  gameState._grandDesignPicks = (gameState._grandDesignPicks || 0) + 1;
+
+  if (gameState._grandDesignPicks >= gameState._grandDesignMaxPicks) {
+    // Done picking
+    gameState._grandDesignPicks = null;
+    gameState._grandDesignMaxPicks = null;
+    gameState._grandDesignGdWallId = null;
+    uiMode = 'idle';
+    if (isTurnDone()) gameState.phase = 'end_turn';
+    renderAll(); showStatus('Grand Design complete!', 'success');
+  } else {
+    const remaining = gameState._grandDesignMaxPicks - gameState._grandDesignPicks;
+    renderAll();
+    showStatus(`Grand Design — ${remaining} more wall(s) to pick, or click empty space to finish`, 'active');
+  }
+}
+
+function finishGrandDesign() {
+  if (uiMode !== 'wallGrandDesign') return;
+  gameState._grandDesignPicks = null;
+  gameState._grandDesignMaxPicks = null;
+  gameState._grandDesignGdWallId = null;
+  uiMode = 'idle';
+  if (isTurnDone()) gameState.phase = 'end_turn';
+  renderAll(); showStatus('Grand Design complete!', 'success');
+}
+
+// ── Wrecking Ball helpers ─────────────────────────────────────────────
+function wreckingBallFireDir(dir) {
+  const pi = gameState.activePlayer;
+  if (!gameState._wreckingBallState || uiMode !== 'wreckingBallDir') return;
+  const myPos = gameState.players[pi].position;
+  const opp = 1 - pi;
+  const oppPos = gameState.players[opp].position;
+  const DIRS = { N:{r:-1,c:0}, S:{r:1,c:0}, W:{r:0,c:-1}, E:{r:0,c:1} };
+  const d = DIRS[dir]; if (!d) return;
+  const blocked = buildBlockedEdges(gameState.walls, pi);
+  const maxSteps = 3;
+
+  let finalPos = {...myPos};
+  let hitOpp = false;
+  for (let step = 1; step <= maxSteps; step++) {
+    const next = {row: myPos.row + d.r*step, col: myPos.col + d.c*step};
+    if (next.row < 0 || next.row >= BOARD_SIZE || next.col < 0 || next.col >= BOARD_SIZE) break;
+    const prev = {row: myPos.row + d.r*(step-1), col: myPos.col + d.c*(step-1)};
+    if (isEdgeBlocked(prev, next, blocked)) break;
+    if (next.row === oppPos.row && next.col === oppPos.col) {
+      hitOpp = true;
+      finalPos = {...prev}; // stop one tile before opponent
+      break;
+    }
+    finalPos = next;
+  }
+  // If didn't move at all and didn't hit opponent, direction is blocked
+  if (finalPos.row === myPos.row && finalPos.col === myPos.col && !hitOpp) {
+    showStatus(`Wrecking Ball: can't move ${dir} — blocked!`, 'error');
+    return;
+  }
+
+  const { cardIdx } = gameState._wreckingBallState;
+  if (cardIdx !== undefined && cardIdx >= 0) {
+    discardCard(pi, cardIdx);
+    countCardPlayed(pi);
+  }
+
+  if (hitOpp) {
+    // Move to the tile just before opponent
+    gameState.players[pi] = {...gameState.players[pi], position: finalPos};
+    // Push opponent 3 spaces in the same direction
+    const pushResult = executeForceMove(opp, d, 3);
+    if (pushResult.stoppedBy === 'wall') {
+      // Shrink the wall that stopped the push
+      const wallPos = {row: pushResult.finalPos.row + d.r, col: pushResult.finalPos.col + d.c};
+      const hitWall = gameState.walls.find(w =>
+        wallEdges(w).some(e => edgeKey(e.a, e.b) === edgeKey(pushResult.finalPos, wallPos)));
+      if (hitWall && !hitWall.reinforced && !hitWall.immune) {
+        shrinkWall(hitWall.id, 'end');
+        addLog(pi, 'card', 'Wrecking Ball: wall damaged on collision!');
+      }
+    }
+    addLog(pi, 'card', `Wrecking Ball: pushed opponent ${pushResult.spacesMoved} space(s) ${dir}!`);
+  } else {
+    gameState.players[pi] = {...gameState.players[pi], position: finalPos};
+    addLog(pi, 'card', `Wrecking Ball: charged ${dir} to (${finalPos.row},${finalPos.col})`);
+  }
+  hasMoved = true;
+
+  gameState._wreckingBallState = null; selectedCard = null; uiMode = 'idle';
+  const goalRow = pi === 0 ? 0 : BOARD_SIZE - 1;
+  if (finalPos.row === goalRow) {
+    gameState.winner = pi; gameState.phase = 'ended';
+    addLog(pi, 'system', `PLAYER ${pi} WINS via Wrecking Ball!`);
+    renderAll(); showVictory(pi); return;
+  }
+  if (isTurnDone()) gameState.phase = 'end_turn';
+  renderAll(); showStatus('Wrecking Ball: impact!', 'success');
+}
+
+// ── Bulldoze helpers ─────────────────────────────────────────────────
+function bulldozeFireDir(dir) {
+  const pi = gameState.activePlayer;
+  if (!gameState._bulldozeState || uiMode !== 'bulldozeDir') return;
+  const myPos = gameState.players[pi].position;
+  const opp = 1 - pi;
+  const oppPos = gameState.players[opp].position;
+  const DIRS = { N:{r:-1,c:0}, S:{r:1,c:0}, W:{r:0,c:-1}, E:{r:0,c:1} };
+  const d = DIRS[dir]; if (!d) return;
+  const blocked = buildBlockedEdges(gameState.walls, pi);
+  const maxSteps = 3;
+
+  let finalPos = {...myPos};
+  let pushingOpp = false;
+  let oppCurrentPos = {...oppPos};
+
+  for (let step = 1; step <= maxSteps; step++) {
+    const next = {row: finalPos.row + d.r, col: finalPos.col + d.c};
+    if (next.row < 0 || next.row >= BOARD_SIZE || next.col < 0 || next.col >= BOARD_SIZE) break;
+    if (isEdgeBlocked(finalPos, next, blocked)) break;
+
+    if (pushingOpp) {
+      // Check if opponent can move forward too
+      const oppNext = {row: oppCurrentPos.row + d.r, col: oppCurrentPos.col + d.c};
+      if (oppNext.row < 0 || oppNext.row >= BOARD_SIZE || oppNext.col < 0 || oppNext.col >= BOARD_SIZE) break;
+      const oppBlocked = buildBlockedEdges(gameState.walls, opp);
+      if (isEdgeBlocked(oppCurrentPos, oppNext, oppBlocked)) break; // wall stops both
+      oppCurrentPos = oppNext;
+      finalPos = next;
+    } else if (next.row === oppPos.row && next.col === oppPos.col) {
+      // Contact! Start pushing from here
+      pushingOpp = true;
+      const oppNext = {row: oppCurrentPos.row + d.r, col: oppCurrentPos.col + d.c};
+      if (oppNext.row < 0 || oppNext.row >= BOARD_SIZE || oppNext.col < 0 || oppNext.col >= BOARD_SIZE) break;
+      const oppBlocked = buildBlockedEdges(gameState.walls, opp);
+      if (isEdgeBlocked(oppCurrentPos, oppNext, oppBlocked)) break; // wall stops both
+      oppCurrentPos = oppNext;
+      finalPos = next;
+    } else {
+      finalPos = next;
+    }
+  }
+
+  if (finalPos.row === myPos.row && finalPos.col === myPos.col) {
+    showStatus(`Bulldoze: can't move ${dir} — blocked!`, 'error');
+    return;
+  }
+
+  const { cardIdx } = gameState._bulldozeState;
+  if (cardIdx !== undefined && cardIdx >= 0) {
+    discardCard(pi, cardIdx);
+    countCardPlayed(pi);
+  }
+
+  gameState.players[pi] = {...gameState.players[pi], position: finalPos};
+  if (pushingOpp) {
+    gameState.players[opp] = {...gameState.players[opp], position: oppCurrentPos};
+    addLog(pi, 'card', `Bulldoze: charged ${dir}, pushing opponent to (${oppCurrentPos.row},${oppCurrentPos.col})`);
+  } else {
+    addLog(pi, 'card', `Bulldoze: charged ${dir} to (${finalPos.row},${finalPos.col})`);
+  }
+  hasMoved = true;
+
+  gameState._bulldozeState = null; selectedCard = null; uiMode = 'idle';
+  const goalRow = pi === 0 ? 0 : BOARD_SIZE - 1;
+  if (finalPos.row === goalRow) {
+    gameState.winner = pi; gameState.phase = 'ended';
+    addLog(pi, 'system', `PLAYER ${pi} WINS via Bulldoze!`);
+    renderAll(); showVictory(pi); return;
+  }
+  if (isTurnDone()) gameState.phase = 'end_turn';
+  renderAll(); showStatus('Bulldoze: charge complete!', 'success');
 }
 
 // ── Disruption card handler ───────────────────────────────────────────
@@ -8147,39 +8462,43 @@ async function applyDisruptionCard(pi, card, idx) {
     return;
   }
 
-  // ── AR13: Mortar Bond — merge 2 adjacent walls ──
+  // ── AR13: Mortar Bond — fuse ALL adjacent same-orientation walls ──
   if (card.id === 'AR13') {
     const myWalls = gameState.walls.filter(w => w.owner === pi && !w.isPhantom);
     if (myWalls.length < 2) { showStatus('Need at least 2 walls to merge', 'error'); return; }
-    // Auto-merge: find first pair of adjacent same-orientation walls
-    let merged = false;
-    for (let i = 0; i < myWalls.length && !merged; i++) {
-      for (let j = i+1; j < myWalls.length && !merged; j++) {
-        const a = myWalls[i], b = myWalls[j];
-        if (a.orientation !== b.orientation) continue;
-        // Check adjacency: same orientation, touching end-to-end
-        const touching = a.orientation === 'H'
-          ? (a.anchor.row === b.anchor.row && (a.anchor.col + a.length === b.anchor.col || b.anchor.col + b.length === a.anchor.col))
-          : (a.anchor.col === b.anchor.col && (a.anchor.row + a.length === b.anchor.row || b.anchor.row + b.length === a.anchor.row));
-        if (!touching) continue;
-        // Merge: keep the one with lower anchor, extend length
-        const minAnchor = a.orientation === 'H'
-          ? (a.anchor.col < b.anchor.col ? a : b)
-          : (a.anchor.row < b.anchor.row ? a : b);
-        const newLen = a.length + b.length;
-        const otherId = minAnchor.id === a.id ? b.id : a.id;
-        gameState.walls = gameState.walls
-          .filter(w => w.id !== otherId)
-          .map(w => w.id === minAnchor.id ? {...w, length: newLen} : w);
-        gameState.players[pi] = {...gameState.players[pi], wallsInPlay: Math.max(0, gameState.players[pi].wallsInPlay - 1)};
-        addLog(pi, 'card', `Mortar Bond: merged 2 walls into ${newLen}-tile wall, freed 1 wall slot`);
-        merged = true;
+    // Repeatedly merge adjacent same-orientation walls until no more pairs found
+    let totalFusions = 0;
+    let changed = true;
+    while (changed) {
+      changed = false;
+      const curWalls = gameState.walls.filter(w => w.owner === pi && !w.isPhantom);
+      for (let i = 0; i < curWalls.length && !changed; i++) {
+        for (let j = i+1; j < curWalls.length && !changed; j++) {
+          const a = curWalls[i], b = curWalls[j];
+          if (a.orientation !== b.orientation) continue;
+          const touching = a.orientation === 'H'
+            ? (a.anchor.row === b.anchor.row && (a.anchor.col + a.length === b.anchor.col || b.anchor.col + b.length === a.anchor.col))
+            : (a.anchor.col === b.anchor.col && (a.anchor.row + a.length === b.anchor.row || b.anchor.row + b.length === a.anchor.row));
+          if (!touching) continue;
+          const minAnchor = a.orientation === 'H'
+            ? (a.anchor.col < b.anchor.col ? a : b)
+            : (a.anchor.row < b.anchor.row ? a : b);
+          const newLen = a.length + b.length;
+          const otherId = minAnchor.id === a.id ? b.id : a.id;
+          gameState.walls = gameState.walls
+            .filter(w => w.id !== otherId)
+            .map(w => w.id === minAnchor.id ? {...w, length: newLen} : w);
+          gameState.players[pi] = {...gameState.players[pi], wallsInPlay: Math.max(0, gameState.players[pi].wallsInPlay - 1)};
+          totalFusions++;
+          changed = true;
+        }
       }
     }
-    if (!merged) { showStatus('No adjacent walls found to merge', 'error'); return; }
+    if (totalFusions === 0) { showStatus('No adjacent walls found to merge', 'error'); return; }
+    addLog(pi, 'card', `Mortar Bond: ${totalFusions} fusion(s), freed ${totalFusions} wall slot(s)`);
     discardCard(pi, idx); selectedCard = null; countCardPlayed(pi);
     if (isTurnDone()) gameState.phase = 'end_turn';
-    renderAll(); showStatus('Mortar Bond: walls merged!', 'success'); return;
+    renderAll(); showStatus('Mortar Bond: walls fused!', 'success'); return;
   }
 
   // ── PF11: Pathfinder's Instinct — reveal top 2, keep all Movement cards ──
@@ -8510,10 +8829,8 @@ async function applyDisruptionCard(pi, card, idx) {
 
   // ── PH16: False Trail — phantom trail on previous position ──
   if (card.id === 'PH16') {
-    const myPos = gameState.players[pi].position;
-    // Set a Nyx-like trail that shows a fake champion marker
-    if (!gameState._falseTrail) gameState._falseTrail = [null, null];
-    gameState._falseTrail[pi] = {pos: {...myPos}, turnsRemaining: 1};
+    // Set flag: after next move, place a decoy at the pre-move position
+    gameState._falseTrailPending = pi;
     addLog(pi, 'card', 'False Trail: phantom marker will appear at your position after you move');
     discardCard(pi, idx); selectedCard = null; countCardPlayed(pi);
     if (isTurnDone()) gameState.phase = 'end_turn';
@@ -9577,6 +9894,16 @@ function maybeAIUltimate(pi) {
     if (t.turnsRemaining <= 0) gameState._nyxTrail[nyxOppSeat] = null;
   }
 
+  // False Trail: decrement for the OPPONENT's seat (same timing as Nyx trail)
+  const ftOppSeat = 1 - pi;
+  if (gameState._falseTrail && gameState._falseTrail[ftOppSeat]) {
+    const ft = gameState._falseTrail[ftOppSeat];
+    ft.turnsRemaining--;
+    if (ft.turnsRemaining <= 0) gameState._falseTrail[ftOppSeat] = null;
+  }
+  // Clear pending false trail if turn ends without moving
+  if (gameState._falseTrailPending === pi) gameState._falseTrailPending = null;
+
   // Trailblazer's Mark: tick down turnsLeft for this player's mark each turn they end
   if (gameState._trailMarks) {
     gameState._trailMarks = gameState._trailMarks.filter(m => {
@@ -9967,6 +10294,7 @@ function renderBoard() {
       if (isLegal) cell.onclick = () => handleCellClick(r, c);
       else if (isTrapTarget) cell.onclick = () => handleTrapPlaceClick(r, c);
       else if (isGrappleTarget) cell.onclick = () => grappleExecute();
+      else if (uiMode === 'wallGrandDesign') cell.onclick = () => finishGrandDesign();
       grid.appendChild(cell);
     }
   }
@@ -10021,14 +10349,47 @@ function renderBoard() {
         }
       }
     }
+
+    // PH16 False Trail: show decoy to opponent; show ghost echo to owner
+    const ftTrail = gameState._falseTrail && gameState._falseTrail[pi];
+    const ftActive = ftTrail && ftTrail.turnsRemaining > 0;
+    if (ftActive) {
+      const ftCell = grid.children[ftTrail.pos.row * BOARD_SIZE + ftTrail.pos.col];
+      if (ftCell) {
+        if (isOpponentPerspective) {
+          // Opponent sees the decoy as a real piece
+          const decoy = document.createElement('div');
+          decoy.className = `champion-piece p${pi} nyx-ghost`;
+          decoy.textContent = gameState.players[pi].champion.name[0];
+          ftCell.appendChild(decoy);
+        } else {
+          // Owner sees a faint echo so they know the decoy is there
+          const echo = document.createElement('div');
+          echo.className = `champion-piece p${pi} nyx-trail-echo`;
+          echo.textContent = gameState.players[pi].champion.name[0];
+          ftCell.appendChild(echo);
+        }
+      }
+    }
   }
 
   // ── Grapple Hook: cardinal direction arrows ─────────────────────────
   {
     const ov = document.getElementById('wall-overlay');
     const existSvg = ov?.querySelector('svg.grapple-svg');
-    if (uiMode==='grappleDir' && gameState._grappleState && ov) {
-      const p2  = gameState.players[gameState._grappleState.pi].position;
+    // Shared direction arrow renderer for grappleDir, wreckingBallDir, bulldozeDir
+    const dirMode = uiMode === 'grappleDir' ? 'grapple'
+                  : uiMode === 'wreckingBallDir' ? 'wreckingBall'
+                  : uiMode === 'bulldozeDir' ? 'bulldoze' : null;
+    const dirState = dirMode === 'grapple' ? gameState._grappleState
+                   : dirMode === 'wreckingBall' ? gameState._wreckingBallState
+                   : dirMode === 'bulldoze' ? gameState._bulldozeState : null;
+    const dirColor = dirMode === 'grapple' ? '#22c55e' : dirMode === 'wreckingBall' ? '#ef4444' : '#f59e0b';
+    const dirCallback = dirMode === 'grapple' ? 'grappleFireDir'
+                      : dirMode === 'wreckingBall' ? 'wreckingBallFireDir'
+                      : dirMode === 'bulldoze' ? 'bulldozeFireDir' : null;
+    if (dirMode && dirState && ov) {
+      const p2  = gameState.players[dirState.pi].position;
       const stp = CELL+GAP;
       const cx  = p2.col*stp + CELL/2, cy = p2.row*stp + CELL/2;
       const R   = CELL*0.78;
@@ -10042,11 +10403,11 @@ function renderBoard() {
       svg.className.baseVal='grapple-svg';
       svg.setAttribute('width','100%'); svg.setAttribute('height','100%');
       svg.style.cssText='position:absolute;top:0;left:0;pointer-events:none;overflow:visible;z-index:20;';
-      svg.innerHTML=`<defs><marker id="gh-arr" markerWidth="7" markerHeight="7" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="#22c55e"/></marker></defs>`
+      svg.innerHTML=`<defs><marker id="gh-arr" markerWidth="7" markerHeight="7" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="${dirColor}"/></marker></defs>`
         +arrs.map(a=>`
-          <line x1="${cx}" y1="${cy}" x2="${a.ex}" y2="${a.ey}" stroke="#22c55e" stroke-width="2.5" stroke-opacity="0.7" marker-end="url(#gh-arr)" pointer-events="none"/>
-          <circle cx="${a.ex}" cy="${a.ey}" r="11" fill="#22c55e" fill-opacity="0.18" stroke="#22c55e" stroke-width="1.8" style="cursor:pointer;pointer-events:auto;" onclick="grappleFireDir('${a.d}')"/>
-          <text x="${a.lx}" y="${a.ly}" fill="#22c55e" font-size="10" font-family="JetBrains Mono,monospace" text-anchor="middle" font-weight="bold" pointer-events="none">${a.d}</text>`).join('');
+          <line x1="${cx}" y1="${cy}" x2="${a.ex}" y2="${a.ey}" stroke="${dirColor}" stroke-width="2.5" stroke-opacity="0.7" marker-end="url(#gh-arr)" pointer-events="none"/>
+          <circle cx="${a.ex}" cy="${a.ey}" r="11" fill="${dirColor}" fill-opacity="0.18" stroke="${dirColor}" stroke-width="1.8" style="cursor:pointer;pointer-events:auto;" onclick="${dirCallback}('${a.d}')"/>
+          <text x="${a.lx}" y="${a.ly}" fill="${dirColor}" font-size="10" font-family="JetBrains Mono,monospace" text-anchor="middle" font-weight="bold" pointer-events="none">${a.d}</text>`).join('');
       if (existSvg) existSvg.replaceWith(svg); else ov.appendChild(svg);
     } else if (uiMode!=='grappleTarget') {
       existSvg?.remove();
@@ -10064,7 +10425,7 @@ function renderWalls() {
   if (!layer) return;
   layer.innerHTML = '';
   // Toggle pick-mode class to enable/disable clicks
-  if (uiMode === 'wallPick' || uiMode === 'wallRedirect' || uiMode === 'wallSeal' || uiMode === 'wallPunch' || uiMode === 'wallReinforce' || uiMode === 'wallReconstruct' || uiMode === 'wallRepossess' || uiMode === 'wallRepurpose' || uiMode === 'wallShrink' || uiMode === 'wallFortify') {
+  if (uiMode === 'wallPick' || uiMode === 'wallRedirect' || uiMode === 'wallSeal' || uiMode === 'wallPunch' || uiMode === 'wallReinforce' || uiMode === 'wallReconstruct' || uiMode === 'wallRepossess' || uiMode === 'wallRepurpose' || uiMode === 'wallShrink' || uiMode === 'wallFortify' || uiMode === 'wallGrandDesign') {
     layer.classList.add('pick-mode');
   } else {
     layer.classList.remove('pick-mode');
@@ -10086,6 +10447,7 @@ function renderWalls() {
     const isShrinkable      = uiMode === 'wallShrink'      && wall.owner !== gameState.activePlayer && !wall.isPhantom && !wall.reinforced && !wall.immune
                               && (!gameState._vaultShrinkWalls || gameState._vaultShrinkWalls.includes(wall.id));
     const isFortifiable     = uiMode === 'wallFortify'     && wall.owner === gameState.activePlayer && !wall.isPhantom && !wall.reinforced && wall.length < 3;
+    const isGrandDesignPick = uiMode === 'wallGrandDesign' && wall.owner === gameState.activePlayer && !wall.isPhantom && !wall.reinforced && wall.id !== gameState._grandDesignGdWallId;
     // Owner of a phantom wall sees it with a distinct teal tint
     const localPlayer = (gameMode === 'mp') ? mp_localSeat : 0;
     const isOwnPhantom = wall.isPhantom && wall.owner === localPlayer;
@@ -10107,6 +10469,7 @@ function renderWalls() {
     if (isRepurposeable)   cls += ' wall-pickable wall-repossessable';
     if (isShrinkable)       cls += ' wall-pickable wall-shrinkable';
     if (isFortifiable)      cls += ' wall-pickable wall-fortifiable';
+    if (isGrandDesignPick)  cls += ' wall-pickable wall-reinforceable';
     el.className = cls;
     Object.assign(el.style, wallVisualPos(wall));
 
@@ -10185,6 +10548,10 @@ function renderWalls() {
     if (isFortifiable) {
       el.style.cursor = 'pointer';
       el.addEventListener('click', () => pickWallForFortify(wall));
+    }
+    if (isGrandDesignPick) {
+      el.style.cursor = 'pointer';
+      el.addEventListener('click', () => handleGrandDesignWallClick(wall.id));
     }
     if (isPunchable) {
       // Render each tile as a separate hoverable/clickable segment
