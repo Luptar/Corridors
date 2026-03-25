@@ -3034,10 +3034,11 @@ const TUTORIAL_MATCHES = {
        playerStart:{row:5,col:4}, aiStart:{row:3,col:4},
        playerChampion:'soren', aiChampion:'magnus',
        skipDraw:true, fixedHand:false, skipUltimate:true, playerGoesFirst:true },
-  2: { title:'CARDS & COMBAT', subtitle:'Playing Your Hand',
-       playerStart:{row:6,col:4}, aiStart:{row:1,col:4},
+  2: { title:'CARDS & COMBAT', subtitle:'Walls Win the Race',
+       playerStart:{row:3,col:4}, aiStart:{row:7,col:4},
        playerChampion:'soren', aiChampion:'magnus',
-       skipDraw:false, fixedHand:true, skipUltimate:true, playerGoesFirst:true },
+       skipDraw:false, fixedHand:true, skipUltimate:true, playerGoesFirst:true,
+       aiAggressive:true },
   3: { title:'YOUR CHAMPION', subtitle:'Passives, Ultimates & Full Play',
        playerStart:{row:8,col:4}, aiStart:{row:0,col:4},
        playerChampion:null, aiChampion:'soren',
@@ -3193,12 +3194,13 @@ function initTutorialMatch(matchNum) {
     gameState.players[1].deck = [];
   }
 
-  // Match 2: fixed curated hand for player
+  // Match 2: fixed curated hand — player needs walls to block the aggressive AI
   if (cfg.fixedHand) {
-    gameState.players[0].hand = ['BB','BB','BB','BB','AV','AV','AV','RC','RC','QS']
+    gameState.players[0].hand = ['BB','BB','BB','BB','BB','AV','AV','RC']
       .map(id => ({...CARDS[id]})).filter(Boolean);
     gameState.players[0].deck = [];
-    gameState.players[1].hand = ['BB','BB'].map(id => ({...CARDS[id]})).filter(Boolean);
+    // AI gets a small hand (walls only) but will mostly just rush forward
+    gameState.players[1].hand = ['BB'].map(id => ({...CARDS[id]})).filter(Boolean);
     gameState.players[1].deck = [];
     gameState.phase = 'action';
     gameState.firstDraw = [false, false];
@@ -6728,30 +6730,52 @@ function showLandingScreen() {
 // ── TUTORIAL SYSTEM ──────────────────────────────────────────────────
 // ════════════════════════════════════════════════════════════════════
 
-// ── Tutorial AI: intentionally weak, NEVER advances toward goal ─────
+// ── Tutorial AI ─────────────────────────────────────────────────────
 async function runTutorialAI() {
   const pi = AI_PLAYER;
   const ai = gameState.players[pi];
   const matchNum = _tutorialState?.currentMatch || 1;
+  const cfg = _tutorialState?.matchConfig;
 
   // Thinking delay
   await new Promise(r => setTimeout(r, 600 + Math.random() * 400));
   if (gameState.phase !== 'action' || gameState.activePlayer !== pi) return;
 
-  // Match 2+: occasionally play a basic wall card (20% chance)
-  if (matchNum >= 2 && ai.hand.length > 0 && Math.random() < 0.2) {
-    const wallIdx = ai.hand.findIndex(c => c.type === 'Wall' && !c.phantom);
-    if (wallIdx >= 0 && ai.wallsInPlay < ai.wallLimitCurrent) {
-      tutorialAIPlaceWall(pi);
+  // Match 2 aggressive AI: rush toward goal row (BOARD_SIZE-1 = row 8)
+  if (cfg?.aiAggressive) {
+    const goalRow = BOARD_SIZE - 1;
+    const legalMoves = getLegalMoves(gameState, pi);
+    // Prefer moves that get closer to the goal row
+    const forwardMoves = legalMoves.filter(m => m.row > ai.position.row);
+    const sidewaysMoves = legalMoves.filter(m => m.row === ai.position.row);
+    let pick;
+    if (forwardMoves.length > 0) {
+      // Pick the move closest to center column (col 4) for a direct path
+      forwardMoves.sort((a, b) => Math.abs(a.col - 4) - Math.abs(b.col - 4));
+      pick = forwardMoves[0];
+    } else if (sidewaysMoves.length > 0) {
+      pick = sidewaysMoves[Math.floor(Math.random() * sidewaysMoves.length)];
     }
-  }
+    if (pick) {
+      gameState.players[pi] = { ...gameState.players[pi], position: pick };
+    }
+  } else {
+    // Match 1 & 3: weak AI, never advances toward goal
+    // Match 3+: occasionally play a basic wall card (20% chance)
+    if (matchNum >= 3 && ai.hand.length > 0 && Math.random() < 0.2) {
+      const wallIdx = ai.hand.findIndex(c => c.type === 'Wall' && !c.phantom);
+      if (wallIdx >= 0 && ai.wallsInPlay < ai.wallLimitCurrent) {
+        tutorialAIPlaceWall(pi);
+      }
+    }
 
-  // Movement: ONLY sideways or backward (never toward row 8 / AI goal)
-  const legalMoves = getLegalMoves(gameState, pi);
-  const safeMoves = legalMoves.filter(m => m.row <= ai.position.row);
-  if (safeMoves.length > 0) {
-    const pick = safeMoves[Math.floor(Math.random() * safeMoves.length)];
-    gameState.players[pi] = { ...gameState.players[pi], position: pick };
+    // Movement: ONLY sideways or backward (never toward AI goal)
+    const legalMoves = getLegalMoves(gameState, pi);
+    const safeMoves = legalMoves.filter(m => m.row <= ai.position.row);
+    if (safeMoves.length > 0) {
+      const pick = safeMoves[Math.floor(Math.random() * safeMoves.length)];
+      gameState.players[pi] = { ...gameState.players[pi], position: pick };
+    }
   }
 
   // End turn — must clear aiThinking BEFORE calling endTurn()
@@ -6801,9 +6825,9 @@ function queueTutorialTooltips(matchNum) {
     ];
   } else if (matchNum === 2) {
     _tutorialState.tooltipQueue = [
-      { title:'YOUR HAND', text:'You now have cards! Look at the bottom of the screen — those are your cards. Each turn you can MOVE and play ONE card.' },
-      { title:'CARD TYPES', text:'WALL cards (like Basic Barrier) place walls to block your opponent. MOVEMENT cards (like Advance) give extra movement. DISRUPTION cards remove or modify walls.' },
-      { title:'PLAYING A CARD', text:'Click a card in your hand to select it, then follow the on-screen prompt. Remember: Soren can move twice OR move once and play a card each turn.' },
+      { title:'DANGER!', text:'Your opponent is only ONE step from winning! You must place WALLS to block their path while racing to the goal yourself. Look at the cards in your hand.' },
+      { title:'WALL CARDS', text:'Click a Basic Barrier card, then click on the board to place a 2-tile wall. Walls block movement — use them to force your opponent on a longer path!' },
+      { title:'THE RACE', text:'Each turn: MOVE toward row 0 and PLAY A CARD to slow your opponent. Soren can move once and play a card, or move twice without a card. Walls are your best weapon here!' },
     ];
   } else if (matchNum === 3) {
     _tutorialState.tooltipQueue = [
