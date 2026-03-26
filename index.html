@@ -2361,6 +2361,12 @@ const FACTION_AI = {
   Chronists:   { moveBonus: 1,  wallBonus: 2,  aggression: 1.0, control: 1.0 },
 };
 
+// ── ELO & Balance Constants ──────────────────────────────────────────
+const ELO_K = 32;
+const ELO_DEFAULT = 1000;
+const RARITY_POWER_WEIGHT = { Common:1, Uncommon:2, Rare:4, Legendary:8 };
+const TYPE_POWER_WEIGHT   = { Wall:1.0, Movement:1.2, Disruption:1.5 };
+
 // ── Faction adjacency wheel (for champion generation weighting) ──────
 const FACTION_WHEEL = ['Architects','Pathfinders','Wardens','Phantoms','Pushers','Trappers','Chronists'];
 function getAdjacentFactions(faction) {
@@ -2526,6 +2532,18 @@ const GAUNTLET_BOSSES = {
         {anchor:{row:6,col:3},orientation:'H',length:1},
       ]},
   ],
+};
+
+// ── MP Board Variants (reuse boss board wall definitions) ───────────
+const MP_BOARD_VARIANTS = {
+  standard:  { name:'Standard',     desc:'Classic 9×9 board',              rows:9, cols:9, preWalls:[] },
+  narrow:    { name:'The Narrow',    desc:'5-column corridor',             rows:9, cols:9, preWalls: GAUNTLET_BOSSES[3][0].preWalls },
+  maze:      { name:'The Maze',      desc:'Staggered walls force detours', rows:9, cols:9, preWalls: GAUNTLET_BOSSES[3][1].preWalls },
+  cage:      { name:'The Cage',      desc:'Walled box in the center',      rows:9, cols:9, preWalls: GAUNTLET_BOSSES[6][0].preWalls },
+  funnel:    { name:'The Funnel',    desc:'Wide edges, narrow middle',     rows:9, cols:9, preWalls: GAUNTLET_BOSSES[6][1].preWalls },
+  pit:       { name:'The Pit',       desc:'Tiny walled-in arena',          rows:9, cols:9, preWalls: GAUNTLET_BOSSES[9][0].preWalls },
+  labyrinth: { name:'The Labyrinth', desc:'Dense permanent walls',         rows:9, cols:9, preWalls: GAUNTLET_BOSSES[9][1].preWalls },
+  corridor:  { name:'The Corridor',  desc:'Deadly 3-column gauntlet',      rows:9, cols:9, preWalls: GAUNTLET_BOSSES[12][0].preWalls },
 };
 
 // ── Branching Path Map Generator ────────────────────────────────────
@@ -6759,6 +6777,7 @@ function showLandingScreen() {
   overlay.innerHTML = `
     <div class="landing-user-bar">
       <span class="landing-username">⬡ ${username}</span>
+      <span style="color:#888;font-size:10px;letter-spacing:.1em;">ELO ${_userProfile?.elo || ELO_DEFAULT}</span>
       <span class="landing-shards">◆ ${shards.toLocaleString()} SHARDS</span>
       <button class="landing-logout" onclick="authLogout()">SIGN OUT</button>
     </div>
@@ -7652,6 +7671,7 @@ function startGauntletStage() {
 // ── Gauntlet Victory ────────────────────────────────────────────────
 async function showGauntletVictory(winner) {
   if (!_gauntletRun) return;
+  saveGameRecordUnified(winner, 'gauntlet', null); // Log gauntlet match
   const stage = _gauntletRun.stage;
   const currentNode = _gauntletRun.currentNodeId ? gauntletGetNode(_gauntletRun.currentNodeId) : null;
   const isBoss = currentNode ? currentNode.type === 'boss' : GAUNTLET_BOSS_STAGES.includes(stage);
@@ -13553,6 +13573,124 @@ async function saveGameRecord(record) {
   }
 }
 
+// ── ELO System ──────────────────────────────────────────────────────
+function calculateElo(winnerElo, loserElo) {
+  const expectedWin = 1 / (1 + Math.pow(10, (loserElo - winnerElo) / 400));
+  const expectedLose = 1 - expectedWin;
+  return {
+    newWinner: Math.round(winnerElo + ELO_K * (1 - expectedWin)),
+    newLoser:  Math.round(loserElo  + ELO_K * (0 - expectedLose)),
+  };
+}
+
+async function updateEloAfterMatch(winnerId, loserId) {
+  const sb = mpInit();
+  if (!sb || !winnerId || !loserId) return;
+  try {
+    const { data: wData } = await sb.from('user_profiles').select('elo, mp_wins, mp_losses, mp_games_played').eq('id', winnerId).single();
+    const { data: lData } = await sb.from('user_profiles').select('elo, mp_wins, mp_losses, mp_games_played').eq('id', loserId).single();
+    if (!wData || !lData) return;
+    const { newWinner, newLoser } = calculateElo(wData.elo || ELO_DEFAULT, lData.elo || ELO_DEFAULT);
+    await sb.from('user_profiles').update({
+      elo: newWinner, mp_wins: (wData.mp_wins || 0) + 1,
+      mp_games_played: (wData.mp_games_played || 0) + 1,
+    }).eq('id', winnerId);
+    await sb.from('user_profiles').update({
+      elo: newLoser, mp_losses: (lData.mp_losses || 0) + 1,
+      mp_games_played: (lData.mp_games_played || 0) + 1,
+    }).eq('id', loserId);
+    // Update local profile if we're one of the players
+    if (_userProfile && _authUser?.id === winnerId) {
+      _userProfile.elo = newWinner;
+      _userProfile.mp_wins = (wData.mp_wins || 0) + 1;
+    } else if (_userProfile && _authUser?.id === loserId) {
+      _userProfile.elo = newLoser;
+      _userProfile.mp_losses = (lData.mp_losses || 0) + 1;
+    }
+    console.log(`[ELO] ${newWinner} (winner) / ${newLoser} (loser)`);
+  } catch(e) { console.warn('[ELO] Update failed:', e); }
+}
+
+// ── Deck Power Score ────────────────────────────────────────────────
+function calculateDeckPowerScore(cardIds) {
+  if (!cardIds || !cardIds.length) return 0;
+  let score = 0;
+  for (const id of cardIds) {
+    const card = CARDS[id];
+    if (!card) continue;
+    score += (RARITY_POWER_WEIGHT[card.rarity] || 1) * (TYPE_POWER_WEIGHT[card.type] || 1);
+  }
+  return Math.round(score * 10) / 10;
+}
+
+function renderDeckPowerBadge(score) {
+  const tier = score >= 40 ? 'Legendary' : score >= 25 ? 'Rare' : score >= 15 ? 'Uncommon' : 'Common';
+  const color = tier === 'Legendary' ? '#fbbf24' : tier === 'Rare' ? '#60a5fa' : tier === 'Uncommon' ? '#4ade80' : '#aaa';
+  return `<span style="display:inline-block;padding:2px 6px;font-size:9px;letter-spacing:.08em;
+    color:${color};border:1px solid ${color}40;margin-left:6px;">PWR ${score}</span>`;
+}
+
+// ── Unified Match Logger ────────────────────────────────────────────
+function buildGameRecordV2(winner, mode, mpGameId) {
+  const base = buildGameRecord(winner);
+  const p0Deck = gameState.players[0].deck.map(c => c.id || c).concat(gameState.players[0].hand.map(c => c.id || c));
+  const p1Deck = gameState.players[1].deck.map(c => c.id || c).concat(gameState.players[1].hand.map(c => c.id || c));
+  return {
+    ...base,
+    game_mode: mode || gameMode,
+    mp_game_id: mpGameId || null,
+    board_variant: 'standard', // Will be overridden if boss/custom board
+    p0_user_id: _authUser?.id || null,
+    p1_user_id: null, // AI in SP/gauntlet; set by caller for MP
+    p0_deck_score: calculateDeckPowerScore(p0Deck),
+    p1_deck_score: calculateDeckPowerScore(p1Deck),
+    p0_faction: gameState.players[0].champion.faction,
+    p1_faction: gameState.players[1].champion.faction,
+    p0_champion: gameState.players[0].champion.name,
+    p1_champion: gameState.players[1].champion.name,
+  };
+}
+
+async function saveGameRecordToSupabase(record) {
+  const sb = mpInit();
+  if (!sb) return;
+  try {
+    await sb.from('match_records').insert({
+      game_mode: record.game_mode,
+      mp_game_id: record.mp_game_id,
+      difficulty: record.difficulty,
+      turns: record.turns,
+      winner_seat: record.winner === 'player' ? 0 : 1,
+      board_variant: record.board_variant || 'standard',
+      p0_user_id: record.p0_user_id,
+      p0_champion: record.p0_champion || record.player?.championName,
+      p0_faction: record.p0_faction || record.player?.faction,
+      p0_moves: record.player?.moves,
+      p0_walls: record.player?.wallsPlaced,
+      p0_cards: record.player?.cardsPlayed,
+      p0_card_names: record.player?.cardNames,
+      p0_deck_score: record.p0_deck_score,
+      p1_user_id: record.p1_user_id,
+      p1_champion: record.p1_champion || record.ai?.championName,
+      p1_faction: record.p1_faction || record.ai?.faction,
+      p1_moves: record.ai?.moves,
+      p1_walls: record.ai?.wallsPlaced,
+      p1_cards: record.ai?.cardsPlayed,
+      p1_card_names: record.ai?.cardNames,
+      p1_deck_score: record.p1_deck_score,
+      total_walls: record.totalWalls,
+    });
+    console.log('[MATCH] Record saved to Supabase');
+  } catch(e) { console.warn('[MATCH] Supabase save failed:', e); }
+}
+
+async function saveGameRecordUnified(winner, mode, mpGameId) {
+  const record = buildGameRecordV2(winner, mode, mpGameId);
+  saveGameRecord(record); // localStorage (fire-and-forget)
+  saveGameRecordToSupabase(record); // Supabase (fire-and-forget)
+  return record;
+}
+
 function showVictory(winner) {
   // ── Tutorial mode: use tutorial victory display ──
   if (gameMode === 'tutorial') { showTutorialVictory(winner); return; }
@@ -13571,8 +13709,7 @@ function showVictory(winner) {
   }
 
   // ── SP mode ──
-  const record = buildGameRecord(winner);
-  saveGameRecord(record); // async, fire-and-forget
+  saveGameRecordUnified(winner, 'sp', null); // saves to both localStorage + Supabase
 
   const overlay = document.getElementById('victory-overlay');
   if (!overlay) return;
@@ -13838,6 +13975,8 @@ let mp_lobbyInterval = null; // polling interval for lobby
 let mp_isMultiplayer = false; // true when in a multiplayer game
 let mp_opponentName = null;
 let mp_myChampId = null;    // champion id for local player
+let mp_hostUserId = null;   // Supabase user id of host
+let mp_guestUserId = null;  // Supabase user id of guest
 let mp_oppChampId = null;   // champion id for opponent
 let mp_pollInterval = null; // fallback polling interval
 let _mp_lastProcessedTurn = -1; // dedup: prevent polling + realtime both firing
@@ -14511,7 +14650,7 @@ async function mpResumeGame(gameId) {
 
 // ── Core: Launch multiplayer game ────────────────────────────────────
 // oppHand: optional — only populated when local player is Thorne (Warden's Stare passive)
-function mpLaunchGame(gameId, localSeat, myChampId, oppChampId, oppName, myHand, sharedState, myDeck, oppHand) {
+function mpLaunchGame(gameId, localSeat, myChampId, oppChampId, oppName, myHand, sharedState, myDeck, oppHand, hostId, guestId) {
   mp_gameId = gameId;
   mp_localSeat = localSeat;
   mp_isMultiplayer = true;
@@ -14519,6 +14658,8 @@ function mpLaunchGame(gameId, localSeat, myChampId, oppChampId, oppName, myHand,
   mp_opponentName = oppName;
   mp_myChampId = myChampId;
   mp_oppChampId = oppChampId;
+  mp_hostUserId = hostId || null;
+  mp_guestUserId = guestId || null;
   _mp_lastProcessedTurn = -1;
   gameMode = 'mp';
 
@@ -15032,6 +15173,17 @@ function mpShowVictory(winner) {
   const vt = document.getElementById('v-turns'); if (vt) vt.textContent = gameState?.turnNumber || '?';
   const vw = document.getElementById('v-walls'); if (vw) vw.textContent = (gameState?.walls?.filter(w => !w.isPhantom).length || 0);
 
+  // ── Log match + ELO update (only winner writes to prevent double-write) ──
+  if (!_mpVictoryIssued) {
+    saveGameRecordUnified(winner, 'mp', mp_gameId);
+    if (iWon && _authUser) {
+      // Winner writes ELO for both players
+      const winnerId = winner === 0 ? mp_hostUserId : mp_guestUserId;
+      const loserId = winner === 0 ? mp_guestUserId : mp_hostUserId;
+      if (winnerId && loserId) updateEloAfterMatch(winnerId, loserId);
+    }
+  }
+
   // ── Issue and display card rewards if logged in — only once per game ──
   if (_userProfile && !_mpVictoryIssued) {
     _mpVictoryIssued = true;
@@ -15175,6 +15327,7 @@ async function authRegister(username, password) {
   const { error: profileError } = await sb.from('user_profiles').insert({
     id: userId, username: trimmed, shards: 0, collection: {}, decks: [],
     roster: [], daily_roll_date: null, tutorial_complete: false,
+    elo: ELO_DEFAULT, mp_wins: 0, mp_losses: 0, mp_games_played: 0,
     stats: { gamesPlayed:0, gamesWon:0, shardsEarned:0, championsGenerated:0 },
   });
   if (profileError) throw new Error('Profile creation failed: ' + profileError.message);
@@ -15182,6 +15335,7 @@ async function authRegister(username, password) {
   _authUser    = data.user;
   _userProfile = { id: userId, username: trimmed, shards: 0, collection: {}, decks: [],
     roster: [], dailyRollDate: null, tutorialComplete: false,
+    elo: ELO_DEFAULT, mp_wins: 0, mp_losses: 0, mp_games_played: 0,
     stats: { gamesPlayed:0, gamesWon:0, shardsEarned:0, championsGenerated:0 } };
   _userName    = trimmed;
   localStorage.setItem('corridors:userName', trimmed);
@@ -15237,11 +15391,16 @@ async function loadUserProfile() {
   // Merge defaults for forward compatibility (new fields not yet in DB)
   _userProfile = {
     roster: [], dailyRollDate: null, tutorialComplete: false,
+    elo: ELO_DEFAULT, mp_wins: 0, mp_losses: 0, mp_games_played: 0,
     stats: { gamesPlayed:0, gamesWon:0, shardsEarned:0, championsGenerated:0 },
     ...data,
     // Supabase uses snake_case; normalize to camelCase
     dailyRollDate: data.daily_roll_date ?? data.dailyRollDate ?? null,
     tutorialComplete: data.tutorial_complete ?? data.tutorialComplete ?? false,
+    elo: data.elo ?? ELO_DEFAULT,
+    mp_wins: data.mp_wins ?? 0,
+    mp_losses: data.mp_losses ?? 0,
+    mp_games_played: data.mp_games_played ?? 0,
   };
   // Resume Gauntlet run if one exists
   if (_userProfile.gauntlet_run) _gauntletRun = _userProfile.gauntlet_run;
