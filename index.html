@@ -6856,10 +6856,6 @@ function showLandingScreen() {
               class="landing-btn" style="background:rgba(96,165,250,0.1);color:#60a5fa;border:1px solid rgba(96,165,250,0.3);">
         👥 FRIENDS
       </button>
-      <button onclick="document.getElementById('landing-overlay').remove();showMultiplayerLobby('leaderboard');"
-              class="landing-btn muted" style="font-size:12px;">
-        🏆 LEADERBOARD
-      </button>
       <button onclick="document.getElementById('landing-overlay').remove();showPlayerProfile(_authUser?.id);"
               class="landing-btn muted" style="font-size:12px;">
         ⬡ MY PROFILE
@@ -14349,18 +14345,37 @@ function mpDeckOptClick(containerId, idx, total) {
 }
 
 function mpRenderCreateTab(content) {
-  const champCards = Object.values(CHAMPIONS).map(c => `
-    <div class="cs-card" id="mpc-${c.id}" onclick="mpSelectChamp('${c.id}')" style="padding:12px 14px;">
-      <div class="cs-champ-name" style="font-size:20px;">${c.name}</div>
+  const roster = _userProfile?.roster || [];
+  const rarityColor = r => r==='Common'?'#aaa':r==='Uncommon'?'#4ade80':r==='Rare'?'#60a5fa':r==='Epic'?'#c084fc':r==='Legendary'?'#fbbf24':'#ccc';
+
+  if (!roster.length) {
+    content.innerHTML = `
+      ${mpNameInput('create')}
+      <hr class="mp-divider">
+      <div style="text-align:center;padding:30px;color:#888;">
+        <div style="font-family:'Teko',sans-serif;font-size:22px;color:var(--amber);margin-bottom:8px;">NO CHAMPIONS AVAILABLE</div>
+        <div style="font-size:12px;margin-bottom:16px;">Multiplayer requires roster champions. Earn them through the Shop or Gauntlet.</div>
+        <div style="font-size:10px;color:#555;">Champions are permanently lost if you lose a ranked match (permadeath).</div>
+      </div>
+    `;
+    return;
+  }
+
+  const champCards = roster.map(c => {
+    const rc = rarityColor(c.rarity);
+    return `<div class="cs-card" id="mpc-${c.id}" onclick="mpSelectChamp('${c.id}')" style="padding:12px 14px;border:2px solid ${rc};">
+      <div style="font-size:9px;color:${rc};letter-spacing:.1em;">${c.rarity.toUpperCase()}</div>
+      <div class="cs-champ-name" style="font-size:20px;color:${rc};">${c.name}</div>
       <div class="cs-champ-title" style="font-size:10px;">${c.title}</div>
       <div class="cs-faction" style="font-size:9px;margin-top:3px;">${c.faction}</div>
-    </div>
-  `).join('');
+      <div style="font-size:9px;color:#888;margin-top:2px;">W:${c.wallLimit} H:${c.handSize} D:${c.cardDraw} U:${c.ultimateCost}</div>
+    </div>`;
+  }).join('');
 
   content.innerHTML = `
     ${mpNameInput('create')}
     <hr class="mp-divider">
-    <div class="mp-section-label">Choose Your Champion</div>
+    <div class="mp-section-label">Choose Your Champion <span style="font-size:9px;color:#e05050;font-weight:normal;">PERMADEATH — lose a ranked match and your champion is destroyed</span></div>
     <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:20px;" id="mpc-grid">
       ${champCards}
     </div>
@@ -14436,9 +14451,10 @@ function mpSelectChamp(id) {
   document.querySelectorAll('[id^="mpc-"]').forEach(el => el.classList.remove('selected'));
   const card = document.getElementById('mpc-' + id);
   if (card) card.classList.add('selected');
+  const champ = resolveChampion(id);
   const btn = document.getElementById('mp-create-btn');
-  if (btn) {
-    btn.textContent = `CREATE GAME AS ${CHAMPIONS[id].name.toUpperCase()} →`;
+  if (btn && champ) {
+    btn.textContent = `CREATE GAME AS ${champ.name.toUpperCase()} →`;
     btn.disabled = false;
   }
   // Populate deck picker
@@ -14528,13 +14544,19 @@ function mpCopyInvite(url, el) {
 
 // ── Join Tab ─────────────────────────────────────────────────────────
 function mpRenderJoinTab(content) {
-  const champCards = Object.values(CHAMPIONS).map(c => `
-    <div class="cs-card" id="mpj-${c.id}" onclick="mpSelectJoinChamp('${c.id}')" style="padding:12px 14px;">
-      <div class="cs-champ-name" style="font-size:20px;">${c.name}</div>
+  const roster = _userProfile?.roster || [];
+  const rarityColor = r => r==='Common'?'#aaa':r==='Uncommon'?'#4ade80':r==='Rare'?'#60a5fa':r==='Epic'?'#c084fc':r==='Legendary'?'#fbbf24':'#ccc';
+
+  const champCards = roster.length ? roster.map(c => {
+    const rc = rarityColor(c.rarity);
+    return `<div class="cs-card" id="mpj-${c.id}" onclick="mpSelectJoinChamp('${c.id}')" style="padding:12px 14px;border:2px solid ${rc};">
+      <div style="font-size:9px;color:${rc};letter-spacing:.1em;">${c.rarity.toUpperCase()}</div>
+      <div class="cs-champ-name" style="font-size:20px;color:${rc};">${c.name}</div>
       <div class="cs-champ-title" style="font-size:10px;">${c.title}</div>
       <div class="cs-faction" style="font-size:9px;margin-top:3px;">${c.faction}</div>
-    </div>
-  `).join('');
+      <div style="font-size:9px;color:#888;margin-top:2px;">W:${c.wallLimit} H:${c.handSize} D:${c.cardDraw} U:${c.ultimateCost}</div>
+    </div>`;
+  }).join('') : '<div style="color:#888;padding:20px;text-align:center;grid-column:1/-1;">No roster champions. Visit the Shop or play Gauntlet first.</div>';
 
   content.innerHTML = `
     ${mpNameInput('join')}
@@ -14542,7 +14564,7 @@ function mpRenderJoinTab(content) {
     <div class="mp-section-label">Game Code or Invite Link</div>
     <input class="mp-input" id="mp-join-code" placeholder="Enter game code (e.g. a1b2c)…" maxlength="100">
     <hr class="mp-divider">
-    <div class="mp-section-label">Choose Your Champion</div>
+    <div class="mp-section-label">Choose Your Champion <span style="font-size:9px;color:#e05050;font-weight:normal;">PERMADEATH</span></div>
     <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:20px;" id="mpj-grid">
       ${champCards}
     </div>
@@ -14569,9 +14591,10 @@ function mpSelectJoinChamp(id) {
   document.querySelectorAll('[id^="mpj-"]').forEach(el => el.classList.remove('selected'));
   const card = document.getElementById('mpj-' + id);
   if (card) card.classList.add('selected');
+  const champ = resolveChampion(id);
   const btn = document.getElementById('mp-join-btn');
-  if (btn) {
-    btn.textContent = `JOIN AS ${CHAMPIONS[id].name.toUpperCase()} →`;
+  if (btn && champ) {
+    btn.textContent = `JOIN AS ${champ.name.toUpperCase()} →`;
     btn.disabled = false;
   }
   // Populate deck picker
@@ -15416,6 +15439,18 @@ function mpShowVictory(winner) {
     }
   }
 
+  // ── Permadeath: destroy loser's champion from roster (ranked games) ──
+  if (!_mpVictoryIssued && !iWon && _userProfile) {
+    const myChampId = mp_localSeat === 0 ? mp_myChampId : mp_myChampId;
+    const myChamp = (_userProfile.roster || []).find(c => c.id === myChampId);
+    if (myChamp) {
+      _userProfile.roster = _userProfile.roster.filter(c => c.id !== myChampId);
+      saveUserProfile({ roster: _userProfile.roster });
+      // Show permadeath notice
+      if (subtitle) subtitle.textContent = `${myChamp.name} has been DESTROYED — permadeath`;
+    }
+  }
+
   // ── Issue and display card rewards if logged in — only once per game ──
   if (_userProfile && !_mpVictoryIssued) {
     _mpVictoryIssued = true;
@@ -15762,14 +15797,17 @@ async function showBalanceScreen() {
 // ── Online Presence ─────────────────────────────────────────────────
 let _presenceInterval = null;
 
+let _presenceFailed = false;
 async function presenceHeartbeat() {
+  if (_presenceFailed) return; // Stop retrying if columns don't exist
   const sb = mpInit();
   if (!sb || !_authUser) return;
   try {
-    await sb.from('user_profiles').update({
+    const { error } = await sb.from('user_profiles').update({
       last_online: new Date().toISOString(), is_online: true
     }).eq('id', _authUser.id);
-  } catch(e) {}
+    if (error) { _presenceFailed = true; stopPresenceTracking(); }
+  } catch(e) { _presenceFailed = true; stopPresenceTracking(); }
 }
 
 function startPresenceTracking() {
@@ -15838,9 +15876,10 @@ async function loadFriends() {
 async function sendFriendRequest(username) {
   const sb = mpInit();
   if (!sb || !_authUser) return;
-  const { data: target } = await sb.from('user_profiles')
-    .select('id').eq('username', username).single();
-  if (!target) { showStatus('User not found: ' + username, 'error'); return; }
+  if (!username) { showStatus('Enter a username', 'error'); return; }
+  const { data: target, error: lookupErr } = await sb.from('user_profiles')
+    .select('id').eq('username', username).maybeSingle();
+  if (lookupErr || !target) { showStatus('User not found: ' + username, 'error'); return; }
   if (target.id === _authUser.id) { showStatus('Cannot add yourself', 'error'); return; }
   const { error } = await sb.from('friends').insert({
     user_id: _authUser.id, friend_id: target.id, status: 'pending'
@@ -16025,7 +16064,7 @@ async function showPlayerProfile(userId) {
         <div style="display:flex;gap:8px;justify-content:center;margin-top:16px;">
           ${!isMe ? `<button onclick="sendFriendRequest('${profile.username}')" class="action-btn" style="font-size:11px;padding:4px 14px;">ADD FRIEND</button>` : ''}
           ${!isMe ? `<button onclick="challengeFriend('${userId}','${profile.username}')" class="action-btn primary" style="font-size:11px;padding:4px 14px;">CHALLENGE</button>` : ''}
-          <button onclick="document.getElementById('profile-overlay')?.remove();" class="action-btn" style="font-size:11px;padding:4px 14px;">CLOSE</button>
+          <button onclick="document.getElementById('profile-overlay')?.remove();showLandingScreen();" class="action-btn" style="font-size:11px;padding:4px 14px;">CLOSE</button>
         </div>
       </div>
     `;
