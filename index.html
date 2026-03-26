@@ -5360,6 +5360,7 @@ function discardCard(pi, idx) {
 }
 
 function endTurnHuman() {
+  if (isSpectatorMode()) return;
   if (_tutorialState?.tooltipShowing) return;
   // ── MP mode: dispatch to multiplayer end-turn ──
   if (gameMode === 'mp') {
@@ -5591,8 +5592,33 @@ function scoreAction(action, walls, aiPos, oppPos) {
 
   if (action.type === 'move')    return base + F.moveBonus;
   if (action.type === 'wall')    return base + F.wallBonus;
-  if (action.type === 'phantom') return base + F.wallBonus * 0.8; // slightly less certain
-  return base; // disruption actions scored purely on distance delta
+  if (action.type === 'phantom') return base + F.wallBonus * 0.8;
+  // Disruption: contextual scoring based on game state
+  return base + scoreDisruptionContext(oppDistBefore, walls);
+}
+
+// Contextual disruption scoring — replaces flat base-only disruption score
+function scoreDisruptionContext(oppDistToGoal, walls) {
+  if (!gameState) return 0;
+  let bonus = 0;
+  // 1. Opponent proximity: closer to goal → disruption more valuable
+  //    At distance 1-2, disruption is critical (exponential scaling)
+  if (oppDistToGoal <= 2) bonus += 8;
+  else if (oppDistToGoal <= 4) bonus += 4;
+  else if (oppDistToGoal <= 6) bonus += 2;
+
+  // 2. Wall density: more walls on board → wall removal/manipulation more valuable
+  const wallCount = walls.filter(w => !w.isPhantom && !w._bossWall).length;
+  if (wallCount >= 8) bonus += 3;
+  else if (wallCount >= 5) bonus += 1.5;
+
+  // 3. Game phase: late game disruptions worth more (games tighten)
+  const turn = gameState.turnNumber || 1;
+  if (turn >= 20) bonus += 3;
+  else if (turn >= 12) bonus += 1.5;
+  else if (turn >= 6) bonus += 0.5;
+
+  return bonus;
 }
 
 // Generate wall placement candidates.
@@ -6825,6 +6851,22 @@ function showLandingScreen() {
       <button onclick="document.getElementById('landing-overlay').remove();showShopScreen();"
               class="landing-btn" style="background:rgba(251,191,36,0.12);color:#fbbf24;border:1px solid rgba(251,191,36,0.3);position:relative;">
         ◆ SHOP
+      </button>
+      <button onclick="document.getElementById('landing-overlay').remove();showFriendsScreen();"
+              class="landing-btn" style="background:rgba(96,165,250,0.1);color:#60a5fa;border:1px solid rgba(96,165,250,0.3);">
+        👥 FRIENDS
+      </button>
+      <button onclick="document.getElementById('landing-overlay').remove();showMultiplayerLobby('leaderboard');"
+              class="landing-btn muted" style="font-size:12px;">
+        🏆 LEADERBOARD
+      </button>
+      <button onclick="document.getElementById('landing-overlay').remove();showPlayerProfile(_authUser?.id);"
+              class="landing-btn muted" style="font-size:12px;">
+        ⬡ MY PROFILE
+      </button>
+      <button onclick="document.getElementById('landing-overlay').remove();showBalanceScreen();"
+              class="landing-btn muted" style="font-size:11px;">
+        📊 BALANCE DATA
       </button>
     </div>
 
@@ -8354,6 +8396,7 @@ function startSPGame(championId) {
 
 // ── UI interactions ─────────────────────────────────────────────────
 function enterMoveMode() {
+  if (isSpectatorMode()) return;
   if (_tutorialState?.tooltipShowing) return;
   if (gameMode === 'mp' && gameState.activePlayer !== mp_localSeat) { showStatus("It's not your turn!", 'error'); return; }
   if (!isHumanSeat(gameState.activePlayer)) return;
@@ -8438,6 +8481,7 @@ function handleCellClick(r, c) {
 }
 
 function handleWallClick(anchor, orientation, length, isPhantom, isDurable) {
+  if (isSpectatorMode()) return;
   if (_tutorialState?.tooltipShowing) return;
   if (gameMode === 'mp' && gameState.activePlayer !== mp_localSeat) { showStatus("It's not your turn!", 'error'); return; }
   if (uiMode !== 'wall') return;
@@ -8838,6 +8882,7 @@ function showEmbargoTypePicker(pi, opp) {
 
 
 function selectCard(cardId, idx) {
+  if (isSpectatorMode()) return;
   if (_tutorialState?.tooltipShowing) return;
   if (gameMode === 'tutorial' && _tutorialState?.matchConfig?.skipDraw) { showStatus('Cards are not available in this lesson', 'error'); return; }
   if (!isHumanSeat(gameState.activePlayer)) return;
@@ -11878,6 +11923,7 @@ async function applyDisruptionCard(pi, card, idx) {
 
 // ── Ultimates ────────────────────────────────────────────────────────
 function activateUltimate(pi) {
+  if (isSpectatorMode()) return;
   if (gameMode === 'tutorial' && _tutorialState?.matchConfig?.skipUltimate) { showStatus('Ultimates are not available in this lesson', 'error'); return; }
   // In MP, always operate on the local player regardless of which button was clicked
   if (gameMode === 'mp') pi = mp_localSeat;
@@ -14037,8 +14083,10 @@ function showMultiplayerLobby(tab = 'home', prefillCode = null) {
 
     <div class="mp-mode-tabs">
       <button class="mp-tab ${tab==='home'?'active':''}" onclick="mpShowTab('home')">MY GAMES</button>
+      <button class="mp-tab ${tab==='browse'?'active':''}" onclick="mpShowTab('browse')">BROWSE</button>
       <button class="mp-tab ${tab==='create'?'active':''}" onclick="mpShowTab('create')">CREATE GAME</button>
       <button class="mp-tab ${tab==='join'?'active':''}" onclick="mpShowTab('join')">JOIN GAME</button>
+      <button class="mp-tab ${tab==='leaderboard'?'active':''}" onclick="mpShowTab('leaderboard')">LEADERBOARD</button>
     </div>
 
     <div class="mp-panel" id="mp-tab-content">
@@ -14084,11 +14132,9 @@ function closeMpLobby(silent = false) {
 
 function mpShowTab(tab) {
   // Update tab buttons
+  const tabMap = {home:'MY GAMES',browse:'BROWSE',create:'CREATE GAME',join:'JOIN GAME',leaderboard:'LEADERBOARD'};
   document.querySelectorAll('.mp-tab').forEach(btn => {
-    btn.className = 'mp-tab' + (btn.textContent.trim().toLowerCase().startsWith(tab) || 
-      (tab==='home' && btn.textContent.includes('MY')) ||
-      (tab==='create' && btn.textContent.includes('CREATE')) ||
-      (tab==='join' && btn.textContent.includes('JOIN')) ? ' active' : '');
+    btn.className = 'mp-tab' + (btn.textContent.trim() === tabMap[tab] ? ' active' : '');
   });
 
   const content = document.getElementById('mp-tab-content');
@@ -14103,9 +14149,11 @@ function mpShowTab(tab) {
   }
 
   switch(tab) {
-    case 'home':   mpRenderHomeTab(content); break;
-    case 'create': mpRenderCreateTab(content); break;
-    case 'join':   mpRenderJoinTab(content); break;
+    case 'home':        mpRenderHomeTab(content); break;
+    case 'browse':      mpRenderBrowseTab(content); break;
+    case 'create':      mpRenderCreateTab(content); break;
+    case 'join':        mpRenderJoinTab(content); break;
+    case 'leaderboard': mpRenderLeaderboardTab(content); break;
   }
 }
 
@@ -14321,6 +14369,35 @@ function mpRenderCreateTab(content) {
       <div class="mp-section-label">Choose Your Deck</div>
       <div class="mp-deck-options" id="mpc-deck-options"></div>
     </div>
+    <hr class="mp-divider">
+    <div class="mp-section-label">Game Options</div>
+    <div style="display:flex;gap:12px;margin-bottom:12px;flex-wrap:wrap;">
+      <div>
+        <div style="font-size:9px;color:#888;letter-spacing:.1em;margin-bottom:4px;">VISIBILITY</div>
+        <div style="display:flex;gap:4px;">
+          <button class="diff-btn active" id="mp-vis-private" onclick="mpSetVisibility('private')">PRIVATE</button>
+          <button class="diff-btn" id="mp-vis-public" onclick="mpSetVisibility('public')">PUBLIC</button>
+        </div>
+      </div>
+      <div>
+        <div style="font-size:9px;color:#888;letter-spacing:.1em;margin-bottom:4px;">TYPE</div>
+        <div style="display:flex;gap:4px;">
+          <button class="diff-btn active" id="mp-type-casual" onclick="mpSetGameType('casual')">CASUAL</button>
+          <button class="diff-btn" id="mp-type-ranked" onclick="mpSetGameType('ranked')">RANKED</button>
+        </div>
+      </div>
+    </div>
+    <div style="margin-bottom:16px;">
+      <div style="font-size:9px;color:#888;letter-spacing:.1em;margin-bottom:6px;">BOARD VARIANT</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;" id="mp-board-variants">
+        ${Object.entries(MP_BOARD_VARIANTS).map(([k,v]) => `
+          <div onclick="mpSelectBoardVariant('${k}')" id="mp-bv-${k}"
+            class="diff-btn${k==='standard'?' active':''}" style="font-size:10px;padding:4px 10px;cursor:pointer;">
+            ${v.name}
+          </div>
+        `).join('')}
+      </div>
+    </div>
     <button class="mp-btn" id="mp-create-btn" onclick="mpCreateGame()" disabled>
       SELECT A CHAMPION TO CREATE GAME →
     </button>
@@ -14331,6 +14408,26 @@ function mpRenderCreateTab(content) {
 let mp_selectedChamp = null;
 let mp_selectedDeckCards = null; // null = starter deck
 let mp_selectedDeckIdx = 0;
+let mp_selectedVisibility = 'private';
+let mp_selectedGameType = 'casual';
+let mp_selectedBoardVariant = 'standard';
+
+function mpSetVisibility(vis) {
+  mp_selectedVisibility = vis;
+  document.getElementById('mp-vis-private').className = 'diff-btn' + (vis==='private'?' active':'');
+  document.getElementById('mp-vis-public').className = 'diff-btn' + (vis==='public'?' active':'');
+}
+function mpSetGameType(type) {
+  mp_selectedGameType = type;
+  document.getElementById('mp-type-casual').className = 'diff-btn' + (type==='casual'?' active':'');
+  document.getElementById('mp-type-ranked').className = 'diff-btn' + (type==='ranked'?' active':'');
+}
+function mpSelectBoardVariant(variant) {
+  mp_selectedBoardVariant = variant;
+  document.querySelectorAll('[id^="mp-bv-"]').forEach(el => {
+    el.className = 'diff-btn' + (el.id === 'mp-bv-'+variant ? ' active' : '');
+  });
+}
 
 function mpSelectChamp(id) {
   mp_selectedChamp = id;
@@ -14365,6 +14462,7 @@ async function mpCreateGame() {
   if (btn) { btn.disabled = true; btn.textContent = 'CREATING…'; }
 
   try {
+    const boardVariant = MP_BOARD_VARIANTS[mp_selectedBoardVariant] || MP_BOARD_VARIANTS.standard;
     const { data, error } = await sb.from('mp_games').insert({
       host_id:       _userId,
       host_name:     name,
@@ -14372,6 +14470,11 @@ async function mpCreateGame() {
       host_deck_id:  mp_selectedDeckCards ? 'custom' : 'starter',
       host_deck_cards: mp_selectedDeckCards ? JSON.stringify(mp_selectedDeckCards) : null,
       status:        'waiting',
+      is_public:     mp_selectedVisibility === 'public',
+      game_type:     mp_selectedGameType,
+      board_variant: mp_selectedBoardVariant,
+      board_config:  mp_selectedBoardVariant !== 'standard' ? boardVariant : null,
+      host_elo:      _userProfile?.elo || ELO_DEFAULT,
     }).select().single();
 
     if (error) throw error;
@@ -14476,6 +14579,127 @@ function mpSelectJoinChamp(id) {
     mp_joinSelectedDeckCards = cards;
     mp_joinSelectedDeckIdx = idx;
   });
+}
+
+// ── Browse Public Games Tab ──────────────────────────────────────────
+async function mpRenderBrowseTab(content) {
+  content.innerHTML = '<div style="text-align:center;padding:20px;color:#888;">Loading public games...</div>';
+  const sb = mpInit();
+  if (!sb) { content.innerHTML = '<div style="color:#888;padding:20px;">Not connected</div>'; return; }
+
+  async function refresh() {
+    const { data, error } = await sb.from('mp_games')
+      .select('id, host_name, host_champ, board_variant, game_type, host_elo, created_at')
+      .eq('status', 'waiting').eq('is_public', true)
+      .neq('host_id', _userId || '__none__')
+      .order('created_at', { ascending: false }).limit(20);
+
+    if (error || !data) { content.innerHTML = '<div style="color:#888;padding:20px;">Failed to load</div>'; return; }
+    if (!data.length) {
+      content.innerHTML = `
+        <div class="mp-section-label">PUBLIC GAMES</div>
+        <div style="color:#666;padding:20px;text-align:center;">No public games waiting. Create one!</div>
+      `;
+      return;
+    }
+
+    const rows = data.map(g => {
+      const champ = CHAMPIONS[g.host_champ];
+      const champName = champ ? champ.name : g.host_champ;
+      const variant = MP_BOARD_VARIANTS[g.board_variant];
+      const variantName = variant ? variant.name : 'Standard';
+      const eloStr = g.host_elo ? `ELO ${g.host_elo}` : '';
+      const age = Math.round((Date.now() - new Date(g.created_at).getTime()) / 60000);
+      const ageStr = age < 1 ? 'just now' : age + 'm ago';
+      const typeColor = g.game_type === 'ranked' ? '#f59e0b' : '#888';
+      return `<div style="display:flex;align-items:center;gap:12px;padding:10px 14px;background:var(--surface);border:1px solid var(--border);margin-bottom:6px;">
+        <div style="flex:1;">
+          <div style="font-family:'Teko',sans-serif;font-size:18px;color:#ccc;">${g.host_name}</div>
+          <div style="font-size:10px;color:#888;">${champName} · ${variantName} · <span style="color:${typeColor}">${(g.game_type||'casual').toUpperCase()}</span> · ${eloStr}</div>
+        </div>
+        <div style="font-size:9px;color:#555;">${ageStr}</div>
+        <button class="action-btn primary" style="font-size:11px;padding:4px 14px;" onclick="mpShowTab('join');setTimeout(()=>{const i=document.getElementById('mp-join-code');if(i)i.value='${g.id}';},50);">JOIN</button>
+      </div>`;
+    }).join('');
+
+    content.innerHTML = `
+      <div class="mp-section-label">PUBLIC GAMES (${data.length})</div>
+      ${rows}
+    `;
+
+    // Also load active games for spectating
+    const { data: liveData } = await sb.from('mp_games')
+      .select('id, host_name, guest_name, host_champ, guest_champ, board_variant, active_seat, allow_spectators')
+      .eq('status', 'active').eq('is_public', true).eq('allow_spectators', true)
+      .order('created_at', { ascending: false }).limit(10);
+
+    if (liveData && liveData.length) {
+      const liveRows = liveData.map(g => {
+        const hChamp = CHAMPIONS[g.host_champ]?.name || g.host_champ;
+        const gChamp = CHAMPIONS[g.guest_champ]?.name || g.guest_champ;
+        const variant = MP_BOARD_VARIANTS[g.board_variant]?.name || 'Standard';
+        return `<div style="display:flex;align-items:center;gap:12px;padding:10px 14px;background:var(--surface);border:1px solid rgba(192,132,252,0.2);margin-bottom:6px;">
+          <div style="flex:1;">
+            <div style="font-size:13px;color:#ccc;">${g.host_name} <span style="color:#555;">vs</span> ${g.guest_name}</div>
+            <div style="font-size:10px;color:#888;">${hChamp} vs ${gChamp} · ${variant}</div>
+          </div>
+          <button class="action-btn" style="font-size:10px;padding:3px 12px;color:#c084fc;border-color:#c084fc;" onclick="spectateGame('${g.id}')">WATCH</button>
+        </div>`;
+      }).join('');
+      content.innerHTML += `
+        <div class="mp-section-label" style="margin-top:20px;">LIVE GAMES</div>
+        ${liveRows}
+      `;
+    }
+
+    content.innerHTML += '<div style="text-align:center;margin-top:12px;font-size:10px;color:#555;">Auto-refreshes every 6s</div>';
+  }
+
+  await refresh();
+  mp_lobbyInterval = setInterval(refresh, 6000);
+}
+
+// ── Leaderboard Tab ─────────────────────────────────────────────────
+async function mpRenderLeaderboardTab(content) {
+  content.innerHTML = '<div style="text-align:center;padding:20px;color:#888;">Loading leaderboard...</div>';
+  const sb = mpInit();
+  if (!sb) { content.innerHTML = '<div style="color:#888;padding:20px;">Not connected</div>'; return; }
+
+  const { data, error } = await sb.from('user_profiles')
+    .select('id, username, elo, mp_wins, mp_losses, mp_games_played')
+    .order('elo', { ascending: false }).limit(50);
+
+  if (error || !data) { content.innerHTML = '<div style="color:#888;padding:20px;">Failed to load</div>'; return; }
+
+  const myId = _authUser?.id;
+  const rows = data.map((p, i) => {
+    const isMe = p.id === myId;
+    const games = (p.mp_wins || 0) + (p.mp_losses || 0);
+    const wr = games > 0 ? Math.round(100 * (p.mp_wins || 0) / games) + '%' : '—';
+    const bg = isMe ? 'rgba(212,144,58,0.1)' : 'transparent';
+    const border = isMe ? '1px solid rgba(212,144,58,0.3)' : '1px solid transparent';
+    return `<tr style="background:${bg};">
+      <td style="padding:6px 10px;font-family:'Teko',sans-serif;font-size:16px;color:#888;border-bottom:${border};">${i+1}</td>
+      <td style="padding:6px 10px;color:${isMe?'var(--amber)':'#ccc'};font-size:13px;border-bottom:${border};">${p.username}${isMe?' (you)':''}</td>
+      <td style="padding:6px 10px;font-family:'Teko',sans-serif;font-size:16px;color:var(--amber);border-bottom:${border};">${p.elo || ELO_DEFAULT}</td>
+      <td style="padding:6px 10px;font-size:11px;color:#888;border-bottom:${border};">${p.mp_wins || 0}W / ${p.mp_losses || 0}L</td>
+      <td style="padding:6px 10px;font-size:11px;color:#888;border-bottom:${border};">${wr}</td>
+    </tr>`;
+  }).join('');
+
+  content.innerHTML = `
+    <div class="mp-section-label">LEADERBOARD — TOP 50</div>
+    <table style="width:100%;border-collapse:collapse;">
+      <tr>
+        <th style="padding:4px 10px;font-size:9px;color:#555;text-align:left;letter-spacing:.1em;">RANK</th>
+        <th style="padding:4px 10px;font-size:9px;color:#555;text-align:left;letter-spacing:.1em;">PLAYER</th>
+        <th style="padding:4px 10px;font-size:9px;color:#555;text-align:left;letter-spacing:.1em;">ELO</th>
+        <th style="padding:4px 10px;font-size:9px;color:#555;text-align:left;letter-spacing:.1em;">RECORD</th>
+        <th style="padding:4px 10px;font-size:9px;color:#555;text-align:left;letter-spacing:.1em;">WIN %</th>
+      </tr>
+      ${rows}
+    </table>
+  `;
 }
 
 async function mpJoinGame() {
@@ -15367,6 +15591,7 @@ async function authLogin(username, password) {
 
 // ── Logout ────────────────────────────────────────────────────────────
 async function authLogout() {
+  stopPresenceTracking();
   const sb = mpInit();
   if (sb) await sb.auth.signOut();
   _authUser    = null;
@@ -15386,6 +15611,7 @@ async function authRestoreSession() {
   await loadUserProfile();
   _userName = _userProfile?.username || '';
   localStorage.setItem('corridors:userName', _userName);
+  startPresenceTracking();
   return true;
 }
 
@@ -15437,7 +15663,515 @@ async function saveUserProfile(updates) {
   return true;
 }
 
-// ── Rarity limits & helpers ───────────────────────────────────────────
+// ── Faction Balance Dashboard ─────────────────────────────────────────
+async function loadFactionBalanceData() {
+  const sb = mpInit();
+  if (!sb) return null;
+  try {
+    const { data, error } = await sb.from('match_records').select('p0_faction, p1_faction, winner_seat, turns, game_mode, difficulty');
+    if (error || !data) return null;
+    // Build matchup matrix
+    const factions = FACTION_WHEEL;
+    const matrix = {};
+    const champStats = {};
+    for (const f of factions) { matrix[f] = {}; for (const g of factions) matrix[f][g] = { wins: 0, total: 0 }; }
+    for (const row of data) {
+      const f0 = row.p0_faction, f1 = row.p1_faction;
+      if (!f0 || !f1) continue;
+      if (matrix[f0] && matrix[f0][f1]) {
+        matrix[f0][f1].total++;
+        if (row.winner_seat === 0) matrix[f0][f1].wins++;
+      }
+      if (matrix[f1] && matrix[f1][f0]) {
+        matrix[f1][f0].total++;
+        if (row.winner_seat === 1) matrix[f1][f0].wins++;
+      }
+    }
+    return { matrix, raw: data, factions };
+  } catch(e) { console.warn('[BALANCE]', e); return null; }
+}
+
+async function showBalanceScreen() {
+  const overlay = document.createElement('div');
+  overlay.id = 'balance-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;background:var(--bg);z-index:2000;overflow-y:auto;padding:20px;';
+  overlay.innerHTML = '<div style="text-align:center;padding:40px;color:#888;">Loading balance data...</div>';
+  document.body.appendChild(overlay);
+
+  const data = await loadFactionBalanceData();
+  if (!data) {
+    overlay.innerHTML = `<div style="max-width:800px;margin:0 auto;text-align:center;padding:40px;">
+      <div style="color:#888;margin-bottom:16px;">No match data available yet. Play some games!</div>
+      <button onclick="document.getElementById('balance-overlay')?.remove();showLandingScreen();" style="font-size:11px;padding:4px 12px;background:transparent;border:1px solid var(--text-dim);color:var(--text-dim);cursor:pointer;">BACK</button>
+    </div>`;
+    return;
+  }
+
+  const { matrix, raw, factions } = data;
+  const shortName = f => f.slice(0, 4).toUpperCase();
+
+  // Build matrix HTML
+  let matrixHtml = '<table style="border-collapse:collapse;margin:0 auto;">';
+  matrixHtml += '<tr><td style="padding:4px;"></td>';
+  for (const f of factions) matrixHtml += `<td style="padding:4px 6px;font-size:9px;color:#888;text-align:center;letter-spacing:.05em;">${shortName(f)}</td>`;
+  matrixHtml += '</tr>';
+  for (const f0 of factions) {
+    matrixHtml += `<tr><td style="padding:4px 8px;font-size:9px;color:#888;text-align:right;letter-spacing:.05em;">${shortName(f0)}</td>`;
+    for (const f1 of factions) {
+      const cell = matrix[f0][f1];
+      if (cell.total === 0) {
+        matrixHtml += '<td style="padding:4px 6px;text-align:center;font-size:10px;color:#444;">—</td>';
+      } else {
+        const wr = Math.round(100 * cell.wins / cell.total);
+        const color = wr >= 55 ? '#4ade80' : wr <= 45 ? '#e05050' : '#888';
+        matrixHtml += `<td style="padding:4px 6px;text-align:center;font-size:10px;color:${color};">${wr}%<div style="font-size:8px;color:#555;">${cell.total}g</div></td>`;
+      }
+    }
+    matrixHtml += '</tr>';
+  }
+  matrixHtml += '</table>';
+
+  // Summary stats
+  const totalGames = raw.length;
+  const avgTurns = totalGames ? Math.round(raw.reduce((s, r) => s + (r.turns || 0), 0) / totalGames) : 0;
+  const spGames = raw.filter(r => r.game_mode === 'sp').length;
+  const gauntletGames = raw.filter(r => r.game_mode === 'gauntlet').length;
+  const mpGames = raw.filter(r => r.game_mode === 'mp').length;
+
+  overlay.innerHTML = `<div style="max-width:800px;margin:0 auto;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
+      <h1 style="font-family:'Teko',sans-serif;font-size:32px;color:var(--accent);margin:0;">BALANCE DATA</h1>
+      <button onclick="document.getElementById('balance-overlay')?.remove();showLandingScreen();" style="font-size:11px;padding:4px 12px;background:transparent;border:1px solid var(--text-dim);color:var(--text-dim);cursor:pointer;letter-spacing:.1em;font-family:'JetBrains Mono',monospace;">BACK</button>
+    </div>
+    <div style="display:flex;gap:24px;margin-bottom:24px;flex-wrap:wrap;">
+      <div style="text-align:center;"><div style="font-size:10px;color:#888;">TOTAL GAMES</div><div style="font-family:'Teko',sans-serif;font-size:24px;color:#ccc;">${totalGames}</div></div>
+      <div style="text-align:center;"><div style="font-size:10px;color:#888;">AVG TURNS</div><div style="font-family:'Teko',sans-serif;font-size:24px;color:#ccc;">${avgTurns}</div></div>
+      <div style="text-align:center;"><div style="font-size:10px;color:#888;">SP</div><div style="font-family:'Teko',sans-serif;font-size:24px;color:#ccc;">${spGames}</div></div>
+      <div style="text-align:center;"><div style="font-size:10px;color:#888;">GAUNTLET</div><div style="font-family:'Teko',sans-serif;font-size:24px;color:#ccc;">${gauntletGames}</div></div>
+      <div style="text-align:center;"><div style="font-size:10px;color:#888;">MP</div><div style="font-family:'Teko',sans-serif;font-size:24px;color:#ccc;">${mpGames}</div></div>
+    </div>
+    <h2 style="font-family:'Teko',sans-serif;font-size:20px;color:#888;margin:16px 0 8px;">FACTION MATCHUP WIN RATES</h2>
+    <div style="font-size:9px;color:#555;margin-bottom:8px;">Row = faction played · Column = opponent faction · Green &gt;55% · Red &lt;45%</div>
+    ${matrixHtml}
+  </div>`;
+}
+// ════════════════════════════════════════════════════════════════════
+// ── PHASE 5D: SOCIAL SYSTEM ─────────────────────────────────────────
+// ════════════════════════════════════════════════════════════════════
+
+// ── Online Presence ─────────────────────────────────────────────────
+let _presenceInterval = null;
+
+async function presenceHeartbeat() {
+  const sb = mpInit();
+  if (!sb || !_authUser) return;
+  try {
+    await sb.from('user_profiles').update({
+      last_online: new Date().toISOString(), is_online: true
+    }).eq('id', _authUser.id);
+  } catch(e) {}
+}
+
+function startPresenceTracking() {
+  if (_presenceInterval) return;
+  presenceHeartbeat();
+  _presenceInterval = setInterval(presenceHeartbeat, 30000);
+  window.addEventListener('beforeunload', presenceBeacon);
+}
+
+function stopPresenceTracking() {
+  clearInterval(_presenceInterval);
+  _presenceInterval = null;
+  window.removeEventListener('beforeunload', presenceBeacon);
+}
+
+function presenceBeacon() {
+  const sb = mpInit();
+  if (!sb || !_authUser) return;
+  const url = sb.supabaseUrl + '/rest/v1/user_profiles?id=eq.' + _authUser.id;
+  const body = JSON.stringify({ is_online: false });
+  navigator.sendBeacon?.(url, new Blob([body], { type: 'application/json' }));
+}
+
+// ── Friend System ───────────────────────────────────────────────────
+let _friendsList = [];
+
+async function loadFriends() {
+  const sb = mpInit();
+  if (!sb || !_authUser) return [];
+  try {
+    const { data } = await sb.from('friends')
+      .select('id, user_id, friend_id, status, created_at')
+      .or(`user_id.eq.${_authUser.id},friend_id.eq.${_authUser.id}`);
+    if (!data) return [];
+
+    // Collect all unique user IDs we need profiles for
+    const ids = new Set();
+    for (const f of data) { ids.add(f.user_id); ids.add(f.friend_id); }
+    ids.delete(_authUser.id);
+    const idArr = [...ids];
+    if (!idArr.length) { _friendsList = []; return []; }
+
+    const { data: profiles } = await sb.from('user_profiles')
+      .select('id, username, elo, is_online, last_online')
+      .in('id', idArr);
+    const profileMap = {};
+    for (const p of (profiles || [])) profileMap[p.id] = p;
+
+    _friendsList = data.map(f => {
+      const otherId = f.user_id === _authUser.id ? f.friend_id : f.user_id;
+      const isSender = f.user_id === _authUser.id;
+      const profile = profileMap[otherId] || {};
+      const online = profile.is_online && profile.last_online &&
+        (Date.now() - new Date(profile.last_online).getTime() < 90000);
+      return {
+        id: f.id, oderId: otherId, status: f.status, isSender,
+        username: profile.username || 'Unknown',
+        elo: profile.elo || ELO_DEFAULT,
+        online,
+      };
+    });
+    return _friendsList;
+  } catch(e) { console.warn('[FRIENDS]', e); return []; }
+}
+
+async function sendFriendRequest(username) {
+  const sb = mpInit();
+  if (!sb || !_authUser) return;
+  const { data: target } = await sb.from('user_profiles')
+    .select('id').eq('username', username).single();
+  if (!target) { showStatus('User not found: ' + username, 'error'); return; }
+  if (target.id === _authUser.id) { showStatus('Cannot add yourself', 'error'); return; }
+  const { error } = await sb.from('friends').insert({
+    user_id: _authUser.id, friend_id: target.id, status: 'pending'
+  });
+  if (error) {
+    if (error.code === '23505') showStatus('Request already sent', 'error');
+    else showStatus('Failed: ' + error.message, 'error');
+    return;
+  }
+  showStatus('Friend request sent to ' + username, 'success');
+  showFriendsScreen(); // refresh
+}
+
+async function acceptFriendRequest(friendshipId) {
+  const sb = mpInit();
+  if (!sb) return;
+  await sb.from('friends').update({ status: 'accepted' }).eq('id', friendshipId);
+  showStatus('Friend request accepted!', 'success');
+  showFriendsScreen();
+}
+
+async function removeFriend(friendshipId) {
+  if (!confirm('Remove this friend?')) return;
+  const sb = mpInit();
+  if (!sb) return;
+  await sb.from('friends').delete().eq('id', friendshipId);
+  showStatus('Friend removed', 'success');
+  showFriendsScreen();
+}
+
+async function challengeFriend(friendUserId, friendName) {
+  const sb = mpInit();
+  if (!sb || !_authUser) return;
+  // Create a private game
+  const { data, error } = await sb.from('mp_games').insert({
+    host_id: _userId, host_name: _userName || 'Player',
+    host_champ: 'soren', status: 'waiting',
+    is_public: false, game_type: 'casual',
+  }).select().single();
+  if (error) { showStatus('Failed to create challenge', 'error'); return; }
+  const inviteUrl = window.location.href.split('?')[0] + '?join=' + data.id;
+  showStatus('Challenge created! Share this code with ' + friendName + ': ' + data.id, 'success');
+  // Copy to clipboard
+  navigator.clipboard?.writeText(inviteUrl).catch(() => {});
+}
+
+async function showFriendsScreen() {
+  document.getElementById('friends-overlay')?.remove();
+  const overlay = document.createElement('div');
+  overlay.id = 'friends-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;background:var(--bg);z-index:2000;overflow-y:auto;padding:20px;';
+  overlay.innerHTML = '<div style="max-width:600px;margin:0 auto;text-align:center;padding:40px;color:#888;">Loading friends...</div>';
+  document.body.appendChild(overlay);
+
+  const friends = await loadFriends();
+  const accepted = friends.filter(f => f.status === 'accepted');
+  const pendingIncoming = friends.filter(f => f.status === 'pending' && !f.isSender);
+  const pendingOutgoing = friends.filter(f => f.status === 'pending' && f.isSender);
+
+  let html = `<div style="max-width:600px;margin:0 auto;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
+      <h1 style="font-family:'Teko',sans-serif;font-size:32px;color:var(--accent);margin:0;">FRIENDS</h1>
+      <button onclick="document.getElementById('friends-overlay')?.remove();showLandingScreen();" style="font-size:11px;padding:4px 12px;background:transparent;border:1px solid var(--text-dim);color:var(--text-dim);cursor:pointer;letter-spacing:.1em;font-family:'JetBrains Mono',monospace;">BACK</button>
+    </div>
+    <div style="display:flex;gap:8px;margin-bottom:20px;">
+      <input id="friend-add-input" class="mp-input" style="flex:1;" placeholder="Enter username to add..." maxlength="20">
+      <button onclick="sendFriendRequest(document.getElementById('friend-add-input').value.trim())" class="action-btn primary" style="font-size:11px;padding:6px 14px;">ADD</button>
+    </div>`;
+
+  if (pendingIncoming.length) {
+    html += '<div style="font-size:10px;color:#f59e0b;letter-spacing:.1em;margin-bottom:8px;">PENDING REQUESTS</div>';
+    for (const f of pendingIncoming) {
+      html += `<div style="display:flex;align-items:center;gap:10px;padding:8px 12px;background:var(--surface);border:1px solid rgba(245,158,11,0.3);margin-bottom:4px;">
+        <div style="flex:1;color:#ccc;font-size:13px;">${f.username} <span style="color:#888;font-size:10px;">ELO ${f.elo}</span></div>
+        <button onclick="acceptFriendRequest('${f.id}')" class="action-btn primary" style="font-size:10px;padding:3px 10px;">ACCEPT</button>
+        <button onclick="removeFriend('${f.id}')" class="action-btn" style="font-size:10px;padding:3px 10px;">DECLINE</button>
+      </div>`;
+    }
+  }
+
+  if (accepted.length) {
+    html += '<div style="font-size:10px;color:#888;letter-spacing:.1em;margin:16px 0 8px;">FRIENDS</div>';
+    for (const f of accepted) {
+      const dot = f.online ? '<span style="display:inline-block;width:6px;height:6px;background:#4ade80;border-radius:50%;margin-right:6px;"></span>' : '<span style="display:inline-block;width:6px;height:6px;background:#555;border-radius:50%;margin-right:6px;"></span>';
+      html += `<div style="display:flex;align-items:center;gap:10px;padding:8px 12px;background:var(--surface);border:1px solid var(--border);margin-bottom:4px;">
+        <div style="flex:1;color:#ccc;font-size:13px;">${dot}${f.username} <span style="color:#888;font-size:10px;">ELO ${f.elo}</span></div>
+        <button onclick="showPlayerProfile('${f.oderId}')" class="action-btn" style="font-size:10px;padding:3px 10px;">PROFILE</button>
+        <button onclick="challengeFriend('${f.oderId}','${f.username}')" class="action-btn primary" style="font-size:10px;padding:3px 10px;">CHALLENGE</button>
+        <button onclick="removeFriend('${f.id}')" class="action-btn" style="font-size:10px;padding:3px 8px;color:#e05050;">✕</button>
+      </div>`;
+    }
+  } else if (!pendingIncoming.length) {
+    html += '<div style="color:#555;font-size:13px;padding:20px;text-align:center;">No friends yet. Add someone by username above!</div>';
+  }
+
+  if (pendingOutgoing.length) {
+    html += '<div style="font-size:10px;color:#555;letter-spacing:.1em;margin:16px 0 8px;">SENT REQUESTS</div>';
+    for (const f of pendingOutgoing) {
+      html += `<div style="display:flex;align-items:center;gap:10px;padding:6px 12px;background:var(--surface);border:1px solid var(--border);margin-bottom:4px;">
+        <div style="flex:1;color:#888;font-size:12px;">${f.username} — pending</div>
+        <button onclick="removeFriend('${f.id}')" class="action-btn" style="font-size:10px;padding:3px 10px;">CANCEL</button>
+      </div>`;
+    }
+  }
+
+  html += '</div>';
+  overlay.innerHTML = html;
+}
+
+// ── Player Profiles ─────────────────────────────────────────────────
+async function showPlayerProfile(userId) {
+  const sb = mpInit();
+  if (!sb) return;
+  document.getElementById('profile-overlay')?.remove();
+
+  const overlay = document.createElement('div');
+  overlay.id = 'profile-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.9);z-index:3000;display:flex;align-items:center;justify-content:center;overflow-y:auto;';
+  overlay.innerHTML = '<div style="color:#888;padding:40px;">Loading profile...</div>';
+  document.body.appendChild(overlay);
+
+  try {
+    const { data: profile } = await sb.from('user_profiles')
+      .select('id, username, elo, mp_wins, mp_losses, mp_games_played, tutorial_complete')
+      .eq('id', userId).single();
+    if (!profile) { overlay.innerHTML = '<div style="color:#888;padding:40px;">Profile not found</div>'; return; }
+
+    // Load recent matches
+    const { data: matches } = await sb.from('match_records')
+      .select('game_mode, winner_seat, turns, p0_champion, p0_faction, p1_champion, p1_faction, p0_user_id, p1_user_id, created_at')
+      .or(`p0_user_id.eq.${userId},p1_user_id.eq.${userId}`)
+      .order('created_at', { ascending: false }).limit(10);
+
+    const games = (profile.mp_wins || 0) + (profile.mp_losses || 0);
+    const wr = games > 0 ? Math.round(100 * (profile.mp_wins || 0) / games) + '%' : '—';
+    const isMe = _authUser?.id === userId;
+
+    // Champion usage from matches
+    const champUsage = {};
+    for (const m of (matches || [])) {
+      const isSeat0 = m.p0_user_id === userId;
+      const champ = isSeat0 ? m.p0_champion : m.p1_champion;
+      if (champ) champUsage[champ] = (champUsage[champ] || 0) + 1;
+    }
+    const topChamps = Object.entries(champUsage).sort((a,b) => b[1]-a[1]).slice(0, 5);
+    const champHtml = topChamps.length ? topChamps.map(([name, count]) =>
+      `<span style="display:inline-block;padding:2px 8px;background:var(--surface);border:1px solid var(--border);margin:2px;font-size:10px;color:#ccc;">${name} (${count})</span>`
+    ).join('') : '<span style="color:#555;font-size:11px;">No match data yet</span>';
+
+    // Recent matches
+    const matchHtml = (matches || []).map(m => {
+      const isSeat0 = m.p0_user_id === userId;
+      const won = (isSeat0 && m.winner_seat === 0) || (!isSeat0 && m.winner_seat === 1);
+      const myChamp = isSeat0 ? m.p0_champion : m.p1_champion;
+      const oppChamp = isSeat0 ? m.p1_champion : m.p0_champion;
+      const color = won ? '#4ade80' : '#e05050';
+      return `<div style="display:flex;gap:8px;align-items:center;padding:4px 0;font-size:11px;">
+        <span style="color:${color};font-family:'Teko',sans-serif;font-size:14px;width:24px;">${won?'W':'L'}</span>
+        <span style="color:#ccc;">${myChamp}</span>
+        <span style="color:#555;">vs</span>
+        <span style="color:#888;">${oppChamp}</span>
+        <span style="color:#555;margin-left:auto;">T${m.turns} · ${m.game_mode}</span>
+      </div>`;
+    }).join('') || '<div style="color:#555;font-size:11px;">No recent matches</div>';
+
+    overlay.innerHTML = `
+      <div style="background:var(--surface);border:1px solid var(--border);padding:28px 32px;max-width:450px;width:90%;text-align:center;">
+        <div style="font-family:'Teko',sans-serif;font-size:32px;color:var(--amber);">${profile.username}</div>
+        <div style="display:flex;gap:20px;justify-content:center;margin:16px 0;">
+          <div><div style="font-size:9px;color:#888;">ELO</div><div style="font-family:'Teko',sans-serif;font-size:24px;color:var(--amber);">${profile.elo || ELO_DEFAULT}</div></div>
+          <div><div style="font-size:9px;color:#888;">RECORD</div><div style="font-family:'Teko',sans-serif;font-size:24px;color:#ccc;">${profile.mp_wins || 0}W/${profile.mp_losses || 0}L</div></div>
+          <div><div style="font-size:9px;color:#888;">WIN %</div><div style="font-family:'Teko',sans-serif;font-size:24px;color:#ccc;">${wr}</div></div>
+        </div>
+        <div style="text-align:left;margin:12px 0;">
+          <div style="font-size:9px;color:#888;letter-spacing:.1em;margin-bottom:4px;">TOP CHAMPIONS</div>
+          ${champHtml}
+        </div>
+        <div style="text-align:left;margin:12px 0;">
+          <div style="font-size:9px;color:#888;letter-spacing:.1em;margin-bottom:4px;">RECENT MATCHES</div>
+          ${matchHtml}
+        </div>
+        <div style="display:flex;gap:8px;justify-content:center;margin-top:16px;">
+          ${!isMe ? `<button onclick="sendFriendRequest('${profile.username}')" class="action-btn" style="font-size:11px;padding:4px 14px;">ADD FRIEND</button>` : ''}
+          ${!isMe ? `<button onclick="challengeFriend('${userId}','${profile.username}')" class="action-btn primary" style="font-size:11px;padding:4px 14px;">CHALLENGE</button>` : ''}
+          <button onclick="document.getElementById('profile-overlay')?.remove();" class="action-btn" style="font-size:11px;padding:4px 14px;">CLOSE</button>
+        </div>
+      </div>
+    `;
+  } catch(e) {
+    console.error('[PROFILE]', e);
+    overlay.innerHTML = '<div style="color:#888;padding:40px;">Failed to load profile</div>';
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════
+// ── PHASE 5E: SPECTATOR MODE ────────────────────────────────────────
+// ════════════════════════════════════════════════════════════════════
+
+let mp_isSpectator = false;
+let _spectatorSub = null;
+
+async function spectateGame(gameId) {
+  const sb = mpInit();
+  if (!sb) return;
+
+  const { data: game, error } = await sb.from('mp_games')
+    .select('*').eq('id', gameId).single();
+  if (error || !game) { showStatus('Game not found', 'error'); return; }
+  if (game.status === 'waiting') { showStatus('Game has not started yet', 'error'); return; }
+
+  // Close any overlays
+  document.getElementById('mp-overlay')?.remove();
+  document.getElementById('friends-overlay')?.remove();
+  document.getElementById('landing-overlay')?.remove();
+
+  mp_isSpectator = true;
+  mp_gameId = gameId;
+  gameMode = 'spectator';
+  resetBoardSize();
+
+  // Reconstruct board from shared state (no hands)
+  const state = game.state;
+  if (!state) { showStatus('No game state available', 'error'); return; }
+
+  // Restore champion data
+  const hChamp = resolveChampion(game.host_champ) || CHAMPIONS.soren;
+  const gChamp = resolveChampion(game.guest_champ) || CHAMPIONS.magnus;
+  state.players[0].champion = { ...hChamp };
+  state.players[1].champion = { ...gChamp };
+  // Hands stay empty (scrubbed) — show card-back counts only
+  state.players[0].hand = [];
+  state.players[1].hand = [];
+  state.players[0].deck = [];
+  state.players[1].deck = [];
+
+  gameState = state;
+
+  // Apply board variant if set
+  if (game.board_config) {
+    if (game.board_config.rows) setBoardSize(game.board_config.rows, game.board_config.cols);
+    if (game.board_config.preWalls) {
+      for (const pw of game.board_config.preWalls) {
+        const existing = gameState.walls.find(w => w._bossWall &&
+          w.anchor.row === pw.anchor.row && w.anchor.col === pw.anchor.col);
+        if (!existing) {
+          gameState.walls.push({
+            id: gameState.nextWallId++, owner: -1,
+            anchor: pw.anchor, orientation: pw.orientation, length: pw.length,
+            isPhantom: false, durable: false, durableHits: 0,
+            immune: true, reinforced: true, permanent: true,
+            temporary: false, turnsRemaining: null, placedOnTurn: 0, _bossWall: true,
+          });
+        }
+      }
+    }
+  }
+
+  hasMoved = false; hasPlayedCard = false; cardsPlayedThisTurn = 0;
+  uiMode = 'idle'; selectedCard = null;
+
+  renderAll();
+
+  // Add spectator banner
+  const banner = document.createElement('div');
+  banner.id = 'spectator-banner';
+  banner.style.cssText = 'position:fixed;top:0;left:0;right:0;background:rgba(192,132,252,0.15);border-bottom:1px solid rgba(192,132,252,0.3);padding:6px 16px;z-index:500;display:flex;align-items:center;justify-content:space-between;';
+  banner.innerHTML = `
+    <div style="font-size:12px;color:#c084fc;letter-spacing:.1em;">SPECTATING: ${game.host_name} vs ${game.guest_name} — Turn ${state.turnNumber || 1}</div>
+    <button onclick="leaveSpectator()" style="font-size:10px;padding:3px 12px;background:transparent;border:1px solid #c084fc;color:#c084fc;cursor:pointer;">LEAVE</button>
+  `;
+  document.body.appendChild(banner);
+
+  // Subscribe to Realtime updates
+  _spectatorSub = sb.channel('spectate:' + gameId)
+    .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'mp_games', filter: 'id=eq.' + gameId },
+      (payload) => { spectatorHandleUpdate(payload.new); })
+    .subscribe();
+
+  // Also poll as fallback
+  mp_lobbyInterval = setInterval(async () => {
+    const { data: fresh } = await sb.from('mp_games')
+      .select('state, status, winner_seat, active_seat')
+      .eq('id', gameId).single();
+    if (fresh) spectatorHandleUpdate(fresh);
+  }, 4000);
+}
+
+function spectatorHandleUpdate(row) {
+  if (!mp_isSpectator || !row.state) return;
+  const state = row.state;
+  // Preserve champion data from current gameState
+  state.players[0].champion = gameState.players[0].champion;
+  state.players[1].champion = gameState.players[1].champion;
+  state.players[0].hand = [];
+  state.players[1].hand = [];
+  state.players[0].deck = [];
+  state.players[1].deck = [];
+  gameState = state;
+  renderAll();
+
+  // Update banner
+  const banner = document.getElementById('spectator-banner');
+  if (banner) {
+    const turnInfo = row.status === 'finished'
+      ? `GAME OVER — ${row.winner_seat === 0 ? 'Host' : 'Guest'} wins!`
+      : `Turn ${state.turnNumber || 1}`;
+    banner.querySelector('div').textContent = `SPECTATING: ${turnInfo}`;
+  }
+
+  if (row.status === 'finished') {
+    clearInterval(mp_lobbyInterval);
+  }
+}
+
+function leaveSpectator() {
+  mp_isSpectator = false;
+  gameMode = 'idle';
+  clearInterval(mp_lobbyInterval);
+  if (_spectatorSub) { _spectatorSub.unsubscribe(); _spectatorSub = null; }
+  document.getElementById('spectator-banner')?.remove();
+  resetBoardSize();
+  showLandingScreen();
+}
+
+// ── Spectator guards for interactive functions ──────────────────────
+// These are checked at the top of key input handlers.
+// Usage: add `if (isSpectatorMode()) return;` to enterMoveMode, endTurnHuman, selectCard, etc.
+function isSpectatorMode() { return mp_isSpectator || gameMode === 'spectator'; }
+
+// ════════════════════════════════════════════════════════════════════
+
 const RARITY_COPY_LIMITS = { Common: 4, Uncommon: 3, Rare: 2, Legendary: 1 };
 function getCardCopyLimit(cardId) {
   return RARITY_COPY_LIMITS[CARDS[cardId]?.rarity] ?? 4;
@@ -16817,14 +17551,17 @@ async function dbSaveDeck() {
 document.addEventListener('DOMContentLoaded', async () => {
   const urlParams  = new URLSearchParams(window.location.search);
   const inviteCode = urlParams.get('join');
-  if (inviteCode) {
+  const watchCode  = urlParams.get('watch');
+  if (inviteCode || watchCode) {
     window.history.replaceState({}, '', window.location.pathname);
   }
 
   const restored = await authRestoreSession();
 
   if (restored) {
-    if (inviteCode) {
+    if (watchCode) {
+      spectateGame(watchCode);
+    } else if (inviteCode) {
       showMultiplayerLobby('join', inviteCode);
     } else {
       showLandingScreen();
