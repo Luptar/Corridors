@@ -13653,35 +13653,43 @@ function buildGameRecordV2(winner, mode, mpGameId) {
 
 async function saveGameRecordToSupabase(record) {
   const sb = mpInit();
-  if (!sb) return;
+  if (!sb) { console.warn('[MATCH] No Supabase client — skipping save'); return; }
   try {
-    await sb.from('match_records').insert({
-      game_mode: record.game_mode,
-      mp_game_id: record.mp_game_id,
-      difficulty: record.difficulty,
-      turns: record.turns,
+    // Build insert payload — omit user_id fields if null (uuid columns reject empty strings)
+    const payload = {
+      game_mode: record.game_mode || 'sp',
+      difficulty: record.difficulty || null,
+      turns: record.turns || 0,
       winner_seat: record.winner === 'player' ? 0 : 1,
       board_variant: record.board_variant || 'standard',
-      p0_user_id: record.p0_user_id,
-      p0_champion: record.p0_champion || record.player?.championName,
-      p0_faction: record.p0_faction || record.player?.faction,
-      p0_moves: record.player?.moves,
-      p0_walls: record.player?.wallsPlaced,
-      p0_cards: record.player?.cardsPlayed,
-      p0_card_names: record.player?.cardNames,
-      p0_deck_score: record.p0_deck_score,
-      p1_user_id: record.p1_user_id,
-      p1_champion: record.p1_champion || record.ai?.championName,
-      p1_faction: record.p1_faction || record.ai?.faction,
-      p1_moves: record.ai?.moves,
-      p1_walls: record.ai?.wallsPlaced,
-      p1_cards: record.ai?.cardsPlayed,
-      p1_card_names: record.ai?.cardNames,
-      p1_deck_score: record.p1_deck_score,
-      total_walls: record.totalWalls,
-    });
-    console.log('[MATCH] Record saved to Supabase');
-  } catch(e) { console.warn('[MATCH] Supabase save failed:', e); }
+      p0_champion: record.p0_champion || record.player?.championName || 'Unknown',
+      p0_faction: record.p0_faction || record.player?.faction || 'Basic',
+      p0_moves: record.player?.moves || 0,
+      p0_walls: record.player?.wallsPlaced || 0,
+      p0_cards: record.player?.cardsPlayed || 0,
+      p0_card_names: record.player?.cardNames || [],
+      p0_deck_score: record.p0_deck_score || 0,
+      p1_champion: record.p1_champion || record.ai?.championName || 'Unknown',
+      p1_faction: record.p1_faction || record.ai?.faction || 'Basic',
+      p1_moves: record.ai?.moves || 0,
+      p1_walls: record.ai?.wallsPlaced || 0,
+      p1_cards: record.ai?.cardsPlayed || 0,
+      p1_card_names: record.ai?.cardNames || [],
+      p1_deck_score: record.p1_deck_score || 0,
+      total_walls: record.totalWalls || 0,
+    };
+    // Only include uuid fields if they are valid (non-null)
+    if (record.p0_user_id) payload.p0_user_id = record.p0_user_id;
+    if (record.p1_user_id) payload.p1_user_id = record.p1_user_id;
+    if (record.mp_game_id) payload.mp_game_id = record.mp_game_id;
+
+    const { error } = await sb.from('match_records').insert(payload);
+    if (error) {
+      console.error('[MATCH] Supabase insert error:', error.message, error.details, error.hint);
+    } else {
+      console.log('[MATCH] Record saved to Supabase');
+    }
+  } catch(e) { console.error('[MATCH] Supabase save exception:', e); }
 }
 
 async function saveGameRecordUnified(winner, mode, mpGameId) {
