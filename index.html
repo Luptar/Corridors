@@ -104,6 +104,15 @@
     flex: 1;
     padding: 0;
   }
+  /* Single-column mode: board centered, player panel at bottom */
+  main.layout-bottom {
+    grid-template-columns: 1fr;
+    grid-template-rows: 1fr auto;
+  }
+  main.layout-bottom .panel { display: none; }
+  main.layout-bottom .panel.right { display: none; }
+  main.layout-bottom .board-area { grid-column: 1; }
+  main.layout-bottom #player-bottom-panel { display: flex; }
 
   /* ── Side panels ───────────────────────────────────────────────── */
   .panel {
@@ -2274,6 +2283,49 @@
     <div class="hand-section">
       <div class="hand-label">HAND <span id="p1-deck-count" style="color:var(--text-dim)">(deck: 15)</span></div>
       <div class="hand-cards" id="p1-hand"></div>
+    </div>
+  </div>
+
+  <!-- Bottom Player Panel (used in layout-bottom mode) -->
+  <div id="player-bottom-panel" style="display:none;background:var(--surface);border-top:1px solid var(--border);padding:10px 16px;">
+    <div style="display:flex;gap:16px;align-items:flex-start;max-width:1200px;margin:0 auto;overflow-x:auto;">
+      <!-- Champion info -->
+      <div style="min-width:160px;flex-shrink:0;">
+        <div id="bp-name" style="font-family:'Teko',sans-serif;font-size:20px;color:var(--p0);letter-spacing:.05em;">—</div>
+        <div id="bp-title" style="font-size:9px;color:#888;letter-spacing:.08em;">—</div>
+        <div style="display:flex;gap:10px;margin-top:6px;font-size:10px;color:#aaa;">
+          <span>W: <span id="bp-walls">0/5</span></span>
+          <span>H: <span id="bp-hand-count">0/4</span></span>
+          <span>SPD: <span id="bp-speed">1</span></span>
+        </div>
+        <div id="bp-wall-pips" style="margin-top:4px;"></div>
+      </div>
+      <!-- Passive + Ultimate -->
+      <div style="min-width:150px;flex-shrink:0;">
+        <div style="font-size:9px;color:var(--amber);letter-spacing:.08em;" id="bp-passive-name">—</div>
+        <div style="font-size:9px;color:#888;line-height:1.3;" id="bp-passive-desc">—</div>
+        <div style="margin-top:6px;">
+          <div style="font-size:9px;color:#f59e0b;letter-spacing:.08em;">⚡ <span id="bp-ult-name">—</span></div>
+          <div id="bp-charge-bar" style="margin-top:3px;"></div>
+          <div id="bp-charge-text" style="font-size:9px;color:#888;margin-top:2px;">0 / 5</div>
+          <button class="action-btn" id="bp-ult-btn" onclick="activateUltimate(0)"
+            style="margin-top:4px;font-size:9px;padding:3px 10px;opacity:0.3;pointer-events:none;" disabled>⚡ ULTIMATE</button>
+        </div>
+      </div>
+      <!-- Status effects -->
+      <div id="bp-status" style="min-width:80px;flex-shrink:0;"></div>
+      <!-- Revealed opponent hand (Warden's Stare) -->
+      <div id="bp-revealed-hand" style="display:none;min-width:120px;flex-shrink:0;">
+        <div style="font-size:9px;color:var(--wall-ward);letter-spacing:.08em;margin-bottom:4px;">OPPONENT'S HAND (REVEALED)</div>
+        <div id="bp-revealed-cards" class="hand-cards" style="font-size:9px;"></div>
+      </div>
+      <!-- Hand (cards) — takes remaining space -->
+      <div style="flex:1;min-width:200px;">
+        <div style="font-size:9px;color:var(--text-dim);letter-spacing:.1em;margin-bottom:4px;">
+          HAND <span id="bp-deck-count" style="color:#555;">(deck: 0)</span>
+        </div>
+        <div class="hand-cards" id="bp-hand" style="display:flex;flex-wrap:wrap;gap:4px;"></div>
+      </div>
     </div>
   </div>
 </main>
@@ -5847,7 +5899,8 @@ const AI_WEIGHTS = {
 // aggression: multiplier on "my distance gain" (higher = rushes more)
 // control:    multiplier on "opponent distance loss" (higher = walls more)
 function getAIFaction() {
-  return gameState?.players[AI_PLAYER]?.champion?.faction || 'Architects';
+  const seat = gameState?.activePlayer ?? AI_PLAYER;
+  return gameState?.players[seat]?.champion?.faction || 'Architects';
 }
 
 // bfsDistanceFor: BFS from a position accounting for phantom walls from the mover's perspective
@@ -5880,12 +5933,32 @@ function scoreAction(action, walls, aiPos, oppPos) {
   const oppGoal = getGoalRow(targetOpp);
   const blocking = aiShouldBlock(aiSeat);
 
-  // FFA: use Manhattan distance to center tile instead of BFS-to-row
+  // FFA: use BFS distance to center tile so walls are accounted for
   const centerRow = Math.floor(BOARD_ROWS / 2), centerCol = Math.floor(BOARD_COLS / 2);
-  const ffaDist = (pos) => Math.abs(pos.row - centerRow) + Math.abs(pos.col - centerCol);
+  function ffaBfsDist(pos, wallSet) {
+    // BFS from pos to center tile, respecting walls
+    const blocked = buildBlockedEdges(wallSet);
+    const visited = new Set([`${pos.row},${pos.col}`]);
+    const queue = [{...pos, dist:0}];
+    const dirs = [{r:-1,c:0},{r:1,c:0},{r:0,c:1},{r:0,c:-1}];
+    while (queue.length) {
+      const cur = queue.shift();
+      if (cur.row === centerRow && cur.col === centerCol) return cur.dist;
+      for (const d of dirs) {
+        const nb = {row:cur.row+d.r, col:cur.col+d.c};
+        if (nb.row<0||nb.row>=BOARD_ROWS||nb.col<0||nb.col>=BOARD_COLS) continue;
+        const k = `${nb.row},${nb.col}`;
+        if (visited.has(k)) continue;
+        if (isEdgeBlocked(cur, nb, blocked)) continue;
+        visited.add(k);
+        queue.push({...nb, dist:cur.dist+1});
+      }
+    }
+    return Infinity;
+  }
 
-  const myDistBefore  = gameConfig.mode === 'ffa' ? ffaDist(aiPos)  : bfsDistanceAI(aiPos, myGoal, walls);
-  const oppDistBefore = gameConfig.mode === 'ffa' ? ffaDist(oppPos) : bfsDistanceFor(oppPos, oppGoal, walls, 0);
+  const myDistBefore  = gameConfig.mode === 'ffa' ? ffaBfsDist(aiPos, walls)  : bfsDistanceAI(aiPos, myGoal, walls);
+  const oppDistBefore = gameConfig.mode === 'ffa' ? ffaBfsDist(oppPos, walls) : bfsDistanceFor(oppPos, oppGoal, walls, 0);
 
   let newWalls = walls, newAiPos = aiPos;
 
@@ -5906,8 +5979,8 @@ function scoreAction(action, walls, aiPos, oppPos) {
     newWalls = walls.map(w => w.id === action.wallId ? {...w, length: Math.max(1, w.length - 1)} : w);
   }
 
-  const myDistAfter  = gameConfig.mode === 'ffa' ? ffaDist(newAiPos) : bfsDistanceAI(newAiPos, myGoal, newWalls);
-  const oppDistAfter = gameConfig.mode === 'ffa' ? ffaDist(oppPos)  : bfsDistanceFor(oppPos, oppGoal, newWalls, 0);
+  const myDistAfter  = gameConfig.mode === 'ffa' ? ffaBfsDist(newAiPos, newWalls) : bfsDistanceAI(newAiPos, myGoal, newWalls);
+  const oppDistAfter = gameConfig.mode === 'ffa' ? ffaBfsDist(oppPos, newWalls)  : bfsDistanceFor(oppPos, oppGoal, newWalls, 0);
 
   if (myDistAfter  === Infinity) return -1e9;
   if (oppDistAfter === Infinity) return  1e9;
@@ -5967,6 +6040,7 @@ function generateWallCandidates(oppPos, length) {
   const W = AI_WEIGHTS[aiDifficulty];
   const maxCands = W.wallCands;
   const candidates = [];
+  const pi = gameState.activePlayer;
 
   if (aiDifficulty === 'hard') {
     // Full board sweep — every legal anchor position
@@ -5980,21 +6054,55 @@ function generateWallCandidates(oppPos, length) {
         candidates.push({ anchor: { row: r, col: c }, orientation: 'V' });
       }
     }
+  } else if (gameConfig.mode === 'ffa') {
+    // FFA: focus walls between opponents and the center goal
+    const cr = Math.floor(BOARD_ROWS / 2), cc = Math.floor(BOARD_COLS / 2);
+    // Ring around center (1-3 tiles out)
+    for (let dr = -3; dr <= 3; dr++) {
+      for (let dc = -3; dc <= 3; dc++) {
+        const r = cr + dr, c = cc + dc;
+        if (r < 0 || r >= BOARD_SIZE - 1 || c < 0 || c >= BOARD_SIZE - length) continue;
+        candidates.push({ anchor: { row: r, col: c }, orientation: 'H' });
+        if (c < BOARD_SIZE - 1) candidates.push({ anchor: { row: r, col: c }, orientation: 'V' });
+      }
+    }
+    // Also walls near each opponent between them and center
+    const opponents = getOpponents(pi);
+    for (const oi of opponents) {
+      const op = gameState.players[oi]?.position;
+      if (!op) continue;
+      const midR = Math.floor((op.row + cr) / 2);
+      const midC = Math.floor((op.col + cc) / 2);
+      for (let dr = -1; dr <= 1; dr++) {
+        for (let dc = -1; dc <= 1; dc++) {
+          const r = midR + dr, c = midC + dc;
+          if (r < 0 || r >= BOARD_SIZE - 1 || c < 0 || c >= BOARD_SIZE - length) continue;
+          candidates.push({ anchor: { row: r, col: c }, orientation: 'H' });
+          if (c < BOARD_SIZE - 1) candidates.push({ anchor: { row: r, col: c }, orientation: 'V' });
+        }
+      }
+    }
   } else {
-    // Medium/easy: focused around opponent position
+    // 1v1 / 2v2: focused around opponent position and between them and their goal
     const col = oppPos.col;
-    for (let r = 0; r < oppPos.row; r++) {
+    const oppGoal = getGoalRow(getFirstOpponent(pi));
+    const towardGoal = oppGoal < oppPos.row ? -1 : 1; // direction opponent needs to go
+    // Walls between opponent and their goal
+    const startR = towardGoal < 0 ? Math.max(0, oppGoal) : oppPos.row;
+    const endR = towardGoal < 0 ? oppPos.row : Math.min(BOARD_SIZE - 1, oppGoal);
+    for (let r = startR; r <= endR; r++) {
       for (let startC = Math.max(0, col - length); startC <= Math.min(BOARD_SIZE - length, col + 1); startC++) {
         candidates.push({ anchor: { row: r, col: startC }, orientation: 'H' });
       }
     }
+    // Vertical walls near opponent
     for (let r = Math.max(0, oppPos.row - 3); r < Math.min(BOARD_SIZE - length, oppPos.row + 2); r++) {
       if (col > 0)              candidates.push({ anchor: { row: r, col: col - 1 }, orientation: 'V' });
       if (col < BOARD_SIZE - 2) candidates.push({ anchor: { row: r, col: col },     orientation: 'V' });
     }
-    // Also include cells between AI and goal (midfield blocking)
-    const aiPos = gameState.players[AI_PLAYER].position;
-    const midRow = Math.floor((aiPos.row + BOARD_SIZE - 1) / 2);
+    // Midfield blocking
+    const aiPos = gameState.players[pi].position;
+    const midRow = Math.floor((aiPos.row + (oppGoal >= 0 ? oppGoal : BOARD_SIZE - 1)) / 2);
     for (let r = midRow - 1; r <= midRow + 1; r++) {
       if (r < 0 || r >= BOARD_SIZE - 1) continue;
       for (let startC = 0; startC <= BOARD_SIZE - length; startC++) {
@@ -6003,7 +6111,7 @@ function generateWallCandidates(oppPos, length) {
     }
   }
 
-  // Shuffle then trim to budget so hard mode doesn't freeze the browser
+  // Shuffle then trim to budget
   return shuffle(candidates).slice(0, maxCands);
 }
 
@@ -12707,22 +12815,136 @@ function updateActionBar() {
 // ── Rendering ───────────────────────────────────────────────────────
 function adjustLayoutForMode() {
   const logSection = document.querySelector('.log-section');
+  const mainEl = document.querySelector('main');
+  const panelP0 = document.getElementById('panel-p0');
   const panelP1 = document.getElementById('panel-p1');
   const isMP = gameMode === 'mp';
-  const is4P = gameConfig.playerCount > 2;
 
-  // Hide game log in all modes (use compact status indicators instead)
+  // Hide game log in all modes
   if (logSection) logSection.style.display = 'none';
 
-  // In SP modes, hide the right panel — AI info shown as compact strip above board
-  if (!isMP && panelP1) {
-    panelP1.style.display = 'none';
-  } else if (isMP && panelP1) {
-    panelP1.style.display = '';
+  // Switch to bottom-panel layout: board centered, player info at bottom
+  if (mainEl) mainEl.classList.add('layout-bottom');
+  if (panelP0) panelP0.style.display = 'none';
+  if (panelP1) panelP1.style.display = 'none';
+
+  // Show and populate the bottom player panel
+  renderBottomPanel();
+
+  // Render compact AI/opponent status bars above the board
+  renderAIStatusStrip();
+}
+
+function renderBottomPanel() {
+  const bp = document.getElementById('player-bottom-panel');
+  if (!bp || !gameState?.players) return;
+
+  const localSeat = (gameMode === 'mp') ? (mp_localSeat ?? 0) : 0;
+  const p = gameState.players[localSeat];
+  if (!p) return;
+  const c = p.champion;
+
+  bp.style.display = 'flex';
+
+  setText('bp-name', c.name);
+  setText('bp-title', `${c.title || ''} · ${c.faction}`);
+  setText('bp-walls', `${p.wallsInPlay}/${p.wallLimitCurrent}`);
+  setText('bp-hand-count', `${p.hand.length}/${c.handSize}`);
+  setText('bp-speed', c.moveSpeed || 1);
+  setText('bp-passive-name', c.passiveName || '');
+  setText('bp-passive-desc', c.passiveDesc || '');
+  setText('bp-ult-name', c.ultimateName || '');
+  setText('bp-charge-text', `${p.ultimateCharge} / ${c.ultimateCost}`);
+
+  const deckCount = (gameMode === 'mp' && p.deck.length === 0 && gameState._deckCounts)
+    ? gameState._deckCounts[localSeat] : p.deck.length;
+  setText('bp-deck-count', `(deck: ${deckCount})`);
+
+  renderChargeBar('bp-charge-bar', p.ultimateCharge, c.ultimateCost, p.ultimateReady);
+  renderWallPips('bp-wall-pips', p.wallsInPlay, p.wallLimitCurrent);
+
+  // Ultimate button
+  const ultBtn = document.getElementById('bp-ult-btn');
+  if (ultBtn) {
+    ultBtn.onclick = () => activateUltimate(localSeat);
+    if (p.ultimateReady && !p.ultimateUsed && localSeat === gameState.activePlayer && gameState.phase === 'action') {
+      ultBtn.disabled = false;
+      ultBtn.style.opacity = '1';
+      ultBtn.style.pointerEvents = 'auto';
+      ultBtn.className = 'action-btn primary btn-available';
+    } else {
+      ultBtn.disabled = true;
+      ultBtn.style.opacity = '0.3';
+      ultBtn.style.pointerEvents = 'none';
+      ultBtn.className = 'action-btn';
+    }
   }
 
-  // Render compact AI status bars above the board
-  renderAIStatusStrip();
+  // Status effects
+  const statusEl = document.getElementById('bp-status');
+  if (statusEl) {
+    statusEl.innerHTML = (p.statusEffects || []).filter(e => e.turnsRemaining > 0)
+      .map(e => {
+        const labels = { skip_move:'BOUND', bind_cooldown:'COOLDOWN', veil_of_shadows:'VEILED', deja_vu:'DÉJÀ VU', martial_law:'MARTIAL LAW' };
+        const label = labels[e.type] || e.type.replace(/_/g,' ').toUpperCase();
+        return `<span class="status-chip">${label} (${e.turnsRemaining}t)</span>`;
+      }).join('');
+  }
+
+  // Hand — render clickable cards for the local player
+  const handEl = document.getElementById('bp-hand');
+  if (handEl) {
+    const isActive = localSeat === gameState.activePlayer && gameState.phase === 'action';
+    const champId = getPassiveId(localSeat);
+    let canPlayNonInstant = false;
+    if (isActive) {
+      const isMagnus = champId === 'magnus';
+      const isSoren = champId === 'soren';
+      if (isMagnus) canPlayNonInstant = cardsPlayedThisTurn < 2 && !(hasMoved && cardsPlayedThisTurn >= 1);
+      else if (isSoren) canPlayNonInstant = !hasMoved || cardsPlayedThisTurn < 1;
+      else canPlayNonInstant = cardsPlayedThisTurn < 1;
+    }
+    handEl.innerHTML = p.hand.map((card, idx) => {
+      const isInstant = card.instant || (CARDS[card.id] && CARDS[card.id].instant);
+      const playable = isActive && (isInstant || canPlayNonInstant);
+      const selClass = selectedCard && selectedCard.idx === idx ? ' selected' : '';
+      const typeClass = card.type === 'Wall' ? 'card-wall' : card.type === 'Movement' ? 'card-move' : 'card-disrupt';
+      return `<div class="hand-card ${typeClass}${selClass}${playable ? ' playable' : ''}"
+        onclick="selectCard('${card.id}',${idx})" title="${card.desc || ''}">
+        <div class="hand-card-name">${card.name}</div>
+        <div class="hand-card-type">${card.type}${isInstant ? ' · Instant' : ''}</div>
+      </div>`;
+    }).join('');
+  }
+
+  // Warden's Stare: reveal opponent hand
+  renderWardenReveal(localSeat);
+}
+
+function renderWardenReveal(localSeat) {
+  const revealPanel = document.getElementById('bp-revealed-hand');
+  const revealCards = document.getElementById('bp-revealed-cards');
+  if (!revealPanel || !revealCards) return;
+
+  const localIsThorne = gameState.players[localSeat] && getPassiveId(localSeat) === 'thorne';
+  if (!localIsThorne) { revealPanel.style.display = 'none'; return; }
+
+  // Show the primary opponent's hand
+  const oppSeat = getFirstOpponent(localSeat);
+  const opp = gameState.players[oppSeat];
+  if (!opp || !opp.hand.length) { revealPanel.style.display = 'none'; return; }
+
+  revealPanel.style.display = 'block';
+  const oppName = opp.champion.name;
+  revealPanel.querySelector('div').textContent = `${oppName.toUpperCase()}'S HAND (WARDEN'S STARE)`;
+
+  revealCards.innerHTML = opp.hand.map(card => {
+    const typeClass = card.type === 'Wall' ? 'card-wall' : card.type === 'Movement' ? 'card-move' : 'card-disrupt';
+    return `<div class="hand-card ${typeClass}" style="opacity:0.7;cursor:default;font-size:9px;">
+      <div class="hand-card-name">${card.name}</div>
+      <div class="hand-card-type">${card.type}</div>
+    </div>`;
+  }).join('');
 }
 
 function renderAIStatusStrip() {
@@ -16530,31 +16752,81 @@ async function loadFriends() {
   } catch(e) { console.warn('[FRIENDS]', e); return []; }
 }
 
-async function sendFriendRequest(username) {
-  const sb = mpInit();
-  if (!sb || !_authUser) return;
-  if (!username) { showStatus('Enter a username', 'error'); return; }
-  const { data: target, error: lookupErr } = await sb.from('user_profiles')
-    .select('id').eq('username', username).maybeSingle();
-  if (lookupErr || !target) { showStatus('User not found: ' + username, 'error'); return; }
-  if (target.id === _authUser.id) { showStatus('Cannot add yourself', 'error'); return; }
-  const { error } = await sb.from('friends').insert({
-    user_id: _authUser.id, friend_id: target.id, status: 'pending'
-  });
-  if (error) {
-    if (error.code === '23505') showStatus('Request already sent', 'error');
-    else showStatus('Failed: ' + error.message, 'error');
+// Show feedback on overlay screens (where showStatus on #mode-indicator is invisible)
+function showOverlayFeedback(msg, type) {
+  // Try overlay-specific feedback element first, then fall back to a toast
+  const fb = document.getElementById('overlay-feedback');
+  if (fb) {
+    fb.textContent = msg;
+    fb.style.color = type === 'error' ? '#e05050' : type === 'success' ? '#4ade80' : '#ccc';
+    fb.style.display = 'block';
+    setTimeout(() => { fb.style.display = 'none'; }, 4000);
     return;
   }
-  showStatus('Friend request sent to ' + username, 'success');
+  // Fallback: create a floating toast
+  const toast = document.createElement('div');
+  toast.style.cssText = `position:fixed;top:20px;left:50%;transform:translateX(-50%);z-index:9999;
+    padding:10px 24px;font-size:13px;letter-spacing:.05em;
+    background:${type==='error'?'rgba(224,80,80,0.95)':type==='success'?'rgba(74,222,128,0.95)':'rgba(100,100,100,0.95)'};
+    color:#fff;font-family:'JetBrains Mono',monospace;pointer-events:none;`;
+  toast.textContent = msg;
+  document.body.appendChild(toast);
+  setTimeout(() => toast.remove(), 3000);
+}
+
+async function sendFriendRequest(username) {
+  const sb = mpInit();
+  if (!sb || !_authUser) { showOverlayFeedback('Not logged in', 'error'); return; }
+  if (!username) { showOverlayFeedback('Enter a username', 'error'); return; }
+
+  // Look up the target user
+  const { data: target, error: lookupErr } = await sb.from('user_profiles')
+    .select('id, username').eq('username', username.toLowerCase()).maybeSingle();
+
+  // If exact match fails, try case-insensitive
+  let targetUser = target;
+  if (!targetUser && !lookupErr) {
+    const { data: fuzzy } = await sb.from('user_profiles')
+      .select('id, username').ilike('username', username).maybeSingle();
+    targetUser = fuzzy;
+  }
+
+  if (!targetUser) {
+    showOverlayFeedback('User not found: ' + username, 'error');
+    return;
+  }
+  if (targetUser.id === _authUser.id) {
+    showOverlayFeedback('Cannot add yourself', 'error');
+    return;
+  }
+
+  const { error } = await sb.from('friends').insert({
+    user_id: _authUser.id, friend_id: targetUser.id, status: 'pending'
+  });
+  if (error) {
+    if (error.code === '23505') {
+      showOverlayFeedback('Request already sent to ' + targetUser.username, 'error');
+    } else if (error.message?.includes('does not exist') || error.code === '42P01') {
+      showOverlayFeedback('Friends system not set up — run the SQL migration in Supabase', 'error');
+      console.error('[FRIENDS] Table missing. Run: CREATE TABLE friends (id uuid DEFAULT gen_random_uuid() PRIMARY KEY, user_id uuid REFERENCES auth.users(id), friend_id uuid REFERENCES auth.users(id), status text DEFAULT \'pending\', created_at timestamptz DEFAULT now(), UNIQUE(user_id, friend_id));');
+    } else {
+      showOverlayFeedback('Failed: ' + error.message, 'error');
+    }
+    return;
+  }
+  showOverlayFeedback('Friend request sent to ' + targetUser.username + '!', 'success');
+  // Clear the input
+  const input = document.getElementById('friend-add-input');
+  if (input) input.value = '';
   showFriendsScreen(); // refresh
 }
 
 async function acceptFriendRequest(friendshipId) {
   const sb = mpInit();
   if (!sb) return;
-  await sb.from('friends').update({ status: 'accepted' }).eq('id', friendshipId);
-  showStatus('Friend request accepted!', 'success');
+  const { error } = await sb.from('friends').update({ status: 'accepted' }).eq('id', friendshipId);
+  if (error) { showOverlayFeedback('Failed: ' + error.message, 'error'); return; }
+  showOverlayFeedback('Friend request accepted!', 'success');
   showFriendsScreen();
 }
 
@@ -16562,8 +16834,9 @@ async function removeFriend(friendshipId) {
   if (!confirm('Remove this friend?')) return;
   const sb = mpInit();
   if (!sb) return;
-  await sb.from('friends').delete().eq('id', friendshipId);
-  showStatus('Friend removed', 'success');
+  const { error } = await sb.from('friends').delete().eq('id', friendshipId);
+  if (error) { showOverlayFeedback('Failed: ' + error.message, 'error'); return; }
+  showOverlayFeedback('Friend removed', 'success');
   showFriendsScreen();
 }
 
@@ -16602,9 +16875,11 @@ async function showFriendsScreen() {
       <button onclick="document.getElementById('friends-overlay')?.remove();showLandingScreen();" style="font-size:11px;padding:4px 12px;background:transparent;border:1px solid var(--text-dim);color:var(--text-dim);cursor:pointer;letter-spacing:.1em;font-family:'JetBrains Mono',monospace;">BACK</button>
     </div>
     <div style="display:flex;gap:8px;margin-bottom:20px;">
-      <input id="friend-add-input" class="mp-input" style="flex:1;" placeholder="Enter username to add..." maxlength="20">
+      <input id="friend-add-input" class="mp-input" style="flex:1;" placeholder="Enter username to add..." maxlength="20"
+        onkeydown="if(event.key==='Enter')sendFriendRequest(this.value.trim())">
       <button onclick="sendFriendRequest(document.getElementById('friend-add-input').value.trim())" class="action-btn primary" style="font-size:11px;padding:6px 14px;">ADD</button>
-    </div>`;
+    </div>
+    <div id="overlay-feedback" style="display:none;font-size:12px;margin-top:8px;letter-spacing:.05em;"></div>`;
 
   if (pendingIncoming.length) {
     html += '<div style="font-size:10px;color:#f59e0b;letter-spacing:.1em;margin-bottom:8px;">PENDING REQUESTS</div>';
