@@ -523,6 +523,16 @@
     color: var(--p1);
     box-shadow: 0 0 12px rgba(90,159,212,0.3);
   }
+  .champion-piece.p2 {
+    background: rgba(74,222,128,0.15);
+    color: var(--p2);
+    box-shadow: 0 0 12px rgba(74,222,128,0.3);
+  }
+  .champion-piece.p3 {
+    background: rgba(192,132,252,0.15);
+    color: var(--p3);
+    box-shadow: 0 0 12px rgba(192,132,252,0.3);
+  }
   .champion-piece.active-piece {
     box-shadow: 0 0 20px currentColor;
   }
@@ -2738,7 +2748,7 @@ const CHAMPIONS = {
     ultimateCost:7, ultimateName:'Total Reordering',
     passiveName:"Warden's Stare",
     passiveDesc:"Opponent's hand is always revealed to you.",
-    ultimateDesc:'Reposition ALL walls on the board to legal locations of your choice.',
+    ultimateDesc:'Randomly reorders ALL walls on the board to new legal locations.',
     passiveId:'thorne', ultimateId:'thorne',
   },
 
@@ -3081,7 +3091,7 @@ const CARDS = {
 
   // ── TRAPPERS ─────────────────────────────────────────────────────────
   TR1: { id:'TR1', name:'Root Trap',       faction:'Trappers', rarity:'Common',   type:'Disruption',
-         desc:'Place invisible root trap within 3 spaces. Opponent stepping on it: skips movement next turn. Lasts 3 turns.' },
+         desc:'Place invisible root trap within 6 spaces. Opponent stepping on it: skips movement next turn. Lasts 3 turns.' },
   TR2: { id:'TR2', name:'Tripwire',        faction:'Trappers', rarity:'Common',   type:'Wall',
          desc:'Place 1-tile wall + tripwire trap adjacent. Triggered: opponent pushed 1 space away from wall.', wallLen:1, special:'tripwire' },
   TR3: { id:'TR3', name:'Pit Trap',        faction:'Trappers', rarity:'Common',   type:'Disruption',
@@ -3093,7 +3103,7 @@ const CARDS = {
   TR6: { id:'TR6', name:'Spring Trap',     faction:'Trappers', rarity:'Uncommon', type:'Disruption',
          desc:'Place invisible trap. Triggered: opponent launched 2 spaces random non-forward direction. Lasts 3 turns.' },
   TR7: { id:'TR7', name:'Tangleroot',      faction:'Trappers', rarity:'Uncommon', type:'Disruption',
-         desc:'Place root traps on up to 2 tiles within 3 spaces. Triggered: opponent skips movement next turn. Lasts 2 turns.' },
+         desc:'Place root traps on up to 2 tiles within 6 spaces. Triggered: opponent skips movement next turn. Lasts 2 turns.' },
   TR8: { id:'TR8', name:'Trapper\'s Barricade', faction:'Trappers', rarity:'Uncommon', type:'Wall',
          desc:'Place 2-tile wall + root traps on tiles adjacent to each end (up to 4). Lasts 2 turns.', wallLen:2, special:'trapperBarricade' },
   TR10:{ id:'TR10',name:'Minefield',       faction:'Trappers', rarity:'Rare',     type:'Disruption',
@@ -3355,7 +3365,21 @@ function getFirstOpponent(pi) {
 }
 
 function getPlayerColor(pi) {
+  if (gameConfig.mode === '2v2') {
+    const team = getTeam(pi);
+    return team === getTeam(0) ? 'var(--p0)' : 'var(--p1)';
+  }
   return ['var(--p0)', 'var(--p1)', 'var(--p2)', 'var(--p3)'][pi] || 'var(--p0)';
+}
+
+// CSS class for champion pieces on the board (p0/p1/p2/p3)
+// In 2v2: teammates share same class so they render in the same color
+function getPlayerPieceClass(pi) {
+  if (gameConfig.mode === '2v2') {
+    const team = getTeam(pi);
+    return team === getTeam(0) ? 'p0' : 'p1';
+  }
+  return 'p' + pi;
 }
 
 function checkVictory(pi, pos) {
@@ -11818,10 +11842,10 @@ async function applyDisruptionCard(pi, card, idx) {
   // ── TRAPPER DISRUPTION CARDS ────────────────────────────────
   // ═══════════════════════════════════════════════════════════════
 
-  // ── TR1: Root Trap — place root trap within 3 spaces ──
+  // ── TR1: Root Trap — place root trap within 6 spaces ──
   if (card.id === 'TR1') {
     if (isHumanSeat(pi)) {
-      enterTrapPlaceMode(pi, idx, card, 'root', 3, {}, 3, 1, (n) => {
+      enterTrapPlaceMode(pi, idx, card, 'root', 3, {}, 6, 1, (n) => {
         showStatus(`Root trap placed!`, 'success');
       });
       return;
@@ -11843,7 +11867,7 @@ async function applyDisruptionCard(pi, card, idx) {
   // ── TR3: Pit Trap — card-denial trap ──
   if (card.id === 'TR3') {
     if (isHumanSeat(pi)) {
-      enterTrapPlaceMode(pi, idx, card, 'pit', 2, {}, 3, 1, (n) => {
+      enterTrapPlaceMode(pi, idx, card, 'pit', 2, {}, 6, 1, (n) => {
         showStatus('Pit trap placed!', 'success');
       });
       return;
@@ -11887,7 +11911,7 @@ async function applyDisruptionCard(pi, card, idx) {
   // ── TR6: Spring Trap — displacement trap ──
   if (card.id === 'TR6') {
     if (isHumanSeat(pi)) {
-      enterTrapPlaceMode(pi, idx, card, 'spring', 3, {pushSpaces: 2}, 3, 1, (n) => {
+      enterTrapPlaceMode(pi, idx, card, 'spring', 3, {pushSpaces: 2}, 6, 1, (n) => {
         showStatus('Spring Trap placed!', 'success');
       });
       return;
@@ -11908,7 +11932,7 @@ async function applyDisruptionCard(pi, card, idx) {
   // ── TR7: Tangleroot — place 2 root traps ──
   if (card.id === 'TR7') {
     if (isHumanSeat(pi)) {
-      enterTrapPlaceMode(pi, idx, card, 'root', 2, {}, 3, 2, (n) => {
+      enterTrapPlaceMode(pi, idx, card, 'root', 2, {}, 6, 2, (n) => {
         showStatus(`Tangleroot: ${n} root traps placed!`, 'success');
       });
       return;
@@ -13103,17 +13127,11 @@ function renderWardenReveal(localSeat) {
   const rightPanel = document.getElementById('warden-stare-right');
   if (!leftPanel || !rightPanel) return;
 
-  const localIsThorne = gameState.players[localSeat] && getPassiveId(localSeat) === 'thorne';
-  if (!localIsThorne) {
-    leftPanel.style.display = 'none';
-    rightPanel.style.display = 'none';
-    return;
-  }
+  const canReveal = gameState.players[localSeat] && getPassiveId(localSeat) === 'thorne';
 
-  // Get all opponents with hands to reveal
+  // Get all opponents (always show panels, hide card details if no reveal)
   const opponents = getOpponents(localSeat)
-    .filter(oi => gameState.players[oi] && gameState.players[oi].hand.length > 0
-      && !gameState._ffaFinished?.has(oi));
+    .filter(oi => gameState.players[oi] && !gameState._ffaFinished?.has(oi));
 
   if (opponents.length === 0) {
     leftPanel.style.display = 'none';
@@ -13125,21 +13143,38 @@ function renderWardenReveal(localSeat) {
   function renderOppHand(oi) {
     const p = gameState.players[oi];
     const color = getPlayerColor(oi);
+    const handCount = p.hand.length;
     let html = `<div style="margin-bottom:10px;">
-      <div style="font-size:9px;color:${color};letter-spacing:.08em;margin-bottom:4px;font-family:'Teko',sans-serif;font-size:13px;">
-        ⬡ ${p.champion.name}
+      <div style="font-family:'Teko',sans-serif;font-size:13px;color:${color};letter-spacing:.06em;margin-bottom:4px;">
+        ⬡ ${p.champion.name} <span style="font-size:9px;color:#888;">(${handCount})</span>
       </div>`;
-    html += p.hand.map((card, idx) => {
-      const typeColor = card.type === 'Wall' ? 'var(--wall-default)' : card.type === 'Movement' ? 'var(--wall-path)' : 'var(--danger)';
-      return `<div style="background:var(--surface);border:1px solid var(--border);padding:4px 6px;margin-bottom:3px;font-size:8px;">
-        <div style="color:#ccc;font-size:10px;"><span class="rarity-dot rarity-${card.rarity}"></span>${card.name}</div>
-        <div style="color:${typeColor};font-size:7px;letter-spacing:.08em;">${card.type}</div>
-        <div style="color:#666;font-size:7px;line-height:1.3;margin-top:1px;">${card.desc || ''}</div>
-      </div>`;
-    }).join('');
+    if (canReveal && handCount > 0) {
+      // Revealed: show full card details
+      html += p.hand.map(card => {
+        const typeColor = card.type === 'Wall' ? 'var(--wall-default)' : card.type === 'Movement' ? 'var(--wall-path)' : 'var(--danger)';
+        return `<div style="background:var(--surface);border:1px solid var(--border);padding:4px 6px;margin-bottom:3px;">
+          <div style="color:#ccc;font-size:10px;"><span class="rarity-dot rarity-${card.rarity}"></span>${card.name}</div>
+          <div style="color:${typeColor};font-size:7px;letter-spacing:.08em;">${card.type}</div>
+          <div style="color:#666;font-size:7px;line-height:1.3;margin-top:1px;">${card.desc || ''}</div>
+        </div>`;
+      }).join('');
+    } else if (handCount > 0) {
+      // Hidden: show card backs
+      html += Array.from({length: handCount}, () =>
+        `<div style="background:var(--bg);border:1px solid var(--border);padding:6px;margin-bottom:3px;text-align:center;">
+          <div style="font-size:8px;color:#444;letter-spacing:.1em;">HIDDEN</div>
+        </div>`
+      ).join('');
+    } else {
+      html += `<div style="font-size:8px;color:#444;padding:4px;">No cards</div>`;
+    }
     html += '</div>';
     return html;
   }
+
+  const panelTitle = canReveal
+    ? `<div style="font-size:8px;color:var(--wall-ward);letter-spacing:.1em;margin-bottom:6px;">WARDEN'S STARE</div>`
+    : `<div style="font-size:8px;color:#555;letter-spacing:.1em;margin-bottom:6px;">OPPONENTS</div>`;
 
   // Split opponents between left and right panels
   const leftOpps = opponents.slice(0, Math.ceil(opponents.length / 2));
@@ -13147,16 +13182,14 @@ function renderWardenReveal(localSeat) {
 
   if (leftOpps.length > 0) {
     leftPanel.style.display = 'block';
-    leftPanel.innerHTML = `<div style="font-size:8px;color:var(--wall-ward);letter-spacing:.1em;margin-bottom:6px;">WARDEN'S STARE</div>`
-      + leftOpps.map(oi => renderOppHand(oi)).join('');
+    leftPanel.innerHTML = panelTitle + leftOpps.map(oi => renderOppHand(oi)).join('');
   } else {
     leftPanel.style.display = 'none';
   }
 
   if (rightOpps.length > 0) {
     rightPanel.style.display = 'block';
-    rightPanel.innerHTML = `<div style="font-size:8px;color:var(--wall-ward);letter-spacing:.1em;margin-bottom:6px;">WARDEN'S STARE</div>`
-      + rightOpps.map(oi => renderOppHand(oi)).join('');
+    rightPanel.innerHTML = panelTitle + rightOpps.map(oi => renderOppHand(oi)).join('');
   } else {
     rightPanel.style.display = 'none';
   }
@@ -13533,7 +13566,7 @@ function renderBoard() {
       const ghostCellEl = grid.children[trail.pos.row * BOARD_SIZE + trail.pos.col];
       if (ghostCellEl) {
         const ghost = document.createElement('div');
-        ghost.className = `champion-piece p${pi} nyx-ghost`;
+        ghost.className = `champion-piece ${getPlayerPieceClass(pi)} nyx-ghost`;
         ghost.textContent = gameState.players[pi].champion.name[0];
         ghostCellEl.appendChild(ghost);
       }
@@ -13544,7 +13577,7 @@ function renderBoard() {
       if (realCellEl) {
         const isActive = pi === gameState.activePlayer && !aiThinking;
         const piece = document.createElement('div');
-        piece.className = `champion-piece p${pi}${isActive ? ' active-piece' : ''}`;
+        piece.className = `champion-piece ${getPlayerPieceClass(pi)}${isActive ? ' active-piece' : ''}`;
         piece.textContent = gameState.players[pi].champion.name[0];
         realCellEl.appendChild(piece);
       }
@@ -13553,7 +13586,7 @@ function renderBoard() {
         const echoCellEl = grid.children[trail.pos.row * BOARD_SIZE + trail.pos.col];
         if (echoCellEl) {
           const echo = document.createElement('div');
-          echo.className = `champion-piece p${pi} nyx-trail-echo`;
+          echo.className = `champion-piece ${getPlayerPieceClass(pi)} nyx-trail-echo`;
           echo.textContent = gameState.players[pi].champion.name[0];
           echoCellEl.appendChild(echo);
         }
@@ -13569,13 +13602,13 @@ function renderBoard() {
         if (isOpponentPerspective) {
           // Opponent sees the decoy as a real piece
           const decoy = document.createElement('div');
-          decoy.className = `champion-piece p${pi} nyx-ghost`;
+          decoy.className = `champion-piece ${getPlayerPieceClass(pi)} nyx-ghost`;
           decoy.textContent = gameState.players[pi].champion.name[0];
           ftCell.appendChild(decoy);
         } else {
           // Owner sees a faint echo so they know the decoy is there
           const echo = document.createElement('div');
-          echo.className = `champion-piece p${pi} nyx-trail-echo`;
+          echo.className = `champion-piece ${getPlayerPieceClass(pi)} nyx-trail-echo`;
           echo.textContent = gameState.players[pi].champion.name[0];
           ftCell.appendChild(echo);
         }
