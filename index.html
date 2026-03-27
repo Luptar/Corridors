@@ -2299,49 +2299,60 @@
   </div>
 
   <!-- Bottom Player Panel (used in layout-bottom mode) -->
-  <div id="player-bottom-panel" style="display:none;background:var(--surface);border-top:1px solid var(--border);padding:12px 16px;">
-    <!-- Top row: Champion info + Ultimate + Walls + Status -->
-    <div style="display:flex;gap:16px;align-items:center;max-width:1200px;margin:0 auto 8px;flex-wrap:wrap;">
-      <!-- Champion name + faction -->
-      <div style="min-width:120px;">
-        <div id="bp-name" style="font-family:'Teko',sans-serif;font-size:22px;color:var(--p0);letter-spacing:.05em;line-height:1;">—</div>
-        <div id="bp-title" style="font-size:9px;color:#888;letter-spacing:.08em;">—</div>
-      </div>
-      <!-- Passive -->
-      <div style="min-width:140px;max-width:200px;">
-        <div style="font-size:9px;color:var(--amber);letter-spacing:.08em;" id="bp-passive-name">—</div>
-        <div style="font-size:9px;color:#666;line-height:1.3;" id="bp-passive-desc">—</div>
-      </div>
-      <!-- Wall pips (horizontal) -->
-      <div style="min-width:100px;">
-        <div style="font-size:9px;color:var(--text-dim);letter-spacing:.1em;margin-bottom:3px;">WALLS <span id="bp-walls" style="color:#aaa;">0/5</span></div>
-        <div class="wall-count" id="bp-wall-pips"></div>
-      </div>
-      <!-- Ultimate (horizontal charge bar) -->
-      <div style="min-width:160px;">
-        <div style="display:flex;align-items:center;gap:6px;margin-bottom:3px;">
-          <span style="font-size:9px;color:#f59e0b;letter-spacing:.08em;">⚡ <span id="bp-ult-name">—</span></span>
-          <span id="bp-charge-text" style="font-size:9px;color:#888;">0/5</span>
+  <div id="player-bottom-panel" style="display:none;background:var(--surface);border-top:2px solid var(--border);">
+    <!-- Top row: Champion info bar -->
+    <div style="display:flex;align-items:stretch;max-width:1400px;margin:0 auto;border-bottom:1px solid var(--border);">
+      <!-- Champion identity -->
+      <div style="padding:10px 16px;border-right:1px solid var(--border);min-width:150px;">
+        <div id="bp-name" style="font-family:'Teko',sans-serif;font-size:24px;color:var(--p0);letter-spacing:.06em;line-height:1;">—</div>
+        <div id="bp-title" style="font-size:9px;color:#666;letter-spacing:.08em;margin-top:2px;">—</div>
+        <div style="margin-top:4px;">
+          <span style="font-size:9px;color:var(--amber);letter-spacing:.06em;" id="bp-passive-name">—</span>
         </div>
-        <div class="charge-bar" id="bp-charge-bar" style="height:6px;"></div>
+        <div style="font-size:8px;color:#555;line-height:1.3;margin-top:1px;max-width:180px;" id="bp-passive-desc">—</div>
+      </div>
+      <!-- Walls section -->
+      <div style="padding:10px 16px;border-right:1px solid var(--border);min-width:120px;display:flex;flex-direction:column;justify-content:center;">
+        <div style="font-size:8px;color:var(--text-dim);letter-spacing:.15em;margin-bottom:4px;">WALLS</div>
+        <div id="bp-walls" style="font-family:'Teko',sans-serif;font-size:20px;color:var(--amber);line-height:1;">0/5</div>
+        <div class="wall-count" id="bp-wall-pips" style="margin-top:4px;"></div>
+      </div>
+      <!-- Ultimate section -->
+      <div style="padding:10px 16px;border-right:1px solid var(--border);min-width:180px;display:flex;flex-direction:column;justify-content:center;">
+        <div style="display:flex;align-items:baseline;gap:6px;margin-bottom:4px;">
+          <span style="font-size:8px;color:var(--text-dim);letter-spacing:.15em;">ULTIMATE</span>
+          <span id="bp-charge-text" style="font-size:10px;color:var(--amber);font-family:'Teko',sans-serif;">0 / 5</span>
+        </div>
+        <div style="font-size:10px;color:#f59e0b;letter-spacing:.05em;margin-bottom:4px;" id="bp-ult-name">—</div>
+        <div class="charge-bar" id="bp-charge-bar" style="height:7px;"></div>
         <button class="action-btn" id="bp-ult-btn" onclick="activateUltimate(0)"
-          style="margin-top:4px;font-size:9px;padding:3px 12px;opacity:0.3;pointer-events:none;width:100%;" disabled>⚡ ULTIMATE</button>
+          style="margin-top:6px;font-size:9px;padding:4px 14px;opacity:0.3;pointer-events:none;width:100%;letter-spacing:.1em;" disabled>⚡ ACTIVATE</button>
+      </div>
+      <!-- Stats -->
+      <div style="padding:10px 16px;border-right:1px solid var(--border);display:flex;gap:16px;align-items:center;">
+        <div style="text-align:center;">
+          <div style="font-size:8px;color:var(--text-dim);letter-spacing:.12em;">HAND</div>
+          <div id="bp-hand-count" style="font-family:'Teko',sans-serif;font-size:18px;color:#ccc;line-height:1;">0/4</div>
+        </div>
+        <div style="text-align:center;">
+          <div style="font-size:8px;color:var(--text-dim);letter-spacing:.12em;">SPEED</div>
+          <div id="bp-speed" style="font-family:'Teko',sans-serif;font-size:18px;color:#ccc;line-height:1;">1</div>
+        </div>
+        <div style="text-align:center;">
+          <div style="font-size:8px;color:var(--text-dim);letter-spacing:.12em;">DECK</div>
+          <div id="bp-deck-count" style="font-family:'Teko',sans-serif;font-size:18px;color:#555;line-height:1;">0</div>
+        </div>
       </div>
       <!-- Status effects -->
-      <div id="bp-status" style="flex:1;"></div>
+      <div id="bp-status" style="padding:10px 16px;flex:1;display:flex;align-items:center;flex-wrap:wrap;gap:4px;"></div>
     </div>
-    <!-- Bottom row: Cards (using full card panels) -->
-    <div style="max-width:1200px;margin:0 auto;">
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
-        <span style="font-size:9px;color:var(--text-dim);letter-spacing:.1em;">HAND</span>
-        <span id="bp-hand-count" style="font-size:9px;color:#888;">0/4</span>
-        <span id="bp-deck-count" style="font-size:9px;color:#555;">(deck: 0)</span>
-      </div>
-      <div id="bp-hand" style="display:flex;gap:6px;flex-wrap:wrap;"></div>
+    <!-- Bottom row: Cards -->
+    <div style="padding:8px 16px;max-width:1400px;margin:0 auto;">
+      <div id="bp-hand" style="display:flex;gap:6px;flex-wrap:nowrap;"></div>
       <!-- Revealed opponent hand (Warden's Stare) -->
-      <div id="bp-revealed-hand" style="display:none;margin-top:8px;">
-        <div style="font-size:9px;color:var(--wall-ward);letter-spacing:.08em;margin-bottom:4px;">OPPONENT'S HAND (WARDEN'S STARE)</div>
-        <div id="bp-revealed-cards" style="display:flex;gap:6px;flex-wrap:wrap;"></div>
+      <div id="bp-revealed-hand" style="display:none;margin-top:8px;padding-top:8px;border-top:1px solid var(--border);">
+        <div style="font-size:9px;color:var(--wall-ward);letter-spacing:.1em;margin-bottom:6px;">⬡ OPPONENT'S HAND — WARDEN'S STARE</div>
+        <div id="bp-revealed-cards" style="display:flex;gap:6px;flex-wrap:nowrap;"></div>
       </div>
     </div>
   </div>
@@ -12003,9 +12014,9 @@ async function applyDisruptionCard(pi, card, idx) {
     const sorted = [...gameState.walls]
       .filter(w => !w.isPhantom)
       .sort((a, b) => {
-        // Sort by wall ID number (always incrementing) for true placement order
-        const aNum = parseInt(a.id.replace('w', '')) || 0;
-        const bNum = parseInt(b.id.replace('w', '')) || 0;
+        // Sort by wall ID (always incrementing) for true placement order
+        const aNum = typeof a.id === 'number' ? a.id : (parseInt(String(a.id).replace(/\D/g, '')) || 0);
+        const bNum = typeof b.id === 'number' ? b.id : (parseInt(String(b.id).replace(/\D/g, '')) || 0);
         return bNum - aNum;
       });
     const target = sorted[0];
@@ -12875,7 +12886,7 @@ function renderBottomPanel() {
 
   const deckCount = (gameMode === 'mp' && p.deck.length === 0 && gameState._deckCounts)
     ? gameState._deckCounts[localSeat] : p.deck.length;
-  setText('bp-deck-count', `(deck: ${deckCount})`);
+  setText('bp-deck-count', deckCount);
 
   renderChargeBar('bp-charge-bar', p.ultimateCharge, c.ultimateCost, p.ultimateReady);
   renderWallPips('bp-wall-pips', p.wallsInPlay, p.wallLimitCurrent);
@@ -13156,11 +13167,8 @@ function renderCard(card, idx, pi, interactive, canPlayNonInstant) {
   const cls = `card${isSel?' selected':''}${!interactive?' card-disabled':''}${isPlayable && !isSel?' card-playable':''}${isEchoPick?' echo-pick':''}${isInstantOnce?' card-instant-once':''}`;
   const instantBadge = isInstantOnce ? '<span class="instant-badge">⚡ INSTANT</span>' : '';
   return `<div class="${cls}" onclick="${interactive?`selectCard('${card.id}',${idx})`:''}">
-    <div class="card-header">
-      <span class="card-name"><span class="rarity-dot rarity-${card.rarity}"></span>${card.name}</span>
-      <span class="card-type-badge type-${card.type}">${card.type}</span>
-    </div>
-    ${instantBadge}
+    <div class="card-name"><span class="rarity-dot rarity-${card.rarity}"></span>${card.name}</div>
+    <div style="margin-bottom:3px;"><span class="card-type-badge type-${card.type}">${card.type}</span>${instantBadge}</div>
     <div class="card-desc">${card.desc}</div>
   </div>`;
 }
