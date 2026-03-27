@@ -2403,17 +2403,26 @@ let BOARD_SIZE = 9;
 function setBoardSize(rows, cols) {
   BOARD_ROWS = rows || DEFAULT_BOARD_ROWS;
   BOARD_COLS = cols || DEFAULT_BOARD_COLS;
-  BOARD_SIZE = Math.max(BOARD_ROWS, BOARD_COLS); // compat: bounds checks use the larger dimension
+  BOARD_SIZE = Math.max(BOARD_ROWS, BOARD_COLS);
+  recomputeCellSize();
 }
 
 function resetBoardSize() {
   BOARD_ROWS = DEFAULT_BOARD_ROWS;
   BOARD_COLS = DEFAULT_BOARD_COLS;
   BOARD_SIZE = 9;
+  CELL = BASE_CELL;
 }
 
-const CELL = 52;
+const BASE_CELL = 52;
 const GAP  = 3;
+const BOARD_PIXEL_TARGET = 9 * BASE_CELL + 8 * GAP; // ~492px — the fixed board footprint
+let CELL = BASE_CELL; // recomputed when board dimensions change
+
+function recomputeCellSize() {
+  const maxDim = Math.max(BOARD_ROWS, BOARD_COLS);
+  CELL = Math.floor((BOARD_PIXEL_TARGET - (maxDim - 1) * GAP) / maxDim);
+}
 
 // ── Faction rules — 7 factions, all: 1 card + 1 move per turn ──────
 const FACTION_RULES = {
@@ -13115,7 +13124,6 @@ function renderAll() {
   updateTurnBanner();
   updateActionBar();
   adjustLayoutForMode();
-  scaleBoardToFit();
   updateUltimateButton(0);
   updateUltimateButton(1);
   if (debugVisible) updateDebug();
@@ -13289,7 +13297,7 @@ function renderBoard() {
   const p1Name = gameState.players[1].champion.name.toUpperCase();
   container.innerHTML = `
     <div style="position:absolute;top:-20px;left:0;right:0;text-align:center;font-size:9px;color:var(--p1-dim);letter-spacing:.15em;font-family:'JetBrains Mono',monospace;">${gameMode === 'mp' ? '← ' + p1Name + ' GOAL →' : '← AI (' + p1Name + ') GOAL →'}</div>
-    <div class="board-grid" id="board-grid" style="grid-template-columns:repeat(${BOARD_COLS},${CELL}px);grid-template-rows:repeat(${BOARD_ROWS},${CELL}px);"></div>
+    <div class="board-grid" id="board-grid" style="--cell:${CELL}px;grid-template-columns:repeat(${BOARD_COLS},${CELL}px);grid-template-rows:repeat(${BOARD_ROWS},${CELL}px);"></div>
     <div class="wall-layer" id="wall-layer" style="position:absolute;top:${GAP}px;left:${GAP}px;width:${totalW}px;height:${totalH}px;"></div>
     <div id="wall-overlay" style="position:absolute;top:${GAP}px;left:${GAP}px;width:${totalW}px;height:${totalH}px;pointer-events:none;"></div>
     <div style="position:absolute;bottom:-20px;left:0;right:0;text-align:center;font-size:9px;color:var(--amber-dim);letter-spacing:.15em;font-family:'JetBrains Mono',monospace;">← ${gameMode === 'mp' ? p0Name : 'YOUR (' + p0Name + ')'} GOAL →</div>
@@ -14252,39 +14260,7 @@ function updateTurnBanner() {
   }
 }
 
-function scaleBoardToFit() {
-  const container = document.getElementById('board-container');
-  if (!container) return;
-  // Calculate the board's natural pixel size
-  const boardW = BOARD_COLS * CELL + (BOARD_COLS - 1) * GAP + GAP * 2;
-  const boardH = BOARD_ROWS * CELL + (BOARD_ROWS - 1) * GAP + GAP * 2;
-  // Available space: viewport minus header, action bar, bottom panel, AI strip, padding
-  const header = document.querySelector('header');
-  const bottomPanel = document.getElementById('player-bottom-panel');
-  const aiStrip = document.getElementById('ai-status-strip');
-  const headerH = header?.offsetHeight || 40;
-  const bottomH = bottomPanel?.offsetHeight || 0;
-  const aiStripH = aiStrip?.offsetHeight || 0;
-  const actionBarH = 50; // approximate
-  const padding = 80; // margins + turn banner
-  const availH = window.innerHeight - headerH - bottomH - aiStripH - actionBarH - padding;
-  const availW = window.innerWidth - 60; // some horizontal padding
-  // Scale factor: fit the board in available space
-  const scaleX = availW / boardW;
-  const scaleY = availH / boardH;
-  const scale = Math.min(scaleX, scaleY, 1); // never scale up, only down
-  if (scale < 0.98) {
-    container.style.transform = `scale(${scale.toFixed(3)})`;
-    container.style.transformOrigin = 'top center';
-    // Set explicit height so parent doesn't overflow
-    container.style.height = (boardH * scale) + 'px';
-    container.style.marginBottom = (-boardH * (1 - scale)) + 'px';
-  } else {
-    container.style.transform = '';
-    container.style.height = '';
-    container.style.marginBottom = '';
-  }
-}
+// Board sizing is handled by recomputeCellSize() — tiles shrink to fit the fixed board footprint
 
 function renderLog() {
   const logEl = document.getElementById('game-log');
@@ -16535,6 +16511,25 @@ function mpShowVictory(winner) {
     `;
     victoryCard.appendChild(placeholder);
 
+    // Add friend + rematch buttons
+    const oppName = mp_opponentName || 'Opponent';
+    const oppUserId = mp_localSeat === 0 ? mp_guestUserId : mp_hostUserId;
+    const postMatchBtns = document.createElement('div');
+    postMatchBtns.className = 'mp-reward-section';
+    postMatchBtns.style.cssText = 'display:flex;gap:8px;justify-content:center;margin-top:12px;flex-wrap:wrap;';
+    postMatchBtns.innerHTML = `
+      ${oppUserId ? `<button onclick="sendFriendRequestById('${oppUserId}','${oppName.replace(/'/g,"\\'")}')" class="action-btn" style="font-size:10px;padding:5px 14px;">
+        👥 ADD ${oppName.toUpperCase()}
+      </button>` : ''}
+      <button onclick="mpRematch()" class="action-btn primary" style="font-size:10px;padding:5px 14px;">
+        ⚔ REMATCH
+      </button>
+      <button onclick="document.getElementById('victory-overlay').style.display='none';showLandingScreen();" class="action-btn" style="font-size:10px;padding:5px 14px;">
+        MENU
+      </button>
+    `;
+    victoryCard.appendChild(postMatchBtns);
+
     // Grant shards for MP wins
     if (iWon) grantShards(30);
     issueMatchRewards(iWon).then(cardIds => {
@@ -17072,16 +17067,24 @@ async function sendFriendRequest(username) {
   if (!sb || !_authUser) { showOverlayFeedback('Not logged in', 'error'); return; }
   if (!username) { showOverlayFeedback('Enter a username', 'error'); return; }
 
-  // Look up the target user
-  const { data: target, error: lookupErr } = await sb.from('user_profiles')
-    .select('id, username').eq('username', username.toLowerCase()).maybeSingle();
+  // Look up the target user — try exact match first, then case-insensitive
+  let targetUser = null;
+  const { data: exact } = await sb.from('user_profiles')
+    .select('id, username').eq('username', username).maybeSingle();
+  targetUser = exact;
 
-  // If exact match fails, try case-insensitive
-  let targetUser = target;
-  if (!targetUser && !lookupErr) {
+  if (!targetUser) {
+    // Case-insensitive search
     const { data: fuzzy } = await sb.from('user_profiles')
-      .select('id, username').ilike('username', username).maybeSingle();
+      .select('id, username').ilike('username', username).limit(1).maybeSingle();
     targetUser = fuzzy;
+  }
+
+  if (!targetUser) {
+    // Try with lowercased input as last resort
+    const { data: lower } = await sb.from('user_profiles')
+      .select('id, username').ilike('username', username.toLowerCase()).limit(1).maybeSingle();
+    targetUser = lower;
   }
 
   if (!targetUser) {
@@ -17112,6 +17115,53 @@ async function sendFriendRequest(username) {
   const input = document.getElementById('friend-add-input');
   if (input) input.value = '';
   showFriendsScreen(); // refresh
+}
+
+// Send friend request by user ID (used from post-match screen)
+async function sendFriendRequestById(userId, displayName) {
+  const sb = mpInit();
+  if (!sb || !_authUser) return;
+  if (userId === _authUser.id) { showOverlayFeedback('Cannot add yourself', 'error'); return; }
+  const { error } = await sb.from('friends').insert({
+    user_id: _authUser.id, friend_id: userId, status: 'pending'
+  });
+  if (error) {
+    if (error.code === '23505') showOverlayFeedback('Already friends or request sent', 'error');
+    else showOverlayFeedback('Failed: ' + error.message, 'error');
+    return;
+  }
+  showOverlayFeedback('Friend request sent to ' + displayName + '!', 'success');
+}
+
+// Rematch: create a new MP game with same settings and invite the opponent
+async function mpRematch() {
+  if (!mp_gameId || !_authUser) { showStatus('Cannot rematch', 'error'); return; }
+  const sb = mpInit();
+  if (!sb) return;
+  // Get the original game's settings
+  try {
+    const { data: orig } = await sb.from('mp_games').select('board_variant, board_config, is_ranked, game_mode_type').eq('id', mp_gameId).maybeSingle();
+    // Create a new game with same settings
+    const code = Math.random().toString(36).slice(2, 8).toUpperCase();
+    const myChamp = gameState?.players[mp_localSeat]?.champion;
+    const { data: newGame, error } = await sb.from('mp_games').insert({
+      host_id: _authUser.id,
+      host_name: _userProfile?.username || 'Player',
+      host_champion: myChamp?.id || 'soren',
+      invite_code: code,
+      status: 'waiting',
+      is_public: false,
+      game_mode_type: orig?.game_mode_type || '1v1',
+      board_variant: orig?.board_variant || 'standard',
+      board_config: orig?.board_config || null,
+      is_ranked: orig?.is_ranked || false,
+    }).select().single();
+    if (error) { showStatus('Rematch failed: ' + error.message, 'error'); return; }
+    // Hide victory overlay and go to lobby with the new game
+    document.getElementById('victory-overlay').style.display = 'none';
+    showStatus('Rematch created! Code: ' + code + ' — waiting for opponent', 'success');
+    showMultiplayerLobby('mygames');
+  } catch(e) { showStatus('Rematch error: ' + e.message, 'error'); }
 }
 
 async function acceptFriendRequest(friendshipId) {
@@ -17210,8 +17260,75 @@ async function showFriendsScreen() {
     }
   }
 
+  // Recently played against section
+  html += `<div style="font-size:10px;color:#888;letter-spacing:.1em;margin:20px 0 8px;">RECENTLY PLAYED AGAINST</div>
+    <div id="recent-opponents" style="color:#555;font-size:12px;">Loading...</div>`;
+
   html += '</div>';
   overlay.innerHTML = html;
+
+  // Load recent opponents from match_records
+  loadRecentOpponents().then(opponents => {
+    const el = document.getElementById('recent-opponents');
+    if (!el) return;
+    if (!opponents.length) { el.innerHTML = '<div style="padding:8px;color:#555;">No recent matches found.</div>'; return; }
+    const friendIds = new Set(friends.map(f => f.oderId));
+    el.innerHTML = opponents.map(o => {
+      const alreadyFriend = friendIds.has(o.id);
+      return `<div style="display:flex;align-items:center;gap:10px;padding:6px 12px;background:var(--surface);border:1px solid var(--border);margin-bottom:4px;">
+        <div style="flex:1;">
+          <span style="color:#ccc;font-size:12px;">${o.username}</span>
+          <span style="color:#888;font-size:10px;margin-left:6px;">${o.champion || ''} · ${o.timeAgo}</span>
+        </div>
+        ${alreadyFriend ? '<span style="font-size:9px;color:#4ade80;">FRIEND</span>' :
+          `<button onclick="sendFriendRequest('${o.username.replace(/'/g,"\\'")}')" class="action-btn primary" style="font-size:9px;padding:3px 10px;">ADD FRIEND</button>`}
+        <button onclick="showPlayerProfile('${o.id}')" class="action-btn" style="font-size:9px;padding:3px 8px;">PROFILE</button>
+      </div>`;
+    }).join('');
+  });
+}
+
+async function loadRecentOpponents() {
+  const sb = mpInit();
+  if (!sb || !_authUser) return [];
+  try {
+    const { data } = await sb.from('match_records')
+      .select('p0_user_id, p1_user_id, p0_champion, p1_champion, created_at')
+      .or(`p0_user_id.eq.${_authUser.id},p1_user_id.eq.${_authUser.id}`)
+      .eq('game_mode', 'mp')
+      .order('created_at', { ascending: false })
+      .limit(20);
+    if (!data) return [];
+
+    // Deduplicate by opponent user ID
+    const seen = new Set();
+    const opponents = [];
+    for (const row of data) {
+      const isP0 = row.p0_user_id === _authUser.id;
+      const oppId = isP0 ? row.p1_user_id : row.p0_user_id;
+      const oppChamp = isP0 ? row.p1_champion : row.p0_champion;
+      if (!oppId || seen.has(oppId)) continue;
+      seen.add(oppId);
+
+      // Look up username
+      const { data: profile } = await sb.from('user_profiles')
+        .select('id, username').eq('id', oppId).maybeSingle();
+      if (!profile) continue;
+
+      const ago = timeAgo(new Date(row.created_at));
+      opponents.push({ id: oppId, username: profile.username, champion: oppChamp, timeAgo: ago });
+      if (opponents.length >= 10) break;
+    }
+    return opponents;
+  } catch(e) { console.warn('[FRIENDS] Recent opponents error:', e); return []; }
+}
+
+function timeAgo(date) {
+  const seconds = Math.floor((Date.now() - date.getTime()) / 1000);
+  if (seconds < 60) return 'just now';
+  if (seconds < 3600) return Math.floor(seconds / 60) + 'm ago';
+  if (seconds < 86400) return Math.floor(seconds / 3600) + 'h ago';
+  return Math.floor(seconds / 86400) + 'd ago';
 }
 
 // ── Player Profiles ─────────────────────────────────────────────────
@@ -18812,8 +18929,6 @@ async function dbSaveDeck() {
 }
 
 // ── Init ─────────────────────────────────────────────────────────────
-window.addEventListener('resize', () => { if (gameState) scaleBoardToFit(); });
-
 document.addEventListener('DOMContentLoaded', async () => {
   const urlParams  = new URLSearchParams(window.location.search);
   const inviteCode = urlParams.get('join');
