@@ -3917,7 +3917,7 @@ function getLegalMoves(state, pIdx, overrideSpeed, tunnelThrough, diagonal, ownW
         const nb = {row:pos.row+d.r, col:pos.col+d.c};
         if (nb.row<0||nb.row>=BOARD_SIZE||nb.col<0||nb.col>=BOARD_SIZE) continue;
         const k = key(nb);
-        if (k === key(opPos)) continue;
+        if (otherPosSet.has(k)) continue;
         if (visited.has(k)) continue;
         if (isEdgeBlocked(pos, nb, blocked)) continue;
         reachable.push(nb);
@@ -3935,7 +3935,7 @@ function getLegalMoves(state, pIdx, overrideSpeed, tunnelThrough, diagonal, ownW
         if (nb.row<0||nb.row>=BOARD_SIZE||nb.col<0||nb.col>=BOARD_SIZE) continue;
         const k = key(nb);
         if (visited.has(k)) continue;
-        if (k === key(opPos)) continue;   // can't land on opponent
+        if (otherPosSet.has(k)) continue;   // can't land on any other player
         if (isEdgeBlocked(cur, nb, blocked)) continue;
         visited.add(k);
         nextFrontier.push(nb);
@@ -4208,7 +4208,7 @@ function reconstructBFSPath(from, to, pi) {
   const player = state.players[pi];
   const effectiveWalls = player.stormpath ? state.walls.filter(w => w.reinforced) : state.walls;
   const blocked = buildBlockedEdges(effectiveWalls, pi);
-  const opPos = state.players[getFirstOpponent(pi)].position;
+  const _otherPosSetBFS = new Set(state.players.filter((p, i) => i !== pi && p).map(p => `${p.position.row},${p.position.col}`));
   const key = p => `${p.row},${p.col}`;
   const dirs = [{r:-1,c:0},{r:1,c:0},{r:0,c:1},{r:0,c:-1}];
   const visited = new Map();
@@ -4234,7 +4234,7 @@ function reconstructBFSPath(from, to, pi) {
       if (nb.row<0||nb.row>=BOARD_SIZE||nb.col<0||nb.col>=BOARD_SIZE) continue;
       const k = key(nb);
       if (visited.has(k)) continue;
-      if (k === key(opPos)) continue;
+      if (_otherPosSetBFS.has(k)) continue;
       if (isEdgeBlocked(cur, nb, blocked)) continue;
       visited.set(k, cur);
       queue.push(nb);
