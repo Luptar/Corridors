@@ -3214,6 +3214,41 @@ function getNextPlayer(pi) {
   return pi === 0 ? 1 : 0; // 1v1
 }
 
+// Determine the AI's primary target — the opponent closest to winning (the "leader").
+// In 2v2: targets the enemy closest to their goal. If AI teammate has reached goal, switch to pure blocking.
+// In FFA: targets whoever is closest to center. Ties broken randomly.
+function getPriorityTarget(pi) {
+  const opponents = getOpponents(pi);
+  if (opponents.length <= 1) return opponents[0] ?? (pi === 0 ? 1 : 0);
+
+  const centerRow = Math.floor(BOARD_ROWS / 2), centerCol = Math.floor(BOARD_COLS / 2);
+  let bestOpp = opponents[0], bestDist = Infinity;
+
+  for (const oi of opponents) {
+    const p = gameState.players[oi];
+    if (!p) continue;
+    let dist;
+    if (gameConfig.mode === 'ffa') {
+      dist = Math.abs(p.position.row - centerRow) + Math.abs(p.position.col - centerCol);
+    } else {
+      const goal = getGoalRow(oi);
+      dist = goal >= 0 ? bfsDistance(p.position, goal, gameState.walls) : Infinity;
+    }
+    if (dist < bestDist || (dist === bestDist && Math.random() < 0.5)) {
+      bestDist = dist;
+      bestOpp = oi;
+    }
+  }
+  return bestOpp;
+}
+
+// Check if the AI should be in "blocking mode" (teammate already at goal in 2v2)
+function aiShouldBlock(pi) {
+  if (gameConfig.mode !== '2v2') return false;
+  const allies = getAllies(pi);
+  return allies.some(a => gameState._teamGoalsReached?.[a]);
+}
+
 function getFirstOpponent(pi) {
   if (gameConfig.playerCount <= 2) return 1 - pi;
   const opps = getOpponents(pi);
@@ -5839,11 +5874,11 @@ function bfsDistanceFor(from, goalRow, walls, moverPi) {
 }
 
 function scoreAction(action, walls, aiPos, oppPos) {
-  // Dynamic goal rows for multi-player support
   const aiSeat = gameState.activePlayer;
   const myGoal = getGoalRow(aiSeat);
-  const oppIdx = getOpponents(aiSeat)[0] || 0;
-  const oppGoal = getGoalRow(oppIdx);
+  const targetOpp = getPriorityTarget(aiSeat);
+  const oppGoal = getGoalRow(targetOpp);
+  const blocking = aiShouldBlock(aiSeat);
 
   // FFA: use Manhattan distance to center tile instead of BFS-to-row
   const centerRow = Math.floor(BOARD_ROWS / 2), centerCol = Math.floor(BOARD_COLS / 2);
@@ -5858,7 +5893,7 @@ function scoreAction(action, walls, aiPos, oppPos) {
     newAiPos = action.to;
   } else if (action.type === 'wall' || action.type === 'phantom') {
     const w = {
-      id: '__sim__', owner: AI_PLAYER,
+      id: '__sim__', owner: aiSeat,
       anchor: action.anchor, orientation: action.orientation, length: action.length,
       isPhantom: action.type === 'phantom',
       durable: false, durableHits: 0,
@@ -5866,7 +5901,6 @@ function scoreAction(action, walls, aiPos, oppPos) {
     };
     newWalls = [...walls, w];
   } else if (action.type === 'removeWall') {
-    // Disruption: remove a wall from the board
     newWalls = walls.filter(w => w.id !== action.wallId);
   } else if (action.type === 'shrinkWall') {
     newWalls = walls.map(w => w.id === action.wallId ? {...w, length: Math.max(1, w.length - 1)} : w);
@@ -5876,19 +5910,30 @@ function scoreAction(action, walls, aiPos, oppPos) {
   const oppDistAfter = gameConfig.mode === 'ffa' ? ffaDist(oppPos)  : bfsDistanceFor(oppPos, oppGoal, newWalls, 0);
 
   if (myDistAfter  === Infinity) return -1e9;
-  if (oppDistAfter === Infinity) return  1e9; // trapping opponent is a win
+  if (oppDistAfter === Infinity) return  1e9;
 
   const W = AI_WEIGHTS[aiDifficulty];
   const F = FACTION_AI[getAIFaction()] || FACTION_AI['Architects'];
 
-  const myGain  = (myDistBefore  - myDistAfter)  * F.aggression;
-  const oppLoss = (oppDistAfter  - oppDistBefore) * F.control;
+  // Blocking mode (2v2 teammate at goal): heavily favor actions that delay opponents
+  // and deprioritize own movement (already at goal or goal doesn't matter)
+  const aggWeight = blocking ? 0.2 : F.aggression;
+  const ctrlWeight = blocking ? 2.5 : F.control;
+
+  const myGain  = (myDistBefore  - myDistAfter)  * aggWeight;
+  const oppLoss = (oppDistAfter  - oppDistBefore) * ctrlWeight;
   const base    = myGain * W.me + oppLoss * W.opp;
+
+  // In blocking mode, walls/disruption get a big bonus since the AI's job is to block
+  if (blocking) {
+    if (action.type === 'wall' || action.type === 'phantom') return base + F.wallBonus * 3;
+    if (action.type === 'removeWall' || action.type === 'shrinkWall') return base + 2;
+    return base; // movement gets no bonus
+  }
 
   if (action.type === 'move')    return base + F.moveBonus;
   if (action.type === 'wall')    return base + F.wallBonus;
   if (action.type === 'phantom') return base + F.wallBonus * 0.8;
-  // Disruption: contextual scoring based on game state
   return base + scoreDisruptionContext(oppDistBefore, walls);
 }
 
@@ -6090,14 +6135,20 @@ async function runAI() {
   const aiFaction = gameState.players[pi].champion.faction;
 
   // ── Helper: snapshot current state for simulation ─────────────────
+  // Target the opponent closest to winning (the "leader")
+  const _targetOpp = getPriorityTarget(pi);
+  const _blocking = aiShouldBlock(pi);
+
   function snap() {
     return {
       aiPos:   gameState.players[pi].position,
-      oppPos:  gameState.players[0].position,
+      oppPos:  gameState.players[_targetOpp]?.position || gameState.players[0].position,
       walls:   gameState.walls,
       aiHand:  gameState.players[pi].hand,
       aiWalls: gameState.players[pi].wallsInPlay,
       aiLimit: gameState.players[pi].wallLimitCurrent,
+      targetOpp: _targetOpp,
+      blocking: _blocking,
     };
   }
 
@@ -6211,7 +6262,7 @@ async function runAI() {
       let bestDest = null;
       const _aiGoalRow = getGoalRow(pi);
       for (const to of boostedMoves) {
-        if (isGoalReached(pi, to)) { bestDest = to; bestMoveWithCard = 1e9; break; }
+        if (!_blocking && isGoalReached(pi, to)) { bestDest = to; bestMoveWithCard = 1e9; break; }
         // Cards that unlock cells the base move can't reach get a big situational bonus
         const isNewCell = !baseMoveKeys.has(`${to.row},${to.col}`);
         const unlockBonus = isNewCell ? 4 : 1;
@@ -6720,7 +6771,8 @@ async function runAI() {
   let secondBestMoveDest  = null;
 
   for (const to of moves) {
-    if (isGoalReached(pi, to)) { bestMoveDest = to; bestMoveScore = 1e9; break; }
+    // In blocking mode, don't rush to goal — stay and block opponents
+    if (!_blocking && isGoalReached(pi, to)) { bestMoveDest = to; bestMoveScore = 1e9; break; }
     const s = scoreAction({type:'move', to}, simWallsForMove, st.aiPos, st.oppPos)
             + probeBonus(to, simWallsForMove);
     if (s > bestMoveScore) {
@@ -6742,13 +6794,19 @@ async function runAI() {
 
   // Fallback move if none scored positively
   if (!bestMoveDest && moves.length) {
-    const _aiGoal = getGoalRow(pi);
-    if (gameConfig.mode === 'ffa') {
+    if (_blocking) {
+      // Blocking mode: move toward the target opponent to place walls near them
+      const tPos = gameState.players[_targetOpp]?.position || st.oppPos;
+      bestMoveDest = moves.reduce((a, b) =>
+        (Math.abs(b.row-tPos.row)+Math.abs(b.col-tPos.col)) < (Math.abs(a.row-tPos.row)+Math.abs(a.col-tPos.col)) ? b : a
+      );
+    } else if (gameConfig.mode === 'ffa') {
       const _cr = Math.floor(BOARD_ROWS / 2), _cc = Math.floor(BOARD_COLS / 2);
       bestMoveDest = moves.reduce((a, b) =>
         (Math.abs(b.row-_cr)+Math.abs(b.col-_cc)) < (Math.abs(a.row-_cr)+Math.abs(a.col-_cc)) ? b : a
       );
     } else {
+      const _aiGoal = getGoalRow(pi);
       bestMoveDest = moves.reduce((a, b) =>
         Math.abs(b.row - _aiGoal) < Math.abs(a.row - _aiGoal) ? b : a
       );
@@ -14322,8 +14380,9 @@ function showVictory(winner) {
   const existing = document.getElementById('postgame-summary');
   if (existing) existing.remove();
 
-  const p0 = gameState.players[0], p1 = gameState.players[1];
-  const loser = 1 - winner;
+  const record = buildGameRecord(winner);
+  const p0 = gameState.players[0], p1 = gameState.players[1] || gameState.players[0];
+  const loser = gameState.players.length > 1 ? getFirstOpponent(winner) : 0;
 
   const summaryHTML = `
   <div id="postgame-summary" style="
