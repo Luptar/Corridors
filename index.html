@@ -630,6 +630,9 @@
   }
   .wall-segment.owner-0 { background: var(--p0-dim); }
   .wall-segment.owner-1 { background: var(--p1-dim); }
+  .wall-segment.owner-2 { background: var(--p2-dim); }
+  .wall-segment.owner-3 { background: var(--p3-dim); }
+  .wall-segment.owner-boss { background: #3a3020; border: 1px solid #665530; }
   .wall-segment.durable-1 { box-shadow: 0 0 6px rgba(212,144,58,0.4); }
   .wall-segment.immune   { border: 1px solid var(--gold); }
 
@@ -1059,11 +1062,25 @@
     box-shadow: 0 0 6px rgba(212,144,58,0.6), 0 0 12px rgba(212,144,58,0.3) !important;
     border: 1px solid #f0c060 !important;
   }
-  /* Opponent reinforced walls — blue halo */
   .wall-segment.wall-reinforced.owner-1 {
     background: #1a3a5a !important;
     box-shadow: 0 0 6px rgba(90,160,212,0.7), 0 0 14px rgba(90,160,212,0.35) !important;
     border: 1px solid #5ab0f0 !important;
+  }
+  .wall-segment.wall-reinforced.owner-2 {
+    background: #1a4a2a !important;
+    box-shadow: 0 0 6px rgba(74,222,128,0.7), 0 0 14px rgba(74,222,128,0.35) !important;
+    border: 1px solid #4ade80 !important;
+  }
+  .wall-segment.wall-reinforced.owner-3 {
+    background: #2a1a4a !important;
+    box-shadow: 0 0 6px rgba(192,132,252,0.7), 0 0 14px rgba(192,132,252,0.35) !important;
+    border: 1px solid #c084fc !important;
+  }
+  .wall-segment.wall-reinforced.owner-boss {
+    background: #3a3020 !important;
+    box-shadow: 0 0 8px rgba(200,170,80,0.6), 0 0 16px rgba(200,170,80,0.3) !important;
+    border: 1px solid var(--gold) !important;
   }
 
   .wall-segment.wall-binding {
@@ -13702,7 +13719,7 @@ function renderWalls() {
     const _activePi = gameState.activePlayer;
     const isPickable    = uiMode === 'wallPick'      && wall.owner === _activePi && !wall.isPhantom && (!wall.permanent || gameState._collapsePickPending);
     // Eviction (WD3) can target any non-reinforced opponent wall, including phantoms & binding walls
-    const isRedirect    = uiMode === 'wallRedirect'  && wall.owner === (1-_activePi) && !wall.reinforced && !wall.immune;
+    const isRedirect    = uiMode === 'wallRedirect'  && wall.owner !== _activePi && wall.owner !== -1 && !wall.reinforced && !wall.immune;
     const isSealable    = uiMode === 'wallSeal'      && wall.owner === _activePi && !wall.isPhantom && !wall.permanent;
     const isPunchable   = uiMode === 'wallPunch'     && !wall.isPhantom && (gameState._deadlockBreaker || (!wall.permanent && !wall.reinforced && !wall.immune));
     const isReinforceable = uiMode === 'wallReinforce' && wall.owner === gameState.activePlayer && !wall.isPhantom && !wall.reinforced;
@@ -13717,7 +13734,11 @@ function renderWalls() {
     // Owner of a phantom wall sees it with a distinct teal tint
     const localPlayer = (gameMode === 'mp') ? mp_localSeat : 0;
     const isOwnPhantom = wall.isPhantom && wall.owner === localPlayer;
-    let cls = `wall-segment${wall.isPhantom?' phantom':''} owner-${wall.owner}${isOwnPhantom?' phantom-own':''}`;
+    // Use team-aware owner class for coloring; boss walls (owner -1) get special class
+    const ownerClass = wall.owner === -1 ? 'owner-boss'
+      : gameConfig.mode === '2v2' ? `owner-${getPlayerPieceClass(wall.owner).replace('p','')}`
+      : `owner-${wall.owner}`;
+    let cls = `wall-segment${wall.isPhantom?' phantom':''} ${ownerClass}${isOwnPhantom?' phantom-own':''}`;
     if (wall.immune || wall.permanent || wall.reinforced) cls += ' wall-immune';
     if (wall.reinforced) cls += ' wall-reinforced';
     if (wall.binding) cls += ' wall-binding';
