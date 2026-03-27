@@ -3156,8 +3156,10 @@ function getGoalRow(pi) {
 
 function isGoalReached(pi, pos) {
   if (gameConfig.mode === 'ffa') {
-    // Center 3×3 zone (rows 3-5, cols 3-5) is the goal
-    return pos.row >= 3 && pos.row <= 5 && pos.col >= 3 && pos.col <= 5;
+    // Single center tile is the goal (adapts to board size)
+    const cr = Math.floor(BOARD_ROWS / 2);
+    const cc = Math.floor(BOARD_COLS / 2);
+    return pos.row === cr && pos.col === cc;
   }
   return pos.row === getGoalRow(pi);
 }
@@ -3212,6 +3214,12 @@ function getNextPlayer(pi) {
   return pi === 0 ? 1 : 0; // 1v1
 }
 
+function getFirstOpponent(pi) {
+  if (gameConfig.playerCount <= 2) return 1 - pi;
+  const opps = getOpponents(pi);
+  return opps.length > 0 ? opps[0] : (pi === 0 ? 1 : 0);
+}
+
 function getPlayerColor(pi) {
   return ['var(--p0)', 'var(--p1)', 'var(--p2)', 'var(--p3)'][pi] || 'var(--p0)';
 }
@@ -3258,6 +3266,7 @@ const TUTORIAL_MATCHES = {
 // In VS-AI mode only seat 0 is human; in multiplayer BOTH seats are human.
 function isHumanSeat(pi) {
   if (gameMode === 'mp') return true;
+  if (gameConfig.playerCount > 2) return pi === 0; // FFA/2v2: only seat 0 is human
   return pi !== AI_PLAYER;
 }
 
@@ -3348,7 +3357,17 @@ function initGame(playerChampId, aiChampId, playerDeckCards) {
 
 // ── Multi-Player Init (2v2 / FFA) ────────────────────────────────────
 function initMultiPlayerGame(config) {
-  resetBoardSize();
+  // Set board size based on mode
+  if (config.mode === 'ffa') {
+    setBoardSize(13, 13);
+  } else if (config.mode === '2v2') {
+    setBoardSize(9, 11);
+  } else {
+    resetBoardSize();
+  }
+  // Allow custom board size override from MP lobby
+  if (config.boardRows && config.boardCols) setBoardSize(config.boardRows, config.boardCols);
+
   gameMode = config.isOnline ? 'mp' : 'sp';
 
   gameConfig = {
@@ -3360,10 +3379,15 @@ function initMultiPlayerGame(config) {
     _activeTeam: 0,
   };
 
-  // Starting positions
+  // Dynamic starting positions based on board size
+  const midRow = Math.floor(BOARD_ROWS / 2);
+  const midCol = Math.floor(BOARD_COLS / 2);
+  const lastRow = BOARD_ROWS - 1;
+  const lastCol = BOARD_COLS - 1;
   const startPositions = config.mode === '2v2'
-    ? [{row:8,col:2},{row:8,col:6},{row:0,col:2},{row:0,col:6}] // Team0 bottom, Team1 top
-    : [{row:0,col:4},{row:8,col:4},{row:4,col:0},{row:4,col:8}]; // FFA: 4 edges
+    ? [{row:lastRow,col:Math.floor(BOARD_COLS/3)},{row:lastRow,col:Math.floor(2*BOARD_COLS/3)},
+       {row:0,col:Math.floor(BOARD_COLS/3)},{row:0,col:Math.floor(2*BOARD_COLS/3)}]
+    : [{row:0,col:midCol},{row:lastRow,col:midCol},{row:midRow,col:0},{row:midRow,col:lastCol}];
 
   const players = [];
   for (let i = 0; i < config.playerCount; i++) {
@@ -3818,7 +3842,8 @@ function allPlayersHavePath(walls) {
     if (!p) continue;
     if (gameConfig.mode === 'ffa') {
       // FFA: check path to center zone (any cell in rows 3-5, cols 3-5)
-      if (!hasPathToZone(p.position, walls, 3, 5, 3, 5)) return false;
+      const _cr = Math.floor(BOARD_ROWS / 2), _cc = Math.floor(BOARD_COLS / 2);
+      if (!hasPathToZone(p.position, walls, _cr, _cr, _cc, _cc)) return false;
     } else {
       const goal = getGoalRow(pi);
       if (!hasPath(p.position, goal, walls)) return false;
@@ -3961,7 +3986,7 @@ function reconstructBFSPath(from, to, pi) {
   const player = state.players[pi];
   const effectiveWalls = player.stormpath ? state.walls.filter(w => w.reinforced) : state.walls;
   const blocked = buildBlockedEdges(effectiveWalls, pi);
-  const opPos = state.players[1-pi].position;
+  const opPos = state.players[getFirstOpponent(pi)].position;
   const key = p => `${p.row},${p.col}`;
   const dirs = [{r:-1,c:0},{r:1,c:0},{r:0,c:1},{r:0,c:-1}];
   const visited = new Map();
@@ -4003,7 +4028,7 @@ function executeMove(to) {
   if (selectedCard && selectedCard._breach) {
     gameState.players[pi] = {...gameState.players[pi], position: to};
     // Check if opponent within 2 tiles of landing — apply Bind
-    const oppPi = 1 - pi;
+    const oppPi = getFirstOpponent(pi);
     const oppPos = gameState.players[oppPi].position;
     const dist = Math.abs(to.row - oppPos.row) + Math.abs(to.col - oppPos.col);
     if (dist <= 2) {
@@ -4017,7 +4042,7 @@ function executeMove(to) {
     // Breach is an ultimate — does NOT count as a card play
 
     // Check win condition — Breach can land on the goal row
-    const breachGoalRow = pi === 0 ? 0 : BOARD_SIZE - 1;
+    const breachGoalRow = getGoalRow(pi);
     if (to.row === breachGoalRow) {
       gameState.winner = pi;
       gameState.phase = 'ended';
@@ -4045,7 +4070,7 @@ function executeMove(to) {
     selectedCard = null;
     uiMode = 'idle';
     addLog(pi, 'card', `Shortcut: moved diagonally to (${to.row},${to.col})`);
-    const goalRow = pi === 0 ? 0 : BOARD_SIZE - 1;
+    const goalRow = getGoalRow(pi);
     if (to.row === goalRow) {
       gameState.winner = pi; gameState.phase = 'ended';
       addLog(pi, 'system', `PLAYER ${pi} WINS via Shortcut!`);
@@ -4098,14 +4123,14 @@ function executeMove(to) {
   // Body Block pin check
   if(selectedCard&&selectedCard._bodyBlock&&gameState._bodyBlockWallId){
     const bbW=gameState.walls.find(w=>w.id===gameState._bodyBlockWallId);
-    if(bbW){const oP=1-pi,oPs=gameState.players[oP].position;
+    if(bbW){const oP=getFirstOpponent(pi),oPs=gameState.players[oP].position;
       const aW=wallEdges(bbW).some(e=>(e.a.row===oPs.row&&e.a.col===oPs.col)||(e.b.row===oPs.row&&e.b.col===oPs.col));
       const aM=(Math.abs(to.row-oPs.row)+Math.abs(to.col-oPs.col))===1;
       if(aW&&aM){addStatusEffect(oP,'skip_move',1);addLog(pi,'card','Body Block: opponent pinned!');}}
     gameState._bodyBlockWallId=null;}
 
   if (selectedCard && selectedCard._pendingMove) {
-    const oppPi = 1 - pi;
+    const oppPi = getFirstOpponent(pi);
     const oppPos = gameState.players[oppPi].position;
     const dr = to.row - oppPos.row;
     const dc = to.col - oppPos.col;
@@ -4267,7 +4292,7 @@ function executeMove(to) {
 
   // ── Pushaman "Chad Aura" passive: after card effects ──
   if(getPassiveId(pi)==='pushaman'){
-    const oP3=1-pi,oPs3=gameState.players[oP3].position,mPs3=gameState.players[pi].position;
+    const oP3=getFirstOpponent(pi),oPs3=gameState.players[oP3].position,mPs3=gameState.players[pi].position;
     const d3r=mPs3.row-oPs3.row,d3c=mPs3.col-oPs3.col;
     if((Math.abs(d3r)+Math.abs(d3c))===1){
       const r3=executeForceMove(oP3,{r:-d3r,c:-d3c},1);
@@ -4276,7 +4301,7 @@ function executeMove(to) {
 
     // PF7 Trail Blaze: draw 1 if moved toward goal
   if (gameState._trailBlazeFrom !== undefined) {
-    const goalRow = pi === 0 ? 0 : BOARD_SIZE - 1;
+    const goalRow = getGoalRow(pi);
     const startDist = Math.abs(gameState._trailBlazeFrom - goalRow);
     const endDist = Math.abs(to.row - goalRow);
     if (endDist < startDist) {
@@ -4310,7 +4335,7 @@ function executeMove(to) {
   if (gameState._slipstreamActive) {
     gameState._slipstreamActive = false;
     gameState._slipstreamCard = false;
-    const opp = 1 - pi;
+    const opp = getFirstOpponent(pi);
     const oppWalls = gameState.walls.filter(w => !w.isPhantom && w.owner === opp);
     const oppBlocked = buildBlockedEdges(oppWalls, undefined);
     const cardDirs = [{r:-1,c:0},{r:1,c:0},{r:0,c:-1},{r:0,c:1}];
@@ -4336,7 +4361,7 @@ function executeMove(to) {
     // Place root trap on the first intermediate tile (or the starting tile if no intermediates)
     const trapTile = pathTiles.length > 0 ? pathTiles[0] : strideFrom;
     // Only place if tile is not occupied by a player
-    const oppPos = gameState.players[1-pi].position;
+    const oppPos = gameState.players[getFirstOpponent(pi)].position;
     if (!(trapTile.row === to.row && trapTile.col === to.col) &&
         !(trapTile.row === oppPos.row && trapTile.col === oppPos.col)) {
       placeTrap(pi, trapTile, 'root', 3);
@@ -4354,7 +4379,7 @@ function executeMove(to) {
   // PF8 Vaulting Strike: check if an opponent wall was crossed; if so enter wallShrink for it
   if (gameState._vaultStrike) {
     gameState._vaultStrike = false;
-    const opp = 1 - pi;
+    const opp = getFirstOpponent(pi);
     // Vaulting Strike is always 1 step, so directly check the edge from→to
     const ek = edgeKey(from, to);
     const crossedOppWalls = [];
@@ -4401,7 +4426,7 @@ function executeMove(to) {
           const nb = {row:cur.row+d.r,col:cur.col+d.c};
           if (nb.row<0||nb.row>=BOARD_SIZE||nb.col<0||nb.col>=BOARD_SIZE) continue;
           const k = key(nb); if (visited.has(k)) continue;
-          const oppP = gameState.players[1-pi].position;
+          const oppP = gameState.players[getFirstOpponent(pi)].position;
           if (nb.row===oppP.row&&nb.col===oppP.col) continue;
           // Ignore all walls for path reconstruction
           visited.set(k, cur); queue.push(nb);
@@ -4441,7 +4466,7 @@ function executeMove(to) {
   // PF13 Wall Ride: check if landed adjacent to opponent wall — if not, Exhausted
   if (gameState._wallRide) {
     gameState._wallRide = false;
-    const opp = 1 - pi;
+    const opp = getFirstOpponent(pi);
     const cardinalDirs = [{r:-1,c:0},{r:1,c:0},{r:0,c:-1},{r:0,c:1}];
     const nearOppWall = gameState.walls.some(w => {
       if (w.isPhantom || w.owner !== opp) return false;
@@ -4592,7 +4617,7 @@ function shrinkWallAuto(wallId, callerPi, opts = {}) {
   // For horizontal walls, 'start' is left, 'end' is right — pick based on board position
   // For vertical walls, 'start' is top, 'end' is bottom
   // Default: shrink from the end closest to the opponent's goal (maximise remaining block)
-  const goalRow = callerPi === 0 ? 0 : BOARD_SIZE - 1;
+  const goalRow = getGoalRow(callerPi);
   let fromEnd;
   if (wall.orientation === 'V') {
     // Shrink the tile furthest from caller's goal
@@ -4890,7 +4915,7 @@ function triggerTrap(trap, targetPi) {
 
     case 'spring': {
       // Push target in a random direction (never toward their goal)
-      const goalRow = targetPi === 0 ? 0 : BOARD_SIZE - 1;
+      const goalRow = getGoalRow(targetPi);
       // Filter out the direction that goes toward their goal
       const validDirs = ALL_DIRS.filter(d => {
         const newRow = targetPos.row + d.r;
@@ -5136,7 +5161,7 @@ function resolveDelayedCards(pi) {
         const isPhantom = !!card.phantom;
         const isDurable = !!card.durable;
         const length = card.wallLen || 2;
-        const oppPos = gameState.players[1 - pi].position;
+        const oppPos = gameState.players[getFirstOpponent(pi)].position;
         const cands = generateWallCandidates(oppPos, length);
         let placed = false;
         for (const {anchor, orientation} of cands) {
@@ -5543,7 +5568,7 @@ function resolveTurnStartEffects(pi) {
         }
       } else {
         // AI: auto-place near opponent
-        const opp = 1 - pi;
+        const opp = getFirstOpponent(pi);
         const oppPos = gameState.players[opp].position;
         const candidates = [];
         for (let dr = -2; dr <= 2; dr++) {
@@ -5817,9 +5842,15 @@ function scoreAction(action, walls, aiPos, oppPos) {
   // Dynamic goal rows for multi-player support
   const aiSeat = gameState.activePlayer;
   const myGoal = getGoalRow(aiSeat);
-  const oppGoal = getGoalRow(getOpponents(aiSeat)[0] || 0);
-  const myDistBefore  = bfsDistanceAI(aiPos,  myGoal >= 0 ? myGoal : BOARD_SIZE - 1, walls);
-  const oppDistBefore = bfsDistanceFor(oppPos, oppGoal >= 0 ? oppGoal : 0, walls, 0);
+  const oppIdx = getOpponents(aiSeat)[0] || 0;
+  const oppGoal = getGoalRow(oppIdx);
+
+  // FFA: use Manhattan distance to center tile instead of BFS-to-row
+  const centerRow = Math.floor(BOARD_ROWS / 2), centerCol = Math.floor(BOARD_COLS / 2);
+  const ffaDist = (pos) => Math.abs(pos.row - centerRow) + Math.abs(pos.col - centerCol);
+
+  const myDistBefore  = gameConfig.mode === 'ffa' ? ffaDist(aiPos)  : bfsDistanceAI(aiPos, myGoal, walls);
+  const oppDistBefore = gameConfig.mode === 'ffa' ? ffaDist(oppPos) : bfsDistanceFor(oppPos, oppGoal, walls, 0);
 
   let newWalls = walls, newAiPos = aiPos;
 
@@ -5841,8 +5872,8 @@ function scoreAction(action, walls, aiPos, oppPos) {
     newWalls = walls.map(w => w.id === action.wallId ? {...w, length: Math.max(1, w.length - 1)} : w);
   }
 
-  const myDistAfter  = bfsDistanceAI(newAiPos, myGoal >= 0 ? myGoal : BOARD_SIZE - 1, newWalls);
-  const oppDistAfter = bfsDistanceFor(oppPos,   oppGoal >= 0 ? oppGoal : 0, newWalls, 0);
+  const myDistAfter  = gameConfig.mode === 'ffa' ? ffaDist(newAiPos) : bfsDistanceAI(newAiPos, myGoal, newWalls);
+  const oppDistAfter = gameConfig.mode === 'ffa' ? ffaDist(oppPos)  : bfsDistanceFor(oppPos, oppGoal, newWalls, 0);
 
   if (myDistAfter  === Infinity) return -1e9;
   if (oppDistAfter === Infinity) return  1e9; // trapping opponent is a win
@@ -5998,9 +6029,9 @@ function probeBonus(moveDest, walls) {
     if (!isAdjacent) continue;
 
     // How much would revealing (removing) this wall help the AI?
-    const withWall    = bfsDistanceFor(moveDest, BOARD_SIZE - 1, walls, AI_PLAYER);
-    const withoutWall = bfsDistanceFor(moveDest, BOARD_SIZE - 1,
-                          walls.filter(x => x.id !== w.id), AI_PLAYER);
+    const withWall    = bfsDistanceFor(moveDest, getGoalRow(pi), walls, pi);
+    const withoutWall = bfsDistanceFor(moveDest, getGoalRow(pi),
+                          walls.filter(x => x.id !== w.id), pi);
     const gain = withWall - withoutWall;
     if (gain > 0) {
       // Bonus scaled by probability and gain, discounted slightly (might be real)
@@ -6166,7 +6197,7 @@ async function runAI() {
     // Compute base legal moves so we can detect what the card uniquely unlocks
     const baseMoves = getLegalMoves({...gameState, walls: st.walls}, pi);
     const baseMoveKeys = new Set(baseMoves.map(m => `${m.row},${m.col}`));
-    const aiDistReal = bfsDistanceFor(st.aiPos, BOARD_SIZE - 1, st.walls, pi);
+    const aiDistReal = bfsDistanceFor(st.aiPos, getGoalRow(pi), st.walls, pi);
 
     for (const card of moveCards) {
       const speed = card.overrideSpeed !== undefined ? card.overrideSpeed : 1;
@@ -6178,8 +6209,9 @@ async function runAI() {
       const boostedMoves = getLegalMoves(simState, pi, speed, tunnel, diag, ownPass, isLateral);
       let bestMoveWithCard = -Infinity;
       let bestDest = null;
+      const _aiGoalRow = getGoalRow(pi);
       for (const to of boostedMoves) {
-        if (to.row === BOARD_SIZE - 1) { bestDest = to; bestMoveWithCard = 1e9; break; }
+        if (isGoalReached(pi, to)) { bestDest = to; bestMoveWithCard = 1e9; break; }
         // Cards that unlock cells the base move can't reach get a big situational bonus
         const isNewCell = !baseMoveKeys.has(`${to.row},${to.col}`);
         const unlockBonus = isNewCell ? 4 : 1;
@@ -6342,7 +6374,7 @@ async function runAI() {
 
     // B07 Undermine: shrink the most-blocking opponent wall by 1 tile
     if (card.id === 'B07') {
-      const oppWalls = st.walls.filter(w => w.owner === (1-pi) && !w.isPhantom && !w.reinforced && !w.immune);
+      const oppWalls = st.walls.filter(w => w.owner === getFirstOpponent(pi) && !w.isPhantom && !w.reinforced && !w.immune);
       for (const target of oppWalls) {
         // Score: how much does shrinking this wall help?
         const simWalls = st.walls.map(w =>
@@ -6688,7 +6720,7 @@ async function runAI() {
   let secondBestMoveDest  = null;
 
   for (const to of moves) {
-    if (to.row === BOARD_SIZE - 1) { bestMoveDest = to; bestMoveScore = 1e9; break; }
+    if (isGoalReached(pi, to)) { bestMoveDest = to; bestMoveScore = 1e9; break; }
     const s = scoreAction({type:'move', to}, simWallsForMove, st.aiPos, st.oppPos)
             + probeBonus(to, simWallsForMove);
     if (s > bestMoveScore) {
@@ -6710,9 +6742,17 @@ async function runAI() {
 
   // Fallback move if none scored positively
   if (!bestMoveDest && moves.length) {
-    bestMoveDest = moves.reduce((a, b) =>
-      Math.abs(b.row - (BOARD_SIZE - 1)) < Math.abs(a.row - (BOARD_SIZE - 1)) ? b : a
-    );
+    const _aiGoal = getGoalRow(pi);
+    if (gameConfig.mode === 'ffa') {
+      const _cr = Math.floor(BOARD_ROWS / 2), _cc = Math.floor(BOARD_COLS / 2);
+      bestMoveDest = moves.reduce((a, b) =>
+        (Math.abs(b.row-_cr)+Math.abs(b.col-_cc)) < (Math.abs(a.row-_cr)+Math.abs(a.col-_cc)) ? b : a
+      );
+    } else {
+      bestMoveDest = moves.reduce((a, b) =>
+        Math.abs(b.row - _aiGoal) < Math.abs(a.row - _aiGoal) ? b : a
+      );
+    }
   }
 
   // ── PHANTOM PROBE: blocked-in detection ────────────────────────────
@@ -6721,7 +6761,7 @@ async function runAI() {
   // Strategy: try moving INTO the wall edge — if it's phantom, executeMove will
   // dissolve it. This is the only way for the AI to discover phantom walls it's
   // directly enclosed by (since "moving adjacent" alone doesn't reveal them).
-  if (!bestMoveDest || bfsDistanceFor(st.aiPos, BOARD_SIZE - 1, st.walls, pi) === Infinity) {
+  if (!bestMoveDest || bfsDistanceFor(st.aiPos, getGoalRow(pi), st.walls, pi) === Infinity) {
     // Only probe walls that have a phantom probability (opponent is Phantoms faction
     // and wall hasn't been confirmed real). Never probe confirmed-real walls.
     const suspectWalls = st.walls.filter(w =>
@@ -6731,7 +6771,7 @@ async function runAI() {
     if (suspectWalls.length > 0) {
       // Check if removing all suspect walls would open a path
       const wallsWithoutSuspect = st.walls.filter(w => !suspectWalls.some(s => s.id === w.id));
-      const aiDistWithoutPhantoms = bfsDistanceFor(st.aiPos, BOARD_SIZE - 1, wallsWithoutSuspect, pi);
+      const aiDistWithoutPhantoms = bfsDistanceFor(st.aiPos, getGoalRow(pi), wallsWithoutSuspect, pi);
 
       if (aiDistWithoutPhantoms < Infinity) {
         // Find a suspect wall edge directly bordering the AI position to probe
@@ -6749,7 +6789,7 @@ async function runAI() {
             if (throughDest.row < 0 || throughDest.row >= BOARD_SIZE ||
                 throughDest.col < 0 || throughDest.col >= BOARD_SIZE) continue;
             // Would moving through this wall (if phantom) actually open a path?
-            const distAfterProbe = bfsDistanceFor(throughDest, BOARD_SIZE - 1,
+            const distAfterProbe = bfsDistanceFor(throughDest, getGoalRow(pi),
               st.walls.filter(x => x.id !== w.id), pi);
             if (distAfterProbe < Infinity) {
               probeTarget = throughDest;
@@ -7154,9 +7194,9 @@ async function runTutorialAI() {
   await new Promise(r => setTimeout(r, 600 + Math.random() * 400));
   if (gameState.phase !== 'action' || gameState.activePlayer !== pi) return;
 
-  // Match 2 aggressive AI: rush toward goal row (BOARD_SIZE-1 = row 8)
+  // Match 2 aggressive AI: rush toward goal row
   if (cfg?.aiAggressive) {
-    const goalRow = BOARD_SIZE - 1;
+    const goalRow = getGoalRow(pi);
     const legalMoves = getLegalMoves(gameState, pi);
     // Prefer moves that get closer to the goal row
     const forwardMoves = legalMoves.filter(m => m.row > ai.position.row);
@@ -8899,7 +8939,7 @@ function handleWallClick(anchor, orientation, length, isPhantom, isDurable) {
       for (const d of dirs) {
         const nr = wt.row + d.r, nc = wt.col + d.c;
         if (nr < 0 || nr >= BOARD_SIZE || nc < 0 || nc >= BOARD_SIZE) continue;
-        const oppPos = gameState.players[1-pi].position;
+        const oppPos = gameState.players[getFirstOpponent(pi)].position;
         if (nr === oppPos.row && nc === oppPos.col) continue;
         adjSet.add(`${nr},${nc}`);
       }
@@ -8920,7 +8960,7 @@ function handleWallClick(anchor, orientation, length, isPhantom, isDurable) {
     }
     // Filter to in-bounds tiles not occupied by players, and not the current position
     const myPos = gameState.players[pi].position;
-    const oppPos = gameState.players[1-pi].position;
+    const oppPos = gameState.players[getFirstOpponent(pi)].position;
     const bonusTargets = [...adjSet].map(k => {
       const [r,c] = k.split(',').map(Number);
       return {row:r, col:c};
@@ -9505,7 +9545,7 @@ function freePlayCard(pi, card) {
 
     if (!isHumanSeat(pi)) {
       // AI: auto-place near opponent
-      const oppPos = gameState.players[1 - pi].position;
+      const oppPos = gameState.players[getFirstOpponent(pi)].position;
       const cands = generateWallCandidates(oppPos, length);
       let placed = false;
       for (const {anchor, orientation} of cands) {
@@ -9749,7 +9789,7 @@ function onWallPlaced(pi, fromCardId, _wasDelayedCard) {
     if (gameState._veilCount < 2) {
       if (!isHumanSeat(pi)) {
         // AI: auto-place the second (real) wall
-        const oppPos = gameState.players[1 - pi].position;
+        const oppPos = gameState.players[getFirstOpponent(pi)].position;
         const cands = generateWallCandidates(oppPos, 2);
         let placed = false;
         for (const {anchor, orientation} of cands) {
@@ -9941,7 +9981,7 @@ function onWallPlaced(pi, fromCardId, _wasDelayedCard) {
   if (fromCardId === 'PU4') {
     const lastWall = gameState.walls[gameState.walls.length - 1];
     if (lastWall) {
-      const opp = 1 - pi;
+      const opp = getFirstOpponent(pi);
       const oppPos = gameState.players[opp].position;
       const edges = wallEdges(lastWall);
       for (const e of edges) {
@@ -9977,13 +10017,13 @@ function onWallPlaced(pi, fromCardId, _wasDelayedCard) {
     if (!isHumanSeat(pi)) {
       const aiMvs = getLegalMoves(gameState, pi, 2);
       if (aiMvs.length) {
-        const gR=pi===0?0:BOARD_SIZE-1; aiMvs.sort((a,b)=>(pi===0?a.row-b.row:b.row-a.row));
+        const gR=getGoalRow(pi); aiMvs.sort((a,b)=>(pi===0?a.row-b.row:b.row-a.row));
         gameState.players[pi]={...gameState.players[pi],position:aiMvs[0]}; hasMoved=true;
         const lw=gameState.walls[gameState.walls.length-1];
-        if(lw){const op=gameState.players[1-pi].position;
+        if(lw){const op=gameState.players[getFirstOpponent(pi)].position;
           const aW=wallEdges(lw).some(e=>(e.a.row===op.row&&e.a.col===op.col)||(e.b.row===op.row&&e.b.col===op.col));
           const aM=(Math.abs(aiMvs[0].row-op.row)+Math.abs(aiMvs[0].col-op.col))===1;
-          if(aW&&aM){addStatusEffect(1-pi,'skip_move',1);addLog(pi,'card','Body Block: pinned!');}}
+          if(aW&&aM){addStatusEffect(getFirstOpponent(pi),'skip_move',1);addLog(pi,'card','Body Block: pinned!');}}
         addLog(pi,'card','Body Block: moved after wall');
       }
     } else {
@@ -9995,7 +10035,7 @@ function onWallPlaced(pi, fromCardId, _wasDelayedCard) {
 
   // PU9 Displacement Wall: push opponent 2 toward their start row ONLY if adjacent to wall
   if (fromCardId === 'PU9') {
-    const opp = 1 - pi;
+    const opp = getFirstOpponent(pi);
     const lastWall = gameState.walls[gameState.walls.length - 1];
     if (lastWall) {
       // Check if opponent is adjacent to the placed wall (within 1 tile of any wall edge)
@@ -10007,7 +10047,7 @@ function onWallPlaced(pi, fromCardId, _wasDelayedCard) {
                (oppPos.row === e.b.row && oppPos.col === e.b.col);
       });
       if (isAdjacent) {
-        const oppStartRow = opp === 0 ? BOARD_SIZE - 1 : 0;
+        const oppStartRow = getGoalRow(pi);
         const pushDir = oppStartRow > oppPos.row ? DIR.DOWN : DIR.UP;
         const r = executeForceMove(opp, pushDir, 1);
         if (r.spacesMoved > 0) addLog(pi, 'card', `Displacement Wall: pushed opponent ${r.spacesMoved} toward start!`);
@@ -10185,7 +10225,7 @@ function applyMovementCard(pi, card, idx) {
   // PF3 Shortcut: diagonal step through wall gaps
   if (card.special === 'shortcut') {
     const myPos = gameState.players[pi].position;
-    const oppPos = gameState.players[1-pi].position;
+    const oppPos = gameState.players[getFirstOpponent(pi)].position;
     const blocked = buildBlockedEdges(gameState.walls, pi);
     const diagDirs = [{r:-1,c:-1},{r:-1,c:1},{r:1,c:-1},{r:1,c:1}];
     const targets = [];
@@ -10233,7 +10273,7 @@ function applyMovementCard(pi, card, idx) {
         if (Math.abs(dr) + Math.abs(dc) > 3) continue; // Manhattan distance <= 3
         const r = myPos.row + dr, c = myPos.col + dc;
         if (r < 0 || r >= BOARD_SIZE || c < 0 || c >= BOARD_SIZE) continue;
-        const oppPos = gameState.players[1-pi].position;
+        const oppPos = gameState.players[getFirstOpponent(pi)].position;
         if (r === oppPos.row && c === oppPos.col) continue;
         targets.push({row: r, col: c});
       }
@@ -10349,7 +10389,7 @@ function grappleFireDir(dir) {
   const pi = gameState.activePlayer;
   if (!gameState._grappleState || uiMode !== 'grappleDir') return;
   const myPos  = gameState.players[pi].position;
-  const opp    = 1 - pi;
+  const opp    = getFirstOpponent(pi);
   const oppPos = gameState.players[opp].position;
   const DIRS   = { N:{r:-1,c:0}, S:{r:1,c:0}, W:{r:0,c:-1}, E:{r:0,c:1} };
   const d = DIRS[dir]; if (!d) return;
@@ -10396,7 +10436,7 @@ function grappleExecute() {
   const pi = gameState.activePlayer;
   if (!gameState._grappleState?.target) return;
   const { target, bindOpp, cardIdx } = gameState._grappleState;
-  const opp = 1-pi;
+  const opp = getFirstOpponent(pi);
   // NOW discard the card and count the play (deferred from selection)
   if (cardIdx !== undefined && cardIdx >= 0) {
     discardCard(pi, cardIdx);
@@ -10410,7 +10450,7 @@ function grappleExecute() {
     addLog(pi,'card','Grapple Hook: opponent Bound — skips next move!');
   }
   gameState._grappleState=null; selectedCard=null; uiMode='idle';
-  const goalRow = pi===0?0:BOARD_SIZE-1;
+  const goalRow = getGoalRow(pi);
   if (target.row===goalRow) {
     gameState.winner=pi; gameState.phase='ended';
     addLog(pi,'system',`PLAYER ${pi} WINS via Grapple Hook!`);
@@ -10543,7 +10583,7 @@ function wreckingBallFireDir(dir) {
   const pi = gameState.activePlayer;
   if (!gameState._wreckingBallState || uiMode !== 'wreckingBallDir') return;
   const myPos = gameState.players[pi].position;
-  const opp = 1 - pi;
+  const opp = getFirstOpponent(pi);
   const oppPos = gameState.players[opp].position;
   const DIRS = { N:{r:-1,c:0}, S:{r:1,c:0}, W:{r:0,c:-1}, E:{r:0,c:1} };
   const d = DIRS[dir]; if (!d) return;
@@ -10599,7 +10639,7 @@ function wreckingBallFireDir(dir) {
   hasMoved = true;
 
   gameState._wreckingBallState = null; selectedCard = null; uiMode = 'idle';
-  const goalRow = pi === 0 ? 0 : BOARD_SIZE - 1;
+  const goalRow = getGoalRow(pi);
   if (finalPos.row === goalRow) {
     gameState.winner = pi; gameState.phase = 'ended';
     addLog(pi, 'system', `PLAYER ${pi} WINS via Wrecking Ball!`);
@@ -10614,7 +10654,7 @@ function bulldozeFireDir(dir) {
   const pi = gameState.activePlayer;
   if (!gameState._bulldozeState || uiMode !== 'bulldozeDir') return;
   const myPos = gameState.players[pi].position;
-  const opp = 1 - pi;
+  const opp = getFirstOpponent(pi);
   const oppPos = gameState.players[opp].position;
   const DIRS = { N:{r:-1,c:0}, S:{r:1,c:0}, W:{r:0,c:-1}, E:{r:0,c:1} };
   const d = DIRS[dir]; if (!d) return;
@@ -10673,7 +10713,7 @@ function bulldozeFireDir(dir) {
   hasMoved = true;
 
   gameState._bulldozeState = null; selectedCard = null; uiMode = 'idle';
-  const goalRow = pi === 0 ? 0 : BOARD_SIZE - 1;
+  const goalRow = getGoalRow(pi);
   if (finalPos.row === goalRow) {
     gameState.winner = pi; gameState.phase = 'ended';
     addLog(pi, 'system', `PLAYER ${pi} WINS via Bulldoze!`);
@@ -10688,7 +10728,7 @@ function shoulderCheckFireDir(dir) {
   const pi = gameState.activePlayer;
   if (!gameState._shoulderCheckState || uiMode !== 'shoulderCheckDir') return;
   const myPos = gameState.players[pi].position;
-  const opp = 1 - pi;
+  const opp = getFirstOpponent(pi);
   const oppPos = gameState.players[opp].position;
   const DIRS = { N:{r:-1,c:0}, S:{r:1,c:0}, W:{r:0,c:-1}, E:{r:0,c:1} };
   const d = DIRS[dir]; if (!d) return;
@@ -10735,7 +10775,7 @@ function shoulderCheckFireDir(dir) {
   }
 
   gameState._shoulderCheckState = null; selectedCard = null; uiMode = 'idle';
-  const goalRow = pi === 0 ? 0 : BOARD_SIZE - 1;
+  const goalRow = getGoalRow(pi);
   if (finalPos.row === goalRow) {
     gameState.winner = pi; gameState.phase = 'ended';
     addLog(pi, 'system', `PLAYER ${pi} WINS via Shoulder Check!`);
@@ -10747,7 +10787,7 @@ function shoulderCheckFireDir(dir) {
 
 // ── Disruption card handler ───────────────────────────────────────────
 async function applyDisruptionCard(pi, card, idx) {
-  const opp = 1 - pi;
+  const opp = getFirstOpponent(pi);
   const _dvQueued = selectedCard?._dejaVuQueued && !selectedCard?._isDejaVuReplay;
 
   // ── B07: Undermine — shrink one opponent wall by 1 tile ──
@@ -10794,11 +10834,11 @@ async function applyDisruptionCard(pi, card, idx) {
       gameState.players[pi] = {...gameState.players[pi], wallsInPlay: Math.max(0, gameState.players[pi].wallsInPlay - 1)};
       addLog(pi, 'card', 'Salvage Parts: recycled oldest wall');
       // Place a 1-tile wall near opponent
-      const oppPos = gameState.players[1-pi].position;
+      const oppPos = gameState.players[getFirstOpponent(pi)].position;
       const cands = generateWallCandidates(oppPos, 1);
       let placed = false;
       for (const {anchor, orientation} of cands) {
-        if (isWallLegal(anchor, orientation, 1, gameState.walls, gameState.players[1-pi].position, gameState.players[pi].position, false)) {
+        if (isWallLegal(anchor, orientation, 1, gameState.walls, gameState.players[getFirstOpponent(pi)].position, gameState.players[pi].position, false)) {
           executePlaceWall(anchor, orientation, 1, false, false, 'B04');
           placed = true; break;
         }
@@ -10887,8 +10927,8 @@ async function applyDisruptionCard(pi, card, idx) {
       let bestTarget = null, bestGain = -Infinity;
       for (const w of breakable) {
         const simWalls = breakable.filter(x => x.id !== w.id);
-        const distBefore = bfsDistanceFor(aiPos, BOARD_SIZE - 1, breakable, pi);
-        const distAfter  = bfsDistanceFor(aiPos, BOARD_SIZE - 1, simWalls, pi);
+        const distBefore = bfsDistanceFor(aiPos, getGoalRow(pi), breakable, pi);
+        const distAfter  = bfsDistanceFor(aiPos, getGoalRow(pi), simWalls, pi);
         const gain = distBefore - distAfter + (w.reinforced ? 3 : 0);
         if (gain > bestGain) { bestGain = gain; bestTarget = w; }
       }
@@ -10976,13 +11016,13 @@ async function applyDisruptionCard(pi, card, idx) {
       gameState.walls = gameState.walls.filter(w => w.id !== bestTarget.id);
       gameState.players[pi] = {...gameState.players[pi], wallsInPlay: Math.max(0, gameState.players[pi].wallsInPlay - 1)};
       discardCard(pi, idx); countCardPlayed(pi);
-      const oppPos = gameState.players[1-pi].position;
+      const oppPos = gameState.players[getFirstOpponent(pi)].position;
       let wallsPlaced = 0;
       for (let attempt = 0; attempt < numWalls; attempt++) {
         const cands = generateWallCandidates(oppPos, 2);
         for (const {anchor, orientation} of cands) {
           if (isWallLegal(anchor, orientation, 2, gameState.walls,
-              gameState.players[1-pi].position, gameState.players[pi].position, false)) {
+              gameState.players[getFirstOpponent(pi)].position, gameState.players[pi].position, false)) {
             executePlaceWall(anchor, orientation, 2, false, false, 'AR12');
             wallsPlaced++;
             break;
@@ -11142,7 +11182,7 @@ async function applyDisruptionCard(pi, card, idx) {
   // ── PF14: Trailblazer's Mark — place waypoint token 2 tiles away (random) ──
   if (card.id === 'PF14') {
     const myPos = gameState.players[pi].position;
-    const oppPos = gameState.players[1-pi].position;
+    const oppPos = gameState.players[getFirstOpponent(pi)].position;
     // Gather all tiles exactly Manhattan-distance 2 away, in bounds, not occupied
     const candidates = [];
     for (let dr = -2; dr <= 2; dr++) {
@@ -11308,7 +11348,7 @@ async function applyDisruptionCard(pi, card, idx) {
 
   // ── WD16: Repurposed Barricade — seize opponent non-reinforced wall, add binding ──
   if (card.id === 'WD16') {
-    const opp2 = 1 - pi;
+    const opp2 = getFirstOpponent(pi);
     const targets = gameState.walls.filter(w => w.owner === opp2 && !w.reinforced && !w.immune);
     if (!targets.length) { showStatus('No eligible opponent walls to repurpose', 'error'); return; }
     if (!isHumanSeat(pi)) {
@@ -11394,7 +11434,7 @@ async function applyDisruptionCard(pi, card, idx) {
     }
     if (!isHumanSeat(pi)) {
       // AI: push away from opponent's goal
-      const oppGoalRow = opp === 0 ? 0 : BOARD_SIZE - 1;
+      const oppGoalRow = getGoalRow(opp);
       const sorted = [...legalDirs].sort((a, b) => {
         const pa = gameState.players[opp].position.row + a.r;
         const pb = gameState.players[opp].position.row + b.r;
@@ -11452,7 +11492,7 @@ async function applyDisruptionCard(pi, card, idx) {
     }
     // AI: place between opponent and their goal
     const oppPos = gameState.players[opp].position;
-    const goalRow = (1-pi) === 0 ? 0 : BOARD_SIZE - 1;
+    const goalRow = getGoalRow(getFirstOpponent(pi));
     const dir = goalRow < oppPos.row ? -1 : 1;
     const tile = {row: oppPos.row + dir, col: oppPos.col};
     if (tile.row >= 0 && tile.row < BOARD_SIZE) {
@@ -11473,7 +11513,7 @@ async function applyDisruptionCard(pi, card, idx) {
       return;
     }
     const oppPos = gameState.players[opp].position;
-    const goalRow = opp === 0 ? 0 : BOARD_SIZE - 1;
+    const goalRow = getGoalRow(opp);
     const dir = goalRow < oppPos.row ? -1 : 1;
     const tile = {row: oppPos.row + dir, col: oppPos.col};
     if (tile.row >= 0 && tile.row < BOARD_SIZE) {
@@ -11517,7 +11557,7 @@ async function applyDisruptionCard(pi, card, idx) {
       return;
     }
     const oppPos = gameState.players[opp].position;
-    const goalRow = opp === 0 ? 0 : BOARD_SIZE - 1;
+    const goalRow = getGoalRow(opp);
     const dir = goalRow < oppPos.row ? -1 : 1;
     const tile = {row: oppPos.row + dir, col: oppPos.col};
     if (tile.row >= 0 && tile.row < BOARD_SIZE) {
@@ -11856,7 +11896,7 @@ async function applyDisruptionCard(pi, card, idx) {
 
   // ── AR2: Repossess — seize ownership of any opponent wall ──
   if (card.id === 'AR2') {
-    const opp2 = 1 - pi;
+    const opp2 = getFirstOpponent(pi);
     const targets = gameState.walls.filter(w => w.owner === opp2 && !w.immune);
     if (!targets.length) { showStatus('No eligible opponent walls to repossess', 'error'); return; }
     gameState._repossessCardIdx = idx;
@@ -12061,7 +12101,7 @@ async function applyDisruptionCard(pi, card, idx) {
     }
     // AI: auto-pick a direction (push opponent away from their goal)
     if (!isHumanSeat(pi)) {
-      const oppGoalRow = opp === 0 ? 0 : BOARD_SIZE - 1;
+      const oppGoalRow = getGoalRow(opp);
       // Prefer pushing opponent away from their goal
       const sorted = [...legalDirs].sort((a, b) => {
         const posA = { row: gameState.players[opp].position.row + a.r, col: gameState.players[opp].position.col + a.c };
@@ -12094,7 +12134,7 @@ async function applyDisruptionCard(pi, card, idx) {
     discardCard(pi, idx); selectedCard = null; countCardPlayed(pi);
     // AI: auto-push opponent 3 steps away from their goal
     if (!isHumanSeat(pi)) {
-      const oppGoalRow = opp === 0 ? 0 : BOARD_SIZE - 1;
+      const oppGoalRow = getGoalRow(opp);
       let totalMoved = 0;
       for (let step = 0; step < 3; step++) {
         const dirs = getLegalForceDirs(opp);
@@ -12241,7 +12281,7 @@ function activateUltimate(pi) {
 }
 
 function applyUltimate(pi, champId) {
-  const opp = 1 - pi;
+  const opp = getFirstOpponent(pi);
   switch(champId) {
     case 'magnus':
       // Living Blueprint: discard hand, refill to full
@@ -12304,7 +12344,7 @@ function applyUltimate(pi, champId) {
           const r = myPos.row + dr, c = myPos.col + dc;
           if (r < 0 || r >= BOARD_SIZE || c < 0 || c >= BOARD_SIZE) continue;
           // Check not occupied by opponent
-          const oppPos = gameState.players[1-pi].position;
+          const oppPos = gameState.players[getFirstOpponent(pi)].position;
           if (r === oppPos.row && c === oppPos.col) continue;
           targets.push({row: r, col: c});
         }
@@ -12315,8 +12355,8 @@ function applyUltimate(pi, champId) {
 
       // AI: automatically pick the best Breach target
       if (!isHumanSeat(pi)) {
-        const oppPos = gameState.players[1-pi].position;
-        const goalRow = pi === 0 ? 0 : BOARD_SIZE - 1;
+        const oppPos = gameState.players[getFirstOpponent(pi)].position;
+        const goalRow = getGoalRow(pi);
         let bestTarget = null, bestScore = -Infinity;
         for (const t of targets) {
           let score = 0;
@@ -12337,7 +12377,7 @@ function applyUltimate(pi, champId) {
           gameState.players[pi] = {...gameState.players[pi], position: bestTarget};
           const dist = Math.abs(bestTarget.row - oppPos.row) + Math.abs(bestTarget.col - oppPos.col);
           if (dist <= 2) {
-            addStatusEffect(1-pi, 'skip_move', 2);
+            addStatusEffect(getFirstOpponent(pi), 'skip_move', 2);
             addLog(pi, 'ultimate', `Breach: opponent stunned!`);
           }
           addLog(pi, 'ultimate', `Breach: teleported to (${bestTarget.row},${bestTarget.col})`);
@@ -12445,7 +12485,7 @@ function maybeAIUltimate(pi) {
   // ── Binding Wall: check if this player ends adjacent to an opponent's binding wall ──
   // A player is Bound only if they are NOT already on skip_move cooldown.
   // After the skip_move resolves, a 1-turn bind_cooldown is granted so the player can escape.
-  const opp = 1 - pi;
+  const opp = getFirstOpponent(pi);
   const pos = gameState.players[pi].position;
   const oppBindingWalls = gameState.walls.filter(w => w.binding && w.owner === opp && !w.isPhantom);
   const isAdjacent = oppBindingWalls.some(w =>
@@ -12470,7 +12510,7 @@ function maybeAIUltimate(pi) {
   // Nyx trail: decrement for the OPPONENT's seat when their turn ends.
   // The trail is set when Nyx moves, survives through Nyx's own end-turn push,
   // and expires after the opponent has had their full turn to see the ghost.
-  const nyxOppSeat = 1 - pi;
+  const nyxOppSeat = getFirstOpponent(pi);
   if (gameState._nyxTrail && gameState._nyxTrail[nyxOppSeat]) {
     const t = gameState._nyxTrail[nyxOppSeat];
     t.turnsRemaining--;
@@ -12478,7 +12518,7 @@ function maybeAIUltimate(pi) {
   }
 
   // False Trail: decrement for the OPPONENT's seat (same timing as Nyx trail)
-  const ftOppSeat = 1 - pi;
+  const ftOppSeat = getFirstOpponent(pi);
   if (gameState._falseTrail && gameState._falseTrail[ftOppSeat]) {
     const ft = gameState._falseTrail[ftOppSeat];
     ft.turnsRemaining--;
@@ -12831,7 +12871,8 @@ function renderBoard() {
       const cell = document.createElement('div');
       // Check for Trailblazer's Mark on this tile
       const isTrailMark = !!(gameState._trailMarks && gameState._trailMarks.some(m => m.tile.row===r && m.tile.col===c));
-      const isFFAGoalZone = gameConfig.mode === 'ffa' && r >= 3 && r <= 5 && c >= 3 && c <= 5;
+      const _cr = Math.floor(BOARD_ROWS / 2), _cc = Math.floor(BOARD_COLS / 2);
+      const isFFAGoalZone = gameConfig.mode === 'ffa' && r === _cr && c === _cc;
       cell.className = `cell${isLegal?' legal-move':''}${isTrapTarget?' legal-move trap-place-target':''}${isTrailMark?' trail-mark':''}${r===0&&gameConfig.mode!=='ffa'?' goal-row-p0':''}${r===BOARD_ROWS-1&&gameConfig.mode!=='ffa'?' goal-row-p1':''}${isFFAGoalZone?' goal-zone':''}`;
       if (isTrailMark) {
         const mark = gameState._trailMarks.find(m => m.tile.row===r && m.tile.col===c);
@@ -13242,7 +13283,7 @@ function pickWallForRedeploy(wall) {
 function pickWallForRedirect(wall) {
   if (uiMode !== 'wallRedirect') return;
   const pi  = gameState.activePlayer;
-  const opp = 1 - pi;
+  const opp = getFirstOpponent(pi);
   const cardIdx = gameState._redirectCardIdx;
   const isEviction = (selectedCard && selectedCard.id === 'WD3');
 
@@ -13422,7 +13463,7 @@ function pickWallForReconstruct(wall) {
 function pickWallForRepossess(wall) {
   if (uiMode !== 'wallRepossess') return;
   const pi = gameState.activePlayer;
-  const opp = 1 - pi;
+  const opp = getFirstOpponent(pi);
   const cardIdx = gameState._repossessCardIdx;
   gameState.walls = gameState.walls.map(w =>
     w.id === wall.id ? { ...w, owner: pi } : w
@@ -13444,7 +13485,7 @@ function pickWallForRepossess(wall) {
 function pickWallForRepurpose(wall) {
   if (uiMode !== 'wallRepurpose') return;
   const pi = gameState.activePlayer;
-  const opp = 1 - pi;
+  const opp = getFirstOpponent(pi);
   const cardIdx = gameState._repurposeCardIdx;
   gameState.walls = gameState.walls.map(w =>
     w.id === wall.id ? { ...w, owner: pi, binding: true } : w
@@ -14704,6 +14745,14 @@ function mpRenderCreateTab(content) {
         </div>
       </div>
       <div>
+        <div style="font-size:9px;color:#888;letter-spacing:.1em;margin-bottom:4px;">BOARD SIZE</div>
+        <div style="display:flex;gap:4px;">
+          <button class="diff-btn active" id="mp-bs-default" onclick="mpSetBoardSize('default')">Default</button>
+          <button class="diff-btn" id="mp-bs-11x11" onclick="mpSetBoardSize('11x11')">11×11</button>
+          <button class="diff-btn" id="mp-bs-13x13" onclick="mpSetBoardSize('13x13')">13×13</button>
+        </div>
+      </div>
+      <div>
         <div style="font-size:9px;color:#888;letter-spacing:.1em;margin-bottom:4px;">VISIBILITY</div>
         <div style="display:flex;gap:4px;">
           <button class="diff-btn active" id="mp-vis-private" onclick="mpSetVisibility('private')">PRIVATE</button>
@@ -14743,6 +14792,24 @@ let mp_selectedMode = '1v1';
 let mp_selectedVisibility = 'private';
 let mp_selectedGameType = 'casual';
 let mp_selectedBoardVariant = 'standard';
+
+let mp_selectedBoardSize = 'default';
+function mpSetBoardSize(size) {
+  mp_selectedBoardSize = size;
+  ['default','11x11','13x13'].forEach(s => {
+    const el = document.getElementById('mp-bs-' + s);
+    if (el) el.className = 'diff-btn' + (s === size ? ' active' : '');
+  });
+}
+
+function mpGetBoardDims() {
+  if (mp_selectedBoardSize === '11x11') return {rows:11, cols:11};
+  if (mp_selectedBoardSize === '13x13') return {rows:13, cols:13};
+  // Default: based on mode
+  if (mp_selectedMode === 'ffa') return {rows:13, cols:13};
+  if (mp_selectedMode === '2v2') return {rows:9, cols:11};
+  return {rows:9, cols:9};
+}
 
 function mpSetMode(mode) {
   mp_selectedMode = mode;
@@ -14815,6 +14882,7 @@ async function mpCreateGame() {
       game_mode_type: mp_selectedMode,
       max_players:   mp_selectedMode === '1v1' ? 2 : 4,
       board_variant: mp_selectedBoardVariant,
+      board_config: { ...mpGetBoardDims(), variant: mp_selectedBoardVariant },
       board_config:  mp_selectedBoardVariant !== 'standard' ? boardVariant : null,
       host_elo:      _userProfile?.elo || ELO_DEFAULT,
     }).select().single();
