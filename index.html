@@ -3289,7 +3289,13 @@ function getNextPlayer(pi) {
     }
   }
   if (gameConfig.mode === 'ffa') {
-    return (pi + 1) % gameConfig.playerCount;
+    // Skip players who have already finished (reached goal)
+    let next = (pi + 1) % gameConfig.playerCount;
+    for (let i = 0; i < gameConfig.playerCount; i++) {
+      if (!gameState._ffaFinished?.has(next)) return next;
+      next = (next + 1) % gameConfig.playerCount;
+    }
+    return next; // fallback (shouldn't happen — game should be over)
   }
   return pi === 0 ? 1 : 0; // 1v1
 }
@@ -3298,7 +3304,12 @@ function getNextPlayer(pi) {
 // In 2v2: targets the enemy closest to their goal. If AI teammate has reached goal, switch to pure blocking.
 // In FFA: targets whoever is closest to center. Ties broken randomly.
 function getPriorityTarget(pi) {
-  const opponents = getOpponents(pi);
+  let opponents = getOpponents(pi);
+  // In FFA, filter out players who already finished
+  if (gameConfig.mode === 'ffa' && gameState._ffaFinished?.size) {
+    opponents = opponents.filter(o => !gameState._ffaFinished.has(o));
+    if (opponents.length === 0) opponents = getOpponents(pi); // fallback
+  }
   if (opponents.length <= 1) return opponents[0] ?? (pi === 0 ? 1 : 0);
 
   const centerRow = Math.floor(BOARD_ROWS / 2), centerCol = Math.floor(BOARD_COLS / 2);
@@ -3341,16 +3352,50 @@ function getPlayerColor(pi) {
 
 function checkVictory(pi, pos) {
   if (!isGoalReached(pi, pos)) return false;
+
+  if (gameConfig.mode === 'ffa') {
+    // FFA placement system: record finish order, don't end game until 3 of 4 have placed
+    if (!gameState._ffaPlacements) gameState._ffaPlacements = [];
+    if (!gameState._ffaFinished) gameState._ffaFinished = new Set();
+    if (gameState._ffaFinished.has(pi)) return false; // already placed
+
+    gameState._ffaFinished.add(pi);
+    const place = gameState._ffaPlacements.length + 1;
+    gameState._ffaPlacements.push({ seat: pi, place, turn: gameState.turnNumber });
+    addLog(pi, 'system', `${gameState.players[pi].champion.name} finishes in ${placeLabel(place)}!`);
+
+    // If 3 of 4 have finished, auto-place the remaining player as 4th and end
+    const remaining = [];
+    for (let i = 0; i < gameConfig.playerCount; i++) {
+      if (!gameState._ffaFinished.has(i)) remaining.push(i);
+    }
+    if (remaining.length <= 1) {
+      if (remaining.length === 1) {
+        gameState._ffaFinished.add(remaining[0]);
+        gameState._ffaPlacements.push({ seat: remaining[0], place: gameState._ffaPlacements.length + 1, turn: gameState.turnNumber });
+        addLog(remaining[0], 'system', `${gameState.players[remaining[0]].champion.name} finishes in ${placeLabel(gameState._ffaPlacements.length)}!`);
+      }
+      return true; // Game over — all placed
+    }
+    return false; // Game continues for remaining players
+  }
+
   if (gameConfig.mode === '2v2') {
-    // Mark this player as having reached the goal
     if (!gameState._teamGoalsReached) gameState._teamGoalsReached = {};
     gameState._teamGoalsReached[pi] = true;
-    // Check if ALL teammates have reached
     const allies = getAllies(pi);
     const allReached = allies.every(a => gameState._teamGoalsReached[a]);
-    return allReached; // Team wins only when both reach goal
+    return allReached;
   }
-  return true; // 1v1 and FFA: reaching goal = immediate win
+
+  return true; // 1v1: immediate win
+}
+
+function placeLabel(n) {
+  if (n === 1) return '1st place';
+  if (n === 2) return '2nd place';
+  if (n === 3) return '3rd place';
+  return n + 'th place';
 }
 
 // isTurnDone — defined in card system section below
@@ -3502,7 +3547,7 @@ function initMultiPlayerGame(config) {
   const startPositions = config.mode === '2v2'
     ? [{row:lastRow,col:Math.floor(BOARD_COLS/3)},{row:lastRow,col:Math.floor(2*BOARD_COLS/3)},
        {row:0,col:Math.floor(BOARD_COLS/3)},{row:0,col:Math.floor(2*BOARD_COLS/3)}]
-    : [{row:0,col:midCol},{row:lastRow,col:midCol},{row:midRow,col:0},{row:midRow,col:lastCol}];
+    : [{row:0,col:0},{row:lastRow,col:lastCol},{row:0,col:lastCol},{row:lastRow,col:0}]; // FFA: four corners
 
   const players = [];
   for (let i = 0; i < config.playerCount; i++) {
@@ -3992,6 +4037,13 @@ function hasPathToZone(from, walls, minRow, maxRow, minCol, maxCol) {
 function performDraw() {
   const drawPi = gameState.activePlayer;
 
+  // FFA: auto-skip turns for finished players (human or AI)
+  if (gameState._ffaFinished?.has(drawPi)) {
+    gameState.phase = 'end_turn';
+    setTimeout(endTurn, 100);
+    return;
+  }
+
   // Tutorial: skip draw if match config says so
   if (gameMode === 'tutorial' && _tutorialState?.matchConfig?.skipDraw) {
     gameState.phase = 'action';
@@ -4387,11 +4439,27 @@ function executeMove(to) {
 
   if (isGoalReached(pi, to)) {
     if (checkVictory(pi, to)) {
-      gameState.winner = pi;
+      // In FFA, the winner is the 1st place finisher
+      gameState.winner = gameConfig.mode === 'ffa' ? (gameState._ffaPlacements?.[0]?.seat ?? pi) : pi;
       gameState.phase = 'ended';
-      addLog(pi, 'system', `PLAYER ${pi} WINS — reached the goal!`);
+      if (gameConfig.mode === 'ffa') {
+        addLog(pi, 'system', 'All players have placed! Game over.');
+      } else {
+        addLog(pi, 'system', `PLAYER ${pi} WINS — reached the goal!`);
+      }
       renderAll();
-      showVictory(pi);
+      showVictory(gameState.winner);
+      return;
+    } else if (gameConfig.mode === 'ffa') {
+      // Player placed but game continues — they stop taking turns
+      const place = gameState._ffaPlacements?.find(p => p.seat === pi);
+      if (place) {
+        showStatus(`${gameState.players[pi].champion.name} finishes ${placeLabel(place.place)}!`, 'success');
+      }
+      // Auto-end this player's turn since they're done
+      gameState.phase = 'end_turn';
+      renderAll();
+      setTimeout(endTurn, 500);
       return;
     } else {
       addLog(pi, 'system', `${gameState.players[pi].champion.name} reached the goal — waiting for teammate!`);
@@ -6245,6 +6313,14 @@ async function runAI() {
   if (gameState.phase !== 'action' || isHumanSeat(aiSeat)) {
     console.log('[AI] Early exit — wrong phase or human seat');
     aiThinking = false; return;
+  }
+  // FFA: skip turn if this AI has already finished (reached goal)
+  if (gameState._ffaFinished?.has(aiSeat)) {
+    console.log('[AI] Seat', aiSeat, 'already finished — skipping turn');
+    aiThinking = false;
+    gameState.phase = 'end_turn';
+    setTimeout(endTurn, 100);
+    return;
   }
   console.log('[AI] Starting AI turn for seat', aiSeat, '. Hand:', gameState.players[aiSeat].hand.map(c => c?.id || '?').join(','));
   // Tutorial mode: use simplified, unloseable AI
@@ -12992,24 +13068,31 @@ function renderAIStatusStrip() {
     const color = getPlayerColor(pi);
     const isActive = pi === gameState.activePlayer;
     const isBound = (p.statusEffects || []).some(e => (e.type === 'skip_move' || e.type === 'bound') && e.turnsRemaining > 0);
+    const isFinished = gameState._ffaFinished?.has(pi);
+    const finishPlace = isFinished ? gameState._ffaPlacements?.find(x => x.seat === pi) : null;
     const teamLabel = gameConfig.mode === '2v2' ? (getTeam(pi) === getTeam(0) ? 'ALLY' : 'ENEMY') : '';
-    const activeGlow = isActive ? 'box-shadow:0 0 8px ' + color + '60;' : '';
+    const placeColors = ['#fbbf24','#c0c0c0','#cd7f32','#888'];
+    const placeIcons = ['👑','🥈','🥉',''];
+    const activeGlow = isActive && !isFinished ? 'box-shadow:0 0 8px ' + color + '60;' : '';
+    const finishedStyle = isFinished ? 'opacity:0.6;' : '';
 
     strip.innerHTML += `
-      <div style="background:var(--surface);border:1px solid ${isActive ? color : 'var(--border)'};
-        padding:6px 12px;min-width:140px;font-size:10px;${activeGlow}">
+      <div style="background:var(--surface);border:1px solid ${isFinished ? (placeColors[finishPlace?.place-1]||'#555') : isActive ? color : 'var(--border)'};
+        padding:6px 12px;min-width:140px;font-size:10px;${activeGlow}${finishedStyle}">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px;">
           <span style="font-family:'Teko',sans-serif;font-size:15px;color:${color};">${c.name}</span>
+          ${isFinished && finishPlace ? `<span style="font-size:10px;color:${placeColors[finishPlace.place-1]||'#888'};">${placeIcons[finishPlace.place-1]||''} ${placeLabel(finishPlace.place)}</span>` : ''}
           ${teamLabel ? `<span style="font-size:8px;color:#888;letter-spacing:.08em;">${teamLabel}</span>` : ''}
-          ${isActive ? '<span style="font-size:8px;color:var(--amber);">●</span>' : ''}
+          ${isActive && !isFinished ? '<span style="font-size:8px;color:var(--amber);">●</span>' : ''}
         </div>
+        ${isFinished ? `<div style="color:${placeColors[finishPlace?.place-1]||'#888'};font-size:9px;letter-spacing:.08em;">FINISHED</div>` : `
         <div style="color:#888;font-size:9px;letter-spacing:.08em;margin-bottom:3px;">${c.faction} · ${c.passiveName}</div>
         <div style="display:flex;gap:8px;color:#aaa;font-size:9px;">
           <span>W:${p.wallsInPlay}/${p.wallLimitCurrent}</span>
           <span>H:${p.hand.length}/${c.handSize}</span>
           <span>U:${p.ultimateCharge}/${c.ultimateCost}${p.ultimateReady ? ' ⚡' : ''}</span>
         </div>
-        ${isBound ? '<div style="font-size:8px;color:#e05050;margin-top:2px;">BOUND</div>' : ''}
+        ${isBound ? '<div style="font-size:8px;color:#e05050;margin-top:2px;">BOUND</div>' : ''}`}
       </div>`;
   }
 
@@ -14377,6 +14460,8 @@ function buildGameRecord(winner) {
       cardNames: p1stats.cardsPlayed, finalRow: p1.position.row,
     },
     totalWalls: gameState.walls.filter(w => !w.isPhantom).length,
+    // FFA placement results
+    ffa_placements: gameState._ffaPlacements || null,
   };
 }
 
@@ -14594,17 +14679,64 @@ function showVictory(winner) {
   const champion = gameState.players[winner].champion.name;
 
   if (title) {
-    if (gameMode === 'mp') {
+    if (gameConfig.mode === 'ffa' && gameState._ffaPlacements?.length) {
+      // FFA: show human player's placement
+      const humanPlace = gameState._ffaPlacements.find(p => p.seat === 0);
+      const placeNum = humanPlace ? humanPlace.place : 4;
+      title.textContent = placeNum === 1 ? 'YOU WIN — 1ST PLACE!' : `YOU PLACED ${placeLabel(placeNum).toUpperCase()}`;
+      title.style.color = placeNum === 1 ? 'var(--amber)' : placeNum === 2 ? 'var(--p2)' : placeNum === 3 ? 'var(--p3)' : 'var(--p1)';
+    } else if (gameMode === 'mp') {
       title.textContent = winner === mp_localSeat ? 'YOU WIN' : (mp_opponentName||'OPPONENT').toUpperCase() + ' WINS';
+      title.style.color = winner === mp_localSeat ? 'var(--p0)' : 'var(--p1)';
     } else if (winner === 0) {
       title.textContent = 'YOU WIN';
+      title.style.color = 'var(--p0)';
     } else {
       const winnerName = gameState.players[winner]?.champion?.name || 'AI';
       title.textContent = winnerName.toUpperCase() + ' WINS';
+      title.style.color = 'var(--p1)';
     }
-    title.style.color  = winner === 0 ? 'var(--p0)' : 'var(--p1)';
   }
-  if (subtitle) subtitle.textContent = `${champion} reached the goal line — Turn ${gameState.turnNumber}`;
+  if (subtitle) {
+    if (gameConfig.mode === 'ffa' && gameState._ffaPlacements?.length) {
+      subtitle.textContent = `Free-for-all completed — Turn ${gameState.turnNumber}`;
+    } else {
+      subtitle.textContent = `${champion} reached the goal line — Turn ${gameState.turnNumber}`;
+    }
+  }
+
+  // FFA: inject placement results table into victory overlay
+  if (gameConfig.mode === 'ffa' && gameState._ffaPlacements?.length) {
+    const placementsDiv = document.createElement('div');
+    placementsDiv.id = 'ffa-placements';
+    placementsDiv.style.cssText = 'margin:16px 0;width:100%;max-width:400px;';
+    const placeColors = ['#fbbf24','#c0c0c0','#cd7f32','#888'];
+    const placeIcons = ['👑','🥈','🥉',''];
+    let html = '';
+    for (const p of gameState._ffaPlacements) {
+      const champ = gameState.players[p.seat]?.champion;
+      const color = getPlayerColor(p.seat);
+      const pColor = placeColors[p.place - 1] || '#888';
+      const isHuman = p.seat === 0;
+      html += `<div style="display:flex;align-items:center;gap:10px;padding:8px 12px;
+        border:1px solid ${isHuman ? 'var(--amber)' : 'var(--border)'};
+        background:${isHuman ? 'rgba(212,144,58,0.08)' : 'var(--surface)'};margin-bottom:4px;">
+        <div style="font-family:'Teko',sans-serif;font-size:22px;color:${pColor};min-width:30px;">${placeIcons[p.place-1] || ''} ${p.place}</div>
+        <div style="flex:1;">
+          <div style="font-family:'Teko',sans-serif;font-size:16px;color:${color};">${champ?.name || 'Unknown'}${isHuman ? ' (YOU)' : ''}</div>
+          <div style="font-size:9px;color:#888;">${champ?.faction || ''} · Turn ${p.turn}</div>
+        </div>
+      </div>`;
+    }
+    placementsDiv.innerHTML = html;
+    // Insert after subtitle
+    const victoryCard = overlay.querySelector('.victory-card');
+    if (victoryCard) {
+      const existingPlacements = document.getElementById('ffa-placements');
+      if (existingPlacements) existingPlacements.remove();
+      victoryCard.insertBefore(placementsDiv, victoryCard.querySelector('.victory-stats'));
+    }
+  }
 
   const vt = document.getElementById('v-turns');
   if (vt) vt.textContent = gameState.turnNumber;
