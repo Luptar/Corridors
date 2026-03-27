@@ -13903,48 +13903,106 @@ function showStatus(msg, type='') {
 // ── Victory ─────────────────────────────────────────────────────────
 // ── Game record builder ──────────────────────────────────────────────
 function buildGameRecord(winner) {
-  const p0 = gameState.players[0], p1 = gameState.players[1];
   const log = gameState.log;
+  const playerCount = gameState.players.length;
 
-  // Per-player action counts
+  // Per-player action counts + card detail
   function countActions(pi) {
     const moves  = log.filter(e => e.player===pi && e.type==='move').length;
     const walls  = log.filter(e => e.player===pi && e.type==='wall').length;
     const cards  = log.filter(e => e.player===pi && e.type==='card').length;
+    const ults   = log.filter(e => e.player===pi && e.type==='ultimate').length;
     const cardsPlayed = log.filter(e => e.player===pi && e.type==='card')
       .map(e => { const m = e.message.match(/Played[^:]*:\s*(.+?)(?:\s*—|$)/); return m?m[1].trim():null; })
       .filter(Boolean);
-    return { moves, walls, cards, cardsPlayed };
+    return { moves, walls, cards, ults, cardsPlayed };
   }
 
+  // Build champion stats snapshot for a player
+  function champSnapshot(pi) {
+    const p = gameState.players[pi];
+    if (!p) return null;
+    const c = p.champion;
+    return {
+      championId:   c.id,
+      championName: c.name,
+      faction:      c.faction,
+      rarity:       c.rarity || 'Template',
+      wallLimit:    c.wallLimit,
+      handSize:     c.handSize,
+      cardDraw:     c.cardDraw,
+      moveSpeed:    c.moveSpeed || 1,
+      ultimateCost: c.ultimateCost,
+      passiveId:    c.passiveId || c.id,
+      passiveName:  c.passiveName,
+      ultimateId:   c.ultimateId || c.id,
+      ultimateName: c.ultimateName,
+    };
+  }
+
+  // Build per-player records
+  const players = [];
+  for (let pi = 0; pi < playerCount; pi++) {
+    const p = gameState.players[pi];
+    if (!p) continue;
+    const stats = countActions(pi);
+    players.push({
+      seat: pi,
+      ...champSnapshot(pi),
+      moves:        stats.moves,
+      wallsPlaced:  stats.walls,
+      cardsPlayed:  stats.cards,
+      ultimatesUsed: stats.ults,
+      cardNames:    stats.cardsPlayed,
+      finalPosition: { row: p.position.row, col: p.position.col },
+    });
+  }
+
+  // Full move sequence (ordered timeline of actions)
+  const moveSequence = log
+    .filter(e => ['move','card','wall','ultimate','passive','trap'].includes(e.type))
+    .map(e => ({
+      turn: e.turn,
+      player: e.player,
+      type: e.type,
+      action: e.message,
+    }));
+
+  // Compat aliases for the 2-player case
   const p0stats = countActions(0);
-  const p1stats = countActions(1);
+  const p1stats = playerCount > 1 ? countActions(1) : { moves:0, walls:0, cards:0, ults:0, cardsPlayed:[] };
+  const p0 = gameState.players[0];
+  const p1 = playerCount > 1 ? gameState.players[1] : p0;
 
   return {
     id: Date.now(),
     timestamp: new Date().toISOString(),
+    // Game context
+    game_mode: gameConfig.mode || '1v1',
+    game_type: gameMode, // 'sp', 'gauntlet', 'mp', 'tutorial'
     difficulty: aiDifficulty,
+    board_rows: BOARD_ROWS,
+    board_cols: BOARD_COLS,
+    player_count: playerCount,
     turns: gameState.turnNumber,
-    winner: winner === 0 ? 'player' : 'ai',
+    winner: winner === 0 ? 'player' : (playerCount <= 2 ? 'ai' : 'player_' + winner),
+    winner_seat: winner,
+    // All players data
+    players: players,
+    // Full action timeline
+    move_sequence: moveSequence,
+    // Legacy 2-player compat
     player: {
-      championId:   p0.champion.id,
-      championName: p0.champion.name,
-      faction:      p0.champion.faction,
-      moves:        p0stats.moves,
-      wallsPlaced:  p0stats.walls,
-      cardsPlayed:  p0stats.cards,
-      cardNames:    p0stats.cardsPlayed,
-      finalRow:     p0.position.row,
+      championId: p0.champion.id, championName: p0.champion.name,
+      faction: p0.champion.faction, moves: p0stats.moves,
+      wallsPlaced: p0stats.walls, cardsPlayed: p0stats.cards,
+      cardNames: p0stats.cardsPlayed, finalRow: p0.position.row,
     },
     ai: {
-      championId:   p1.champion.id,
-      championName: p1.champion.name,
-      faction:      p1.champion.faction,
-      moves:        p1stats.moves,
-      wallsPlaced:  p1stats.walls,
-      cardsPlayed:  p1stats.cards,
-      cardNames:    p1stats.cardsPlayed,
-      finalRow:     p1.position.row,
+      championId: p1.champion.id, championName: p1.champion.name,
+      faction: p1.champion.faction, moves: p1stats.moves,
+      wallsPlaced: p1stats.walls, cardsPlayed: p1stats.cards,
+      cardNames: p1stats.cardsPlayed, finalRow: p1.position.row,
     },
     totalWalls: gameState.walls.filter(w => !w.isPhantom).length,
   };
@@ -14024,21 +14082,54 @@ function renderDeckPowerBadge(score) {
 // ── Unified Match Logger ────────────────────────────────────────────
 function buildGameRecordV2(winner, mode, mpGameId) {
   const base = buildGameRecord(winner);
-  const p0Deck = gameState.players[0].deck.map(c => c.id || c).concat(gameState.players[0].hand.map(c => c.id || c));
-  const p1Deck = gameState.players[1].deck.map(c => c.id || c).concat(gameState.players[1].hand.map(c => c.id || c));
+  const pCount = gameState.players.length;
+
+  // Collect deck scores and full deck lists for all players
+  const deckData = {};
+  for (let i = 0; i < pCount; i++) {
+    const p = gameState.players[i];
+    if (!p) continue;
+    const fullDeck = p.deck.map(c => c.id || c).concat(p.hand.map(c => c.id || c)).concat(p.discard.map(c => c.id || c));
+    deckData[`p${i}_deck_score`] = calculateDeckPowerScore(fullDeck);
+    deckData[`p${i}_deck_list`] = fullDeck;
+    deckData[`p${i}_faction`] = p.champion.faction;
+    deckData[`p${i}_champion`] = p.champion.name;
+    deckData[`p${i}_champion_id`] = p.champion.id;
+    deckData[`p${i}_rarity`] = p.champion.rarity || 'Template';
+    deckData[`p${i}_passive`] = p.champion.passiveName || '';
+    deckData[`p${i}_ultimate`] = p.champion.ultimateName || '';
+    deckData[`p${i}_stats`] = {
+      wallLimit: p.champion.wallLimit, handSize: p.champion.handSize,
+      cardDraw: p.champion.cardDraw, moveSpeed: p.champion.moveSpeed || 1,
+      ultimateCost: p.champion.ultimateCost,
+    };
+  }
+
+  // Determine board variant name
+  let boardVariant = 'standard';
+  if (gameConfig.mode === 'ffa') boardVariant = `ffa_${BOARD_ROWS}x${BOARD_COLS}`;
+  else if (gameConfig.mode === '2v2') boardVariant = `2v2_${BOARD_ROWS}x${BOARD_COLS}`;
+  else if (_gauntletRun?._currentNode?.boss) boardVariant = _gauntletRun._currentNode.boss.boardName || 'boss';
+
   return {
     ...base,
     game_mode: mode || gameMode,
+    game_mode_type: gameConfig.mode || '1v1',
     mp_game_id: mpGameId || null,
-    board_variant: 'standard', // Will be overridden if boss/custom board
+    board_variant: boardVariant,
+    board_rows: BOARD_ROWS,
+    board_cols: BOARD_COLS,
+    player_count: pCount,
     p0_user_id: _authUser?.id || null,
-    p1_user_id: null, // AI in SP/gauntlet; set by caller for MP
-    p0_deck_score: calculateDeckPowerScore(p0Deck),
-    p1_deck_score: calculateDeckPowerScore(p1Deck),
-    p0_faction: gameState.players[0].champion.faction,
-    p1_faction: gameState.players[1].champion.faction,
-    p0_champion: gameState.players[0].champion.name,
-    p1_champion: gameState.players[1].champion.name,
+    p1_user_id: null,
+    ...deckData,
+    // Legacy compat
+    p0_deck_score: deckData.p0_deck_score || 0,
+    p1_deck_score: deckData.p1_deck_score || 0,
+    p0_faction: deckData.p0_faction || 'Basic',
+    p1_faction: deckData.p1_faction || 'Basic',
+    p0_champion: deckData.p0_champion || 'Unknown',
+    p1_champion: deckData.p1_champion || 'Unknown',
   };
 }
 
@@ -14046,13 +14137,15 @@ async function saveGameRecordToSupabase(record) {
   const sb = mpInit();
   if (!sb) { console.warn('[MATCH] No Supabase client — skipping save'); return; }
   try {
-    // Build insert payload — omit user_id fields if null (uuid columns reject empty strings)
+    // Build insert payload with comprehensive match data
+    // New jsonb columns store rich data; legacy columns kept for backward compat
     const payload = {
       game_mode: record.game_mode || 'sp',
       difficulty: record.difficulty || null,
       turns: record.turns || 0,
-      winner_seat: record.winner === 'player' ? 0 : 1,
+      winner_seat: typeof record.winner_seat === 'number' ? record.winner_seat : (record.winner === 'player' ? 0 : 1),
       board_variant: record.board_variant || 'standard',
+      // Legacy per-player columns (p0/p1)
       p0_champion: record.p0_champion || record.player?.championName || 'Unknown',
       p0_faction: record.p0_faction || record.player?.faction || 'Basic',
       p0_moves: record.player?.moves || 0,
@@ -14068,6 +14161,13 @@ async function saveGameRecordToSupabase(record) {
       p1_card_names: record.ai?.cardNames || [],
       p1_deck_score: record.p1_deck_score || 0,
       total_walls: record.totalWalls || 0,
+      // New rich data columns (jsonb) — requires DB migration
+      game_mode_type: record.game_mode_type || '1v1',
+      board_rows: record.board_rows || 9,
+      board_cols: record.board_cols || 9,
+      player_count: record.player_count || 2,
+      players_data: record.players || null,        // full champion stats/passives/ultimates per player
+      move_sequence: record.move_sequence || null,  // ordered timeline of every action
     };
     // Only include uuid fields if they are valid (non-null)
     if (record.p0_user_id) payload.p0_user_id = record.p0_user_id;
