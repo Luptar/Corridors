@@ -6405,9 +6405,10 @@ function probeBonus(moveDest, walls) {
     if (!isAdjacent) continue;
 
     // How much would revealing (removing) this wall help the AI?
-    const withWall    = bfsDistanceFor(moveDest, getGoalRow(pi), walls, pi);
-    const withoutWall = bfsDistanceFor(moveDest, getGoalRow(pi),
-                          walls.filter(x => x.id !== w.id), pi);
+    const _pi = gameState.activePlayer;
+    const withWall    = bfsDistanceFor(moveDest, getGoalRow(_pi), walls, _pi);
+    const withoutWall = bfsDistanceFor(moveDest, getGoalRow(_pi),
+                          walls.filter(x => x.id !== w.id), _pi);
     const gain = withWall - withoutWall;
     if (gain > 0) {
       // Bonus scaled by probability and gain, discounted slightly (might be real)
