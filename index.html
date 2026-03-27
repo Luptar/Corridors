@@ -2229,8 +2229,14 @@
       <button class="draw-screen-btn" id="draw-screen-btn">DRAW HAND →</button>
     </div>
 
-    <div id="board-container" style="position:relative;">
-      <!-- Board grid + wall layers built by JS -->
+    <div id="board-with-stare" style="display:flex;align-items:flex-start;gap:8px;justify-content:center;">
+      <!-- Warden's Stare: left side opponent hands -->
+      <div id="warden-stare-left" style="display:none;width:140px;flex-shrink:0;overflow-y:auto;max-height:500px;"></div>
+      <div id="board-container" style="position:relative;">
+        <!-- Board grid + wall layers built by JS -->
+      </div>
+      <!-- Warden's Stare: right side opponent hands -->
+      <div id="warden-stare-right" style="display:none;width:140px;flex-shrink:0;overflow-y:auto;max-height:500px;"></div>
     </div>
 
     <div class="action-bar" id="action-bar">
@@ -2347,11 +2353,6 @@
     <!-- Bottom row: Cards -->
     <div style="padding:8px 16px;max-width:1400px;margin:0 auto;">
       <div id="bp-hand"></div>
-      <!-- Revealed opponent hand (Warden's Stare) -->
-      <div id="bp-revealed-hand" style="display:none;margin-top:8px;padding-top:8px;border-top:1px solid var(--border);">
-        <div style="font-size:9px;color:var(--wall-ward);letter-spacing:.1em;margin-bottom:6px;">⬡ OPPONENT'S HAND — WARDEN'S STARE</div>
-        <div id="bp-revealed-cards" style="display:flex;gap:6px;flex-wrap:nowrap;"></div>
-      </div>
     </div>
   </div>
 </main>
@@ -4908,6 +4909,56 @@ function dirFromTo(from, to) {
 }
 
 // ── Direction Picker Modal ──────────────────────────────────────────
+// ── Target Picker: choose which opponent to target (multi-player) ────
+// In 1v1 or when only 1 opponent remains, auto-resolves immediately.
+// callback receives the chosen opponent seat index.
+function showTargetPicker(pi, callback, cardName, onCancel) {
+  const opponents = getOpponents(pi).filter(oi =>
+    gameState.players[oi] && !gameState._ffaFinished?.has(oi)
+  );
+  // Auto-resolve if only 1 target
+  if (opponents.length <= 1) {
+    callback(opponents[0] ?? getFirstOpponent(pi));
+    return;
+  }
+
+  document.getElementById('target-picker-overlay')?.remove();
+  const overlay = document.createElement('div');
+  overlay.id = 'target-picker-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.8);z-index:400;display:flex;align-items:center;justify-content:center;';
+
+  let html = `<div style="background:var(--surface);border:2px solid var(--amber);padding:24px 32px;max-width:400px;text-align:center;">
+    <div style="font-family:'Teko',sans-serif;font-size:22px;color:var(--amber);margin-bottom:4px;">${cardName || 'SELECT TARGET'}</div>
+    <div style="font-size:11px;color:#888;margin-bottom:16px;">Choose which opponent to target</div>
+    <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap;">`;
+
+  for (const oi of opponents) {
+    const p = gameState.players[oi];
+    const color = getPlayerColor(oi);
+    const teamLabel = gameConfig.mode === '2v2' ? (getTeam(oi) === getTeam(pi) ? ' (ALLY)' : '') : '';
+    html += `<div onclick="document.getElementById('target-picker-overlay')?.remove();window._targetPickerCb(${oi});"
+      style="cursor:pointer;background:var(--bg);border:2px solid ${color};padding:12px 16px;min-width:100px;
+      transition:transform 0.15s,box-shadow 0.15s;text-align:center;"
+      onmouseover="this.style.transform='scale(1.05)';this.style.boxShadow='0 0 12px ${color}40'"
+      onmouseout="this.style.transform='scale(1)';this.style.boxShadow='none'">
+      <div style="font-family:'Teko',sans-serif;font-size:18px;color:${color};">${p.champion.name}</div>
+      <div style="font-size:9px;color:#888;">${p.champion.faction}${teamLabel}</div>
+      <div style="font-size:9px;color:#aaa;margin-top:4px;">Row ${p.position.row}, Col ${p.position.col}</div>
+    </div>`;
+  }
+
+  html += `</div>
+    <button onclick="document.getElementById('target-picker-overlay')?.remove();window._targetPickerCancel?.();"
+      style="margin-top:16px;padding:4px 16px;font-size:10px;background:transparent;border:1px solid var(--text-dim);
+      color:var(--text-dim);cursor:pointer;letter-spacing:.1em;">CANCEL</button>
+  </div>`;
+
+  overlay.innerHTML = html;
+  window._targetPickerCb = callback;
+  window._targetPickerCancel = onCancel || (() => {});
+  document.body.appendChild(overlay);
+}
+
 function showDirectionPicker(directions, callback, title, subtitle, onCancel) {
   document.getElementById('direction-picker-overlay')?.remove();
 
@@ -11568,13 +11619,15 @@ async function applyDisruptionCard(pi, card, idx) {
       showEmbargoTypePicker(pi, opp);
       return;
     } else {
-      const oppHand = gameState.players[opp].hand;
+      // AI: embargo all opponents on the card type they use most
+      const allOpps = getOpponents(pi);
+      const oppHand = gameState.players[allOpps[0]]?.hand || [];
       const counts = {Wall:0, Movement:0, Disruption:0};
       oppHand.forEach(c => { if (counts[c.type] !== undefined) counts[c.type]++; });
       const embargoType = Object.entries(counts).sort((a,b) => b[1]-a[1])[0][0];
       if (!gameState._embargo) gameState._embargo = {};
-      gameState._embargo[opp] = {type: embargoType, turnsRemaining: 2};
-      addLog(pi, 'card', `Embargo: opponent cannot play ${embargoType} cards for 2 turns`);
+      for (const oi of allOpps) gameState._embargo[oi] = {type: embargoType, turnsRemaining: 2};
+      addLog(pi, 'card', `Embargo: ${allOpps.length} opponent(s) cannot play ${embargoType} cards for 2 turns`);
       discardCard(pi, idx); selectedCard = null; countCardPlayed(pi);
       if (isTurnDone()) gameState.phase = 'end_turn';
       renderAll(); showStatus(`Embargo: ${embargoType} blocked for 2 turns!`, 'success'); return;
@@ -11592,22 +11645,21 @@ async function applyDisruptionCard(pi, card, idx) {
     renderAll(); showStatus('Warden\'s Decree: opponent\'s card play denied!', 'success'); return;
   }
 
-  // ── WD12: Conscription — draw 2, opponent draws 1 ──
+  // ── WD12: Conscription — draw 2, all opponents draw 1 ──
   if (card.id === 'WD12') {
     discardCard(pi, idx); countCardPlayed(pi); selectedCard = null;
-    drawCards(pi, 2, true); // ignoreLimit: Conscription always draws 2
-    // In MP: we can't reliably draw from opponent's private deck.
-    // Instead, flag that they should get a bonus draw on their next turn.
+    drawCards(pi, 2, true);
+    const allOpps = getOpponents(pi);
     if (gameMode === 'mp') {
-      if (!gameState._bonusDraws) gameState._bonusDraws = [0, 0];
-      gameState._bonusDraws[opp] = (gameState._bonusDraws[opp] || 0) + 1;
-      addLog(pi, 'card', 'Conscription: drew 2, opponent gets +1 draw next turn');
+      if (!gameState._bonusDraws) gameState._bonusDraws = {};
+      for (const oi of allOpps) gameState._bonusDraws[oi] = (gameState._bonusDraws[oi] || 0) + 1;
+      addLog(pi, 'card', `Conscription: drew 2, ${allOpps.length} opponent(s) get +1 draw next turn`);
     } else {
-      drawCards(opp, 1);
-      addLog(pi, 'card', 'Conscription: drew 2, opponent drew 1');
+      for (const oi of allOpps) drawCards(oi, 1);
+      addLog(pi, 'card', `Conscription: drew 2, ${allOpps.length} opponent(s) drew 1`);
     }
     if (isTurnDone()) gameState.phase = 'end_turn';
-    renderAll(); showStatus('Conscription: drew 2, opponent drew 1', 'success'); return;
+    renderAll(); showStatus('Conscription: drew 2, opponents drew 1', 'success'); return;
   }
 
   // ── WD14: Evidence Locker — exile top of opponent discard, draw 1 ──
@@ -11620,10 +11672,11 @@ async function applyDisruptionCard(pi, card, idx) {
     renderAll(); showStatus(exiled ? `Exiled ${exiled.name}!` : 'Drew 1 card', 'success'); return;
   }
 
-  // ── WD15: Martial Law — multi-turn suppression ──
+  // ── WD15: Martial Law — multi-turn suppression (affects ALL opponents) ──
   if (card.id === 'WD15') {
-    addStatusEffect(opp, 'martial_law', 3);
-    addLog(pi, 'card', 'Martial Law: opponent suppressed for 2 turns (hand revealed, no Rare/Legendary, move -1)');
+    const allOpps = getOpponents(pi);
+    for (const oi of allOpps) addStatusEffect(oi, 'martial_law', 3);
+    addLog(pi, 'card', `Martial Law: ${allOpps.length} opponent(s) suppressed for 2 turns`);
     discardCard(pi, idx); selectedCard = null; countCardPlayed(pi);
     if (isTurnDone()) gameState.phase = 'end_turn';
     renderAll(); showStatus('Martial Law enacted!', 'success'); return;
@@ -12282,34 +12335,36 @@ async function applyDisruptionCard(pi, card, idx) {
     return;
   }
 
-  // ── WD4: Confiscate — opponent discards 2 cards, no draw for player ──
+  // ── WD4: Confiscate — all opponents discard 2 cards ──
   if (card.id === 'WD4') {
-    // In MP: fetch opponent's hand from Supabase since we don't have it locally
-    if (gameMode === 'mp' && gameState.players[opp].hand.length === 0) {
-      const sb = mpInit();
-      if (sb) {
-        const oppHandKey = opp === 0 ? 'host_hand' : 'guest_hand';
-        const { data: g } = await sb.from('mp_games').select(oppHandKey).eq('id', mp_gameId).single();
-        if (g) {
-          const oppHand = JSON.parse(g[oppHandKey] || '[]');
-          gameState.players[opp] = {...gameState.players[opp], hand: oppHand};
+    const allOpps = getOpponents(pi);
+    for (const oi of allOpps) {
+      // In MP: fetch opponent's hand if needed
+      if (gameMode === 'mp' && gameState.players[oi].hand.length === 0) {
+        const sb = mpInit();
+        if (sb) {
+          const oppHandKey = oi === 0 ? 'host_hand' : 'guest_hand';
+          const { data: g } = await sb.from('mp_games').select(oppHandKey).eq('id', mp_gameId).single();
+          if (g) {
+            const oppHand = JSON.parse(g[oppHandKey] || '[]');
+            gameState.players[oi] = {...gameState.players[oi], hand: oppHand};
+          }
         }
       }
-    }
-    const op = gameState.players[opp];
-    const discardCount = Math.min(2, op.hand.length);
-    if (discardCount > 0) {
-      // Discard 2 random cards from opponent's hand
-      let hand = [...op.hand];
-      const discarded = [];
-      for (let i = 0; i < discardCount; i++) {
-        const ridx = Math.floor(Math.random() * hand.length);
-        discarded.push(hand.splice(ridx, 1)[0]);
+      const op = gameState.players[oi];
+      const discardCount = Math.min(2, op.hand.length);
+      if (discardCount > 0) {
+        let hand = [...op.hand];
+        const discarded = [];
+        for (let i = 0; i < discardCount; i++) {
+          const ridx = Math.floor(Math.random() * hand.length);
+          discarded.push(hand.splice(ridx, 1)[0]);
+        }
+        gameState.players[oi] = { ...op, hand, discard: [...op.discard, ...discarded] };
+        addLog(pi, 'card', `Confiscate: ${op.champion.name} discarded ${discarded.map(c=>c.name).join(', ')}!`);
+      } else {
+        addLog(pi, 'card', `Confiscate: ${op.champion.name} hand was empty`);
       }
-      gameState.players[opp] = { ...op, hand, discard: [...op.discard, ...discarded] };
-      addLog(pi, 'card', `Confiscate: opponent discarded ${discarded.map(c=>c.name).join(', ')}!`);
-    } else {
-      addLog(pi, 'card', 'Confiscate: opponent hand was empty');
     }
     // Also discard 1 random card from the player's own hand (after discarding the Confiscate card itself)
     discardCard(pi, idx); selectedCard = null; countCardPlayed(pi);
@@ -12374,102 +12429,115 @@ async function applyDisruptionCard(pi, card, idx) {
     return;
   }
 
-  // ── PH2: Compel — force opponent to move 1 space (not voluntary, no phantom removal) ──
+  // ── PH2: Compel — force opponent to move 1 space (pick target in multi-player) ──
   if (card.id === 'PH2') {
-    const legalDirs = getLegalForceDirs(opp);
-    if (!legalDirs.length) {
-      discardCard(pi, idx); selectedCard = null; countCardPlayed(pi);
-      if (isTurnDone()) gameState.phase = 'end_turn';
-      renderAll(); showStatus('Compel: opponent had no legal moves to force', 'success'); return;
-    }
-    // AI: auto-pick a direction (push opponent away from their goal)
-    if (!isHumanSeat(pi)) {
-      const oppGoalRow = getGoalRow(opp);
-      // Prefer pushing opponent away from their goal
-      const sorted = [...legalDirs].sort((a, b) => {
-        const posA = { row: gameState.players[opp].position.row + a.r, col: gameState.players[opp].position.col + a.c };
-        const posB = { row: gameState.players[opp].position.row + b.r, col: gameState.players[opp].position.col + b.c };
-        return Math.abs(posB.row - oppGoalRow) - Math.abs(posA.row - oppGoalRow);
+    function doCompel(targetOpp) {
+      const legalDirs = getLegalForceDirs(targetOpp);
+      if (!legalDirs.length) {
+        discardCard(pi, idx); selectedCard = null; countCardPlayed(pi);
+        if (isTurnDone()) gameState.phase = 'end_turn';
+        renderAll(); showStatus('Compel: target had no legal moves to force', 'success'); return;
+      }
+      // AI: auto-pick direction
+      if (!isHumanSeat(pi)) {
+        const oppGoalRow = getGoalRow(targetOpp);
+        const sorted = [...legalDirs].sort((a, b) => {
+          const posA = { row: gameState.players[targetOpp].position.row + a.r, col: gameState.players[targetOpp].position.col + a.c };
+          const posB = { row: gameState.players[targetOpp].position.row + b.r, col: gameState.players[targetOpp].position.col + b.c };
+          return Math.abs(posB.row - oppGoalRow) - Math.abs(posA.row - oppGoalRow);
+        });
+        const result = executeForceMove(targetOpp, sorted[0], 1);
+        addLog(pi, 'card', `Compel: forced ${gameState.players[targetOpp].champion.name} ${sorted[0].label}`);
+        discardCard(pi, idx); selectedCard = null; countCardPlayed(pi);
+        if (isTurnDone()) gameState.phase = 'end_turn';
+        renderAll(); return;
+      }
+      showDirectionPicker(legalDirs, (chosen) => {
+        const result = executeForceMove(targetOpp, chosen, 1);
+        addLog(pi, 'card', `Compel: forced ${gameState.players[targetOpp].champion.name} ${chosen.label}`);
+        discardCard(pi, idx); selectedCard = null; countCardPlayed(pi);
+        if (isTurnDone()) gameState.phase = 'end_turn';
+        renderAll(); showStatus('Compel: target forced to move!', 'success');
+      }, undefined, undefined, () => {
+        selectedCard = null; uiMode = 'idle';
+        renderAll(); showStatus('Compel cancelled', '');
       });
-      const chosen = sorted[0];
-      const result = executeForceMove(opp, chosen, 1);
-      addLog(pi, 'card', `Compel: forced opponent ${chosen.label} (${result.spacesMoved} space)`);
-      discardCard(pi, idx); selectedCard = null; countCardPlayed(pi);
-      if (isTurnDone()) gameState.phase = 'end_turn';
-      renderAll(); return;
     }
-    showDirectionPicker(legalDirs, (chosen) => {
-      const result = executeForceMove(opp, chosen, 1);
-      addLog(pi, 'card', `Compel: forced opponent ${chosen.label} (${result.spacesMoved} space)`);
-      discardCard(pi, idx); selectedCard = null; countCardPlayed(pi);
-      if (isTurnDone()) gameState.phase = 'end_turn';
-      renderAll(); showStatus('Compel: opponent forced to move!', 'success');
-    }, undefined, undefined, () => {
-      // Cancel: card not consumed, return to action phase
+    // AI: auto-pick priority target
+    if (!isHumanSeat(pi)) { doCompel(opp); return; }
+    // Human in multi-player: pick target first
+    showTargetPicker(pi, doCompel, 'COMPEL', () => {
       selectedCard = null; uiMode = 'idle';
       renderAll(); showStatus('Compel cancelled', '');
     });
     return;
   }
 
-  // ── PH5: Compel Storm — force opponent up to 3 steps, each direction chosen by you ──
+  // ── PH5: Compel Storm — force opponent up to 3 steps (pick target in multi-player) ──
   if (card.id === 'PH5') {
-    discardCard(pi, idx); selectedCard = null; countCardPlayed(pi);
-    // AI: auto-push opponent 3 steps away from their goal
-    if (!isHumanSeat(pi)) {
-      const oppGoalRow = getGoalRow(opp);
-      let totalMoved = 0;
-      for (let step = 0; step < 3; step++) {
-        const dirs = getLegalForceDirs(opp);
-        if (!dirs.length) break;
-        const sorted = [...dirs].sort((a, b) => {
-          const posA = { row: gameState.players[opp].position.row + a.r, col: gameState.players[opp].position.col + a.c };
-          const posB = { row: gameState.players[opp].position.row + b.r, col: gameState.players[opp].position.col + b.c };
-          return Math.abs(posB.row - oppGoalRow) - Math.abs(posA.row - oppGoalRow);
-        });
-        const result = executeForceMove(opp, sorted[0], 1);
-        if (result.spacesMoved > 0) totalMoved++;
-        else break;
-      }
-      addLog(pi, 'card', `Compel Storm: forced opponent ${totalMoved} step(s)`);
-      if (isTurnDone()) gameState.phase = 'end_turn';
-      renderAll(); return;
-    }
-    let stepsDone = 0;
-    function doCompelStormStep() {
-      if (stepsDone >= 3) {
-        addLog(pi, 'card', `Compel Storm: forced opponent ${stepsDone} step(s)`);
-        if (isTurnDone()) gameState.phase = 'end_turn';
-        renderAll(); showStatus(`Compel Storm: opponent forced ${stepsDone} space(s)!`, 'success');
-        if (gameMode === 'mp') mpPushState();
-        return;
-      }
-      const legalDirs = getLegalForceDirs(opp);
-      if (!legalDirs.length) {
-        addLog(pi, 'card', `Compel Storm: opponent blocked after ${stepsDone} step(s)`);
-        if (isTurnDone()) gameState.phase = 'end_turn';
-        renderAll(); showStatus(`Compel Storm: opponent blocked after ${stepsDone} step(s)!`, 'success');
-        if (gameMode === 'mp') mpPushState();
-        return;
-      }
-      const remaining = 3 - stepsDone;
-      showDirectionPicker(legalDirs, (chosen) => {
-        const result = executeForceMove(opp, chosen, 1);
-        stepsDone++;
-        renderAll();
-        if (stepsDone < 3) {
-          showStatus(`Compel Storm: step ${stepsDone}/3 done — choose next direction`, 'active');
+    function doCompelStorm(targetOpp) {
+      discardCard(pi, idx); selectedCard = null; countCardPlayed(pi);
+      const targetName = gameState.players[targetOpp]?.champion?.name || 'opponent';
+      // AI: auto-push target 3 steps away from their goal
+      if (!isHumanSeat(pi)) {
+        const oppGoalRow = getGoalRow(targetOpp);
+        let totalMoved = 0;
+        for (let step = 0; step < 3; step++) {
+          const dirs = getLegalForceDirs(targetOpp);
+          if (!dirs.length) break;
+          const sorted = [...dirs].sort((a, b) => {
+            const posA = { row: gameState.players[targetOpp].position.row + a.r, col: gameState.players[targetOpp].position.col + a.c };
+            const posB = { row: gameState.players[targetOpp].position.row + b.r, col: gameState.players[targetOpp].position.col + b.c };
+            return Math.abs(posB.row - oppGoalRow) - Math.abs(posA.row - oppGoalRow);
+          });
+          const result = executeForceMove(targetOpp, sorted[0], 1);
+          if (result.spacesMoved > 0) totalMoved++;
+          else break;
         }
-        doCompelStormStep();
-      }, `COMPEL STORM (step ${stepsDone+1}/3)`, `Push opponent which direction? (${remaining} step${remaining>1?'s':''} remaining)`, () => {
-        // Cancel: end storm early (card already consumed, pushes so far stay)
-        addLog(pi, 'card', `Compel Storm: ended early after ${stepsDone} step(s)`);
+        addLog(pi, 'card', `Compel Storm: forced ${targetName} ${totalMoved} step(s)`);
         if (isTurnDone()) gameState.phase = 'end_turn';
-        renderAll(); showStatus(`Compel Storm ended after ${stepsDone} step(s)`, 'active');
-        if (gameMode === 'mp') mpPushState();
-      });
+        renderAll(); return;
+      }
+      let stepsDone = 0;
+      function doStep() {
+        if (stepsDone >= 3) {
+          addLog(pi, 'card', `Compel Storm: forced ${targetName} ${stepsDone} step(s)`);
+          if (isTurnDone()) gameState.phase = 'end_turn';
+          renderAll(); showStatus(`Compel Storm: ${targetName} forced ${stepsDone} space(s)!`, 'success');
+          if (gameMode === 'mp') mpPushState();
+          return;
+        }
+        const legalDirs = getLegalForceDirs(targetOpp);
+        if (!legalDirs.length) {
+          addLog(pi, 'card', `Compel Storm: ${targetName} blocked after ${stepsDone} step(s)`);
+          if (isTurnDone()) gameState.phase = 'end_turn';
+          renderAll(); showStatus(`Compel Storm: ${targetName} blocked after ${stepsDone} step(s)!`, 'success');
+          if (gameMode === 'mp') mpPushState();
+          return;
+        }
+        const remaining = 3 - stepsDone;
+        showDirectionPicker(legalDirs, (chosen) => {
+          executeForceMove(targetOpp, chosen, 1);
+          stepsDone++;
+          renderAll();
+          if (stepsDone < 3) showStatus(`Compel Storm: step ${stepsDone}/3 — choose next direction`, 'active');
+          doStep();
+        }, `COMPEL STORM (step ${stepsDone+1}/3)`, `Push ${targetName} which direction? (${remaining} left)`, () => {
+          addLog(pi, 'card', `Compel Storm: ended early after ${stepsDone} step(s)`);
+          if (isTurnDone()) gameState.phase = 'end_turn';
+          renderAll(); showStatus(`Compel Storm ended after ${stepsDone} step(s)`, 'active');
+          if (gameMode === 'mp') mpPushState();
+        });
+      }
+      doStep();
     }
-    doCompelStormStep();
+    // AI: auto-pick priority target
+    if (!isHumanSeat(pi)) { doCompelStorm(opp); return; }
+    // Human: pick target first
+    showTargetPicker(pi, doCompelStorm, 'COMPEL STORM', () => {
+      selectedCard = null; uiMode = 'idle';
+      renderAll(); showStatus('Compel Storm cancelled', '');
+    });
     return;
   }
 
@@ -13031,25 +13099,67 @@ function renderBottomPanel() {
 }
 
 function renderWardenReveal(localSeat) {
-  const revealPanel = document.getElementById('bp-revealed-hand');
-  const revealCards = document.getElementById('bp-revealed-cards');
-  if (!revealPanel || !revealCards) return;
+  const leftPanel = document.getElementById('warden-stare-left');
+  const rightPanel = document.getElementById('warden-stare-right');
+  if (!leftPanel || !rightPanel) return;
 
   const localIsThorne = gameState.players[localSeat] && getPassiveId(localSeat) === 'thorne';
-  if (!localIsThorne) { revealPanel.style.display = 'none'; return; }
+  if (!localIsThorne) {
+    leftPanel.style.display = 'none';
+    rightPanel.style.display = 'none';
+    return;
+  }
 
-  // Show the primary opponent's hand
-  const oppSeat = getFirstOpponent(localSeat);
-  const opp = gameState.players[oppSeat];
-  if (!opp || !opp.hand.length) { revealPanel.style.display = 'none'; return; }
+  // Get all opponents with hands to reveal
+  const opponents = getOpponents(localSeat)
+    .filter(oi => gameState.players[oi] && gameState.players[oi].hand.length > 0
+      && !gameState._ffaFinished?.has(oi));
 
-  revealPanel.style.display = 'block';
-  const oppName = opp.champion.name;
-  revealPanel.querySelector('div').textContent = `${oppName.toUpperCase()}'S HAND (WARDEN'S STARE)`;
+  if (opponents.length === 0) {
+    leftPanel.style.display = 'none';
+    rightPanel.style.display = 'none';
+    return;
+  }
 
-  revealCards.innerHTML = opp.hand.map((card, idx) =>
-    renderCard(card, idx, oppSeat, false, false)
-  ).join('');
+  // Render a compact hand panel for one opponent
+  function renderOppHand(oi) {
+    const p = gameState.players[oi];
+    const color = getPlayerColor(oi);
+    let html = `<div style="margin-bottom:10px;">
+      <div style="font-size:9px;color:${color};letter-spacing:.08em;margin-bottom:4px;font-family:'Teko',sans-serif;font-size:13px;">
+        ⬡ ${p.champion.name}
+      </div>`;
+    html += p.hand.map((card, idx) => {
+      const typeColor = card.type === 'Wall' ? 'var(--wall-default)' : card.type === 'Movement' ? 'var(--wall-path)' : 'var(--danger)';
+      return `<div style="background:var(--surface);border:1px solid var(--border);padding:4px 6px;margin-bottom:3px;font-size:8px;">
+        <div style="color:#ccc;font-size:10px;"><span class="rarity-dot rarity-${card.rarity}"></span>${card.name}</div>
+        <div style="color:${typeColor};font-size:7px;letter-spacing:.08em;">${card.type}</div>
+        <div style="color:#666;font-size:7px;line-height:1.3;margin-top:1px;">${card.desc || ''}</div>
+      </div>`;
+    }).join('');
+    html += '</div>';
+    return html;
+  }
+
+  // Split opponents between left and right panels
+  const leftOpps = opponents.slice(0, Math.ceil(opponents.length / 2));
+  const rightOpps = opponents.slice(Math.ceil(opponents.length / 2));
+
+  if (leftOpps.length > 0) {
+    leftPanel.style.display = 'block';
+    leftPanel.innerHTML = `<div style="font-size:8px;color:var(--wall-ward);letter-spacing:.1em;margin-bottom:6px;">WARDEN'S STARE</div>`
+      + leftOpps.map(oi => renderOppHand(oi)).join('');
+  } else {
+    leftPanel.style.display = 'none';
+  }
+
+  if (rightOpps.length > 0) {
+    rightPanel.style.display = 'block';
+    rightPanel.innerHTML = `<div style="font-size:8px;color:var(--wall-ward);letter-spacing:.1em;margin-bottom:6px;">WARDEN'S STARE</div>`
+      + rightOpps.map(oi => renderOppHand(oi)).join('');
+  } else {
+    rightPanel.style.display = 'none';
+  }
 }
 
 function renderAIStatusStrip() {
@@ -14700,6 +14810,14 @@ function showVictory(winner) {
       const placeNum = humanPlace ? humanPlace.place : 4;
       title.textContent = placeNum === 1 ? 'YOU WIN — 1ST PLACE!' : `YOU PLACED ${placeLabel(placeNum).toUpperCase()}`;
       title.style.color = placeNum === 1 ? 'var(--amber)' : placeNum === 2 ? 'var(--p2)' : placeNum === 3 ? 'var(--p3)' : 'var(--p1)';
+    } else if (gameConfig.mode === '2v2') {
+      // 2v2: check if the winning seat is on the human's team
+      const humanTeam = getTeam(0);
+      const winnerTeam = getTeam(winner);
+      const humanWon = humanTeam === winnerTeam;
+      const allyName = gameState.players[getAllies(0)[0]]?.champion?.name || 'Ally';
+      title.textContent = humanWon ? 'YOUR TEAM WINS!' : 'ENEMY TEAM WINS';
+      title.style.color = humanWon ? 'var(--amber)' : 'var(--p1)';
     } else if (gameMode === 'mp') {
       title.textContent = winner === mp_localSeat ? 'YOU WIN' : (mp_opponentName||'OPPONENT').toUpperCase() + ' WINS';
       title.style.color = winner === mp_localSeat ? 'var(--p0)' : 'var(--p1)';
@@ -14715,6 +14833,14 @@ function showVictory(winner) {
   if (subtitle) {
     if (gameConfig.mode === 'ffa' && gameState._ffaPlacements?.length) {
       subtitle.textContent = `Free-for-all completed — Turn ${gameState.turnNumber}`;
+    } else if (gameConfig.mode === '2v2') {
+      const humanTeam = getTeam(0);
+      const winnerTeam = getTeam(winner);
+      const t0Names = (gameConfig.teams[humanTeam] || []).map(i => gameState.players[i]?.champion?.name).filter(Boolean).join(' & ');
+      const t1Names = (gameConfig.teams[humanTeam === 0 ? 1 : 0] || []).map(i => gameState.players[i]?.champion?.name).filter(Boolean).join(' & ');
+      subtitle.textContent = humanTeam === winnerTeam
+        ? `${t0Names} reached the goal — Turn ${gameState.turnNumber}`
+        : `${t1Names} reached the goal — Turn ${gameState.turnNumber}`;
     } else {
       subtitle.textContent = `${champion} reached the goal line — Turn ${gameState.turnNumber}`;
     }
@@ -14763,38 +14889,78 @@ function showVictory(winner) {
   if (existing) existing.remove();
 
   const record = buildGameRecord(winner);
-  const p0 = gameState.players[0], p1 = gameState.players[1] || gameState.players[0];
-  const loser = gameState.players.length > 1 ? getFirstOpponent(winner) : 0;
+  const is2v2 = gameConfig.mode === '2v2';
+  const humanTeam = is2v2 ? getTeam(0) : null;
+  const humanWon = is2v2 ? (humanTeam === getTeam(winner)) : (winner === 0);
+
+  let summaryInner = '';
+  if (is2v2) {
+    // 2v2: show teams side by side
+    const team0Seats = gameConfig.teams[humanTeam] || [0, 1];
+    const team1Seats = gameConfig.teams[humanTeam === 0 ? 1 : 0] || [2, 3];
+    const teamBlock = (seats, label, won) => seats.map(si => {
+      const p = gameState.players[si];
+      if (!p) return '';
+      const ps = record.players?.find(x => x.seat === si) || {};
+      return `<div style="padding:8px 12px;border-bottom:1px solid var(--border);">
+        <div style="font-family:'Teko',sans-serif;font-size:16px;color:${getPlayerColor(si)};">${p.champion.name}${si===0?' (YOU)':''}</div>
+        <div style="font-size:9px;color:#888;">${p.champion.faction}</div>
+        <div style="display:flex;gap:8px;margin-top:4px;font-size:9px;color:#aaa;">
+          <span>M:${ps.moves||0}</span><span>W:${ps.wallsPlaced||0}</span><span>C:${ps.cardsPlayed||0}</span>
+        </div>
+      </div>`;
+    }).join('');
+    summaryInner = `
+      <div style="display:grid;grid-template-columns:1fr 1fr;border-bottom:1px solid var(--border);">
+        <div style="border-right:1px solid var(--border);">
+          <div style="padding:8px 12px;font-size:9px;letter-spacing:.15em;color:${humanWon?'var(--amber)':'#e05050'};">
+            ${humanWon?'▲ WINNING TEAM':'▼ LOSING TEAM'} · YOUR TEAM
+          </div>
+          ${teamBlock(team0Seats, 'YOUR TEAM', humanWon)}
+        </div>
+        <div>
+          <div style="padding:8px 12px;font-size:9px;letter-spacing:.15em;color:${!humanWon?'var(--amber)':'#e05050'};">
+            ${!humanWon?'▲ WINNING TEAM':'▼ LOSING TEAM'} · ENEMY TEAM
+          </div>
+          ${teamBlock(team1Seats, 'ENEMY TEAM', !humanWon)}
+        </div>
+      </div>`;
+  } else {
+    // 1v1 / FFA: existing 2-column layout
+    const p0 = gameState.players[0], p1 = gameState.players[1] || gameState.players[0];
+    summaryInner = `
+      <div style="display:grid;grid-template-columns:1fr 1fr;border-bottom:1px solid var(--border);">
+        <div style="padding:12px 16px;border-right:1px solid var(--border);">
+          <div style="font-size:9px;letter-spacing:.15em;color:var(--text-dim);margin-bottom:6px;text-transform:uppercase;">
+            ${humanWon?'▲ WINNER':'▼ LOSER'} · YOU · ${p0.champion.faction}
+          </div>
+          <div style="font-family:'Teko',sans-serif;font-size:22px;color:var(--p0);letter-spacing:.05em;">${p0.champion.name}</div>
+          <div style="margin-top:10px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;">
+            ${statBox('MOVES', record.player.moves)}
+            ${statBox('WALLS', record.player.wallsPlaced)}
+            ${statBox('CARDS', record.player.cardsPlayed)}
+          </div>
+        </div>
+        <div style="padding:12px 16px;">
+          <div style="font-size:9px;letter-spacing:.15em;color:var(--text-dim);margin-bottom:6px;text-transform:uppercase;">
+            ${!humanWon?'▲ WINNER':'▼ LOSER'} · AI (${aiDifficulty.toUpperCase()}) · ${p1.champion.faction}
+          </div>
+          <div style="font-family:'Teko',sans-serif;font-size:22px;color:var(--p1);letter-spacing:.05em;">${p1.champion.name}</div>
+          <div style="margin-top:10px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;">
+            ${statBox('MOVES', record.ai.moves)}
+            ${statBox('WALLS', record.ai.wallsPlaced)}
+            ${statBox('CARDS', record.ai.cardsPlayed)}
+          </div>
+        </div>
+      </div>`;
+  }
 
   const summaryHTML = `
   <div id="postgame-summary" style="
     margin-top:24px; width:520px; max-width:90vw;
     border:1px solid var(--border); background:var(--surface);
   ">
-    <div style="display:grid;grid-template-columns:1fr 1fr;border-bottom:1px solid var(--border);">
-      <div style="padding:12px 16px;border-right:1px solid var(--border);">
-        <div style="font-size:9px;letter-spacing:.15em;color:var(--text-dim);margin-bottom:6px;text-transform:uppercase;">
-          ${winner===0?'▲ WINNER':'▼ LOSER'} · YOU · ${p0.champion.faction}
-        </div>
-        <div style="font-family:'Teko',sans-serif;font-size:22px;color:var(--p0);letter-spacing:.05em;">${p0.champion.name}</div>
-        <div style="margin-top:10px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;">
-          ${statBox('MOVES', record.player.moves)}
-          ${statBox('WALLS', record.player.wallsPlaced)}
-          ${statBox('CARDS', record.player.cardsPlayed)}
-        </div>
-      </div>
-      <div style="padding:12px 16px;">
-        <div style="font-size:9px;letter-spacing:.15em;color:var(--text-dim);margin-bottom:6px;text-transform:uppercase;">
-          ${winner===1?'▲ WINNER':'▼ LOSER'} · AI (${aiDifficulty.toUpperCase()}) · ${p1.champion.faction}
-        </div>
-        <div style="font-family:'Teko',sans-serif;font-size:22px;color:var(--p1);letter-spacing:.05em;">${p1.champion.name}</div>
-        <div style="margin-top:10px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;">
-          ${statBox('MOVES', record.ai.moves)}
-          ${statBox('WALLS', record.ai.wallsPlaced)}
-          ${statBox('CARDS', record.ai.cardsPlayed)}
-        </div>
-      </div>
-    </div>
+    ${summaryInner}
     <div style="padding:10px 16px;display:flex;gap:24px;align-items:center;">
       <div style="font-size:9px;color:var(--text-dim);letter-spacing:.1em;">
         <span style="color:var(--text-bright);">${gameState.turnNumber}</span> TURNS
@@ -14811,7 +14977,7 @@ function showVictory(winner) {
 
   // ── Issue shard reward if logged in (SP: shards only for wins, nothing for losses) ──
   if (_userProfile) {
-    const isWinner = winner === 0; // human always seat 0 in SP
+    const isWinner = gameConfig.mode === '2v2' ? (getTeam(0) === getTeam(winner)) : winner === 0;
     if (isWinner) {
       issueSPWinReward(aiDifficulty).then(shardAmount => {
         if (shardAmount > 0) {
