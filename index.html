@@ -113,6 +113,18 @@
   main.layout-bottom .panel.right { display: none; }
   main.layout-bottom .board-area { grid-column: 1; }
   main.layout-bottom #player-bottom-panel { display: flex; }
+  /* Bottom panel cards: horizontal layout with fixed width */
+  #bp-hand .card, #bp-revealed-cards .card {
+    width: 160px;
+    flex-shrink: 0;
+  }
+  #bp-hand {
+    overflow-x: auto;
+    padding-bottom: 4px;
+  }
+  #bp-revealed-cards {
+    overflow-x: auto;
+  }
 
   /* ── Side panels ───────────────────────────────────────────────── */
   .panel {
@@ -2287,44 +2299,49 @@
   </div>
 
   <!-- Bottom Player Panel (used in layout-bottom mode) -->
-  <div id="player-bottom-panel" style="display:none;background:var(--surface);border-top:1px solid var(--border);padding:10px 16px;">
-    <div style="display:flex;gap:16px;align-items:flex-start;max-width:1200px;margin:0 auto;overflow-x:auto;">
-      <!-- Champion info -->
-      <div style="min-width:160px;flex-shrink:0;">
-        <div id="bp-name" style="font-family:'Teko',sans-serif;font-size:20px;color:var(--p0);letter-spacing:.05em;">—</div>
+  <div id="player-bottom-panel" style="display:none;background:var(--surface);border-top:1px solid var(--border);padding:12px 16px;">
+    <!-- Top row: Champion info + Ultimate + Walls + Status -->
+    <div style="display:flex;gap:16px;align-items:center;max-width:1200px;margin:0 auto 8px;flex-wrap:wrap;">
+      <!-- Champion name + faction -->
+      <div style="min-width:120px;">
+        <div id="bp-name" style="font-family:'Teko',sans-serif;font-size:22px;color:var(--p0);letter-spacing:.05em;line-height:1;">—</div>
         <div id="bp-title" style="font-size:9px;color:#888;letter-spacing:.08em;">—</div>
-        <div style="display:flex;gap:10px;margin-top:6px;font-size:10px;color:#aaa;">
-          <span>W: <span id="bp-walls">0/5</span></span>
-          <span>H: <span id="bp-hand-count">0/4</span></span>
-          <span>SPD: <span id="bp-speed">1</span></span>
-        </div>
-        <div id="bp-wall-pips" style="margin-top:4px;"></div>
       </div>
-      <!-- Passive + Ultimate -->
-      <div style="min-width:150px;flex-shrink:0;">
+      <!-- Passive -->
+      <div style="min-width:140px;max-width:200px;">
         <div style="font-size:9px;color:var(--amber);letter-spacing:.08em;" id="bp-passive-name">—</div>
-        <div style="font-size:9px;color:#888;line-height:1.3;" id="bp-passive-desc">—</div>
-        <div style="margin-top:6px;">
-          <div style="font-size:9px;color:#f59e0b;letter-spacing:.08em;">⚡ <span id="bp-ult-name">—</span></div>
-          <div id="bp-charge-bar" style="margin-top:3px;"></div>
-          <div id="bp-charge-text" style="font-size:9px;color:#888;margin-top:2px;">0 / 5</div>
-          <button class="action-btn" id="bp-ult-btn" onclick="activateUltimate(0)"
-            style="margin-top:4px;font-size:9px;padding:3px 10px;opacity:0.3;pointer-events:none;" disabled>⚡ ULTIMATE</button>
+        <div style="font-size:9px;color:#666;line-height:1.3;" id="bp-passive-desc">—</div>
+      </div>
+      <!-- Wall pips (horizontal) -->
+      <div style="min-width:100px;">
+        <div style="font-size:9px;color:var(--text-dim);letter-spacing:.1em;margin-bottom:3px;">WALLS <span id="bp-walls" style="color:#aaa;">0/5</span></div>
+        <div class="wall-count" id="bp-wall-pips"></div>
+      </div>
+      <!-- Ultimate (horizontal charge bar) -->
+      <div style="min-width:160px;">
+        <div style="display:flex;align-items:center;gap:6px;margin-bottom:3px;">
+          <span style="font-size:9px;color:#f59e0b;letter-spacing:.08em;">⚡ <span id="bp-ult-name">—</span></span>
+          <span id="bp-charge-text" style="font-size:9px;color:#888;">0/5</span>
         </div>
+        <div class="charge-bar" id="bp-charge-bar" style="height:6px;"></div>
+        <button class="action-btn" id="bp-ult-btn" onclick="activateUltimate(0)"
+          style="margin-top:4px;font-size:9px;padding:3px 12px;opacity:0.3;pointer-events:none;width:100%;" disabled>⚡ ULTIMATE</button>
       </div>
       <!-- Status effects -->
-      <div id="bp-status" style="min-width:80px;flex-shrink:0;"></div>
-      <!-- Revealed opponent hand (Warden's Stare) -->
-      <div id="bp-revealed-hand" style="display:none;min-width:120px;flex-shrink:0;">
-        <div style="font-size:9px;color:var(--wall-ward);letter-spacing:.08em;margin-bottom:4px;">OPPONENT'S HAND (REVEALED)</div>
-        <div id="bp-revealed-cards" class="hand-cards" style="font-size:9px;"></div>
+      <div id="bp-status" style="flex:1;"></div>
+    </div>
+    <!-- Bottom row: Cards (using full card panels) -->
+    <div style="max-width:1200px;margin:0 auto;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
+        <span style="font-size:9px;color:var(--text-dim);letter-spacing:.1em;">HAND</span>
+        <span id="bp-hand-count" style="font-size:9px;color:#888;">0/4</span>
+        <span id="bp-deck-count" style="font-size:9px;color:#555;">(deck: 0)</span>
       </div>
-      <!-- Hand (cards) — takes remaining space -->
-      <div style="flex:1;min-width:200px;">
-        <div style="font-size:9px;color:var(--text-dim);letter-spacing:.1em;margin-bottom:4px;">
-          HAND <span id="bp-deck-count" style="color:#555;">(deck: 0)</span>
-        </div>
-        <div class="hand-cards" id="bp-hand" style="display:flex;flex-wrap:wrap;gap:4px;"></div>
+      <div id="bp-hand" style="display:flex;gap:6px;flex-wrap:wrap;"></div>
+      <!-- Revealed opponent hand (Warden's Stare) -->
+      <div id="bp-revealed-hand" style="display:none;margin-top:8px;">
+        <div style="font-size:9px;color:var(--wall-ward);letter-spacing:.08em;margin-bottom:4px;">OPPONENT'S HAND (WARDEN'S STARE)</div>
+        <div id="bp-revealed-cards" style="display:flex;gap:6px;flex-wrap:wrap;"></div>
       </div>
     </div>
   </div>
@@ -12891,7 +12908,7 @@ function renderBottomPanel() {
       }).join('');
   }
 
-  // Hand — render clickable cards for the local player
+  // Hand — render full card panels using renderCard (same as old side panel)
   const handEl = document.getElementById('bp-hand');
   if (handEl) {
     const isActive = localSeat === gameState.activePlayer && gameState.phase === 'action';
@@ -12904,17 +12921,9 @@ function renderBottomPanel() {
       else if (isSoren) canPlayNonInstant = !hasMoved || cardsPlayedThisTurn < 1;
       else canPlayNonInstant = cardsPlayedThisTurn < 1;
     }
-    handEl.innerHTML = p.hand.map((card, idx) => {
-      const isInstant = card.instant || (CARDS[card.id] && CARDS[card.id].instant);
-      const playable = isActive && (isInstant || canPlayNonInstant);
-      const selClass = selectedCard && selectedCard.idx === idx ? ' selected' : '';
-      const typeClass = card.type === 'Wall' ? 'card-wall' : card.type === 'Movement' ? 'card-move' : 'card-disrupt';
-      return `<div class="hand-card ${typeClass}${selClass}${playable ? ' playable' : ''}"
-        onclick="selectCard('${card.id}',${idx})" title="${card.desc || ''}">
-        <div class="hand-card-name">${card.name}</div>
-        <div class="hand-card-type">${card.type}${isInstant ? ' · Instant' : ''}</div>
-      </div>`;
-    }).join('');
+    handEl.innerHTML = p.hand.map((card, idx) =>
+      renderCard(card, idx, localSeat, isActive, canPlayNonInstant)
+    ).join('');
   }
 
   // Warden's Stare: reveal opponent hand
@@ -12938,13 +12947,9 @@ function renderWardenReveal(localSeat) {
   const oppName = opp.champion.name;
   revealPanel.querySelector('div').textContent = `${oppName.toUpperCase()}'S HAND (WARDEN'S STARE)`;
 
-  revealCards.innerHTML = opp.hand.map(card => {
-    const typeClass = card.type === 'Wall' ? 'card-wall' : card.type === 'Movement' ? 'card-move' : 'card-disrupt';
-    return `<div class="hand-card ${typeClass}" style="opacity:0.7;cursor:default;font-size:9px;">
-      <div class="hand-card-name">${card.name}</div>
-      <div class="hand-card-type">${card.type}</div>
-    </div>`;
-  }).join('');
+  revealCards.innerHTML = opp.hand.map((card, idx) =>
+    renderCard(card, idx, oppSeat, false, false)
+  ).join('');
 }
 
 function renderAIStatusStrip() {
