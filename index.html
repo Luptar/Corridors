@@ -7055,13 +7055,13 @@ async function runAI() {
 
   console.log('[AI] Phase 4 complete. phase:', gameState.phase, 'activePlayer:', gameState.activePlayer, 'hasMoved:', hasMoved);
   // ── If turn still not done, force-end (safety net) ─────────────────
-  if (gameState.phase === 'action' && gameState.activePlayer === AI_PLAYER) {
+  if (gameState.phase === 'action' && !isHumanSeat(gameState.activePlayer)) {
     gameState.phase = 'end_turn';
   }
   aiThinking = false;
   renderAll();
 
-  if (gameState.phase === 'end_turn' && gameState.activePlayer === AI_PLAYER) {
+  if (gameState.phase === 'end_turn' && !isHumanSeat(gameState.activePlayer)) {
     setTimeout(endTurn, 700);
   }
   clearTimeout(_aiTurnTimeout);
@@ -7071,7 +7071,7 @@ async function runAI() {
     // Clear aiThinking, force-end the AI turn, and recover gracefully.
     console.error('[AI] runAI exception:', e);
     aiThinking = false;
-    if (gameState && gameState.activePlayer === AI_PLAYER) {
+    if (gameState && !isHumanSeat(gameState.activePlayer)) {
       gameState.phase = 'end_turn';
       renderAll();
       setTimeout(endTurn, 700);
@@ -9019,7 +9019,7 @@ function handleWallClick(anchor, orientation, length, isPhantom, isDurable) {
   updateActionBar();
 
   // If it's AI's turn after this (shouldn't happen, but safety)
-  if ((gameMode === 'sp' || gameMode === 'gauntlet') && gameState.phase === 'end_turn' && gameState.activePlayer === AI_PLAYER) {
+  if ((gameMode === 'sp' || gameMode === 'gauntlet') && gameState.phase === 'end_turn' && !isHumanSeat(gameState.activePlayer)) {
     setTimeout(endTurn, 400);
   }
   // In MP, if a win was scored, push state immediately
@@ -12647,12 +12647,91 @@ function updateActionBar() {
 }
 
 // ── Rendering ───────────────────────────────────────────────────────
+function adjustLayoutForMode() {
+  const logSection = document.querySelector('.log-section');
+  const panelP1 = document.getElementById('panel-p1');
+  const isMP = gameMode === 'mp';
+  const is4P = gameConfig.playerCount > 2;
+
+  // Hide game log in all modes (use compact status indicators instead)
+  if (logSection) logSection.style.display = 'none';
+
+  // In SP modes, hide the right panel — AI info shown as compact strip above board
+  if (!isMP && panelP1) {
+    panelP1.style.display = 'none';
+  } else if (isMP && panelP1) {
+    panelP1.style.display = '';
+  }
+
+  // Render compact AI status bars above the board
+  renderAIStatusStrip();
+}
+
+function renderAIStatusStrip() {
+  const existing = document.getElementById('ai-status-strip');
+  if (existing) existing.remove();
+
+  if (!gameState?.players) return;
+  const isMP = gameMode === 'mp';
+
+  // Collect all AI opponents (non-human seats) — in MP show all non-local seats compactly
+  const aiSeats = [];
+  for (let pi = 0; pi < gameState.players.length; pi++) {
+    if (!gameState.players[pi]) continue;
+    if (!isMP && isHumanSeat(pi)) continue; // skip human in SP
+    if (isMP && pi === mp_localSeat) continue; // skip local seat in MP
+    if (isMP && gameState.players.length <= 2 && pi !== mp_localSeat) continue; // 1v1 MP uses panel-p1
+    aiSeats.push(pi);
+  }
+
+  if (aiSeats.length === 0) return;
+
+  const strip = document.createElement('div');
+  strip.id = 'ai-status-strip';
+  strip.style.cssText = 'display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin-bottom:8px;';
+
+  for (const pi of aiSeats) {
+    const p = gameState.players[pi];
+    const c = p.champion;
+    const color = getPlayerColor(pi);
+    const isActive = pi === gameState.activePlayer;
+    const isBound = (p.statusEffects || []).some(e => (e.type === 'skip_move' || e.type === 'bound') && e.turnsRemaining > 0);
+    const teamLabel = gameConfig.mode === '2v2' ? (getTeam(pi) === getTeam(0) ? 'ALLY' : 'ENEMY') : '';
+    const activeGlow = isActive ? 'box-shadow:0 0 8px ' + color + '60;' : '';
+
+    strip.innerHTML += `
+      <div style="background:var(--surface);border:1px solid ${isActive ? color : 'var(--border)'};
+        padding:6px 12px;min-width:140px;font-size:10px;${activeGlow}">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px;">
+          <span style="font-family:'Teko',sans-serif;font-size:15px;color:${color};">${c.name}</span>
+          ${teamLabel ? `<span style="font-size:8px;color:#888;letter-spacing:.08em;">${teamLabel}</span>` : ''}
+          ${isActive ? '<span style="font-size:8px;color:var(--amber);">●</span>' : ''}
+        </div>
+        <div style="color:#888;font-size:9px;letter-spacing:.08em;margin-bottom:3px;">${c.faction} · ${c.passiveName}</div>
+        <div style="display:flex;gap:8px;color:#aaa;font-size:9px;">
+          <span>W:${p.wallsInPlay}/${p.wallLimitCurrent}</span>
+          <span>H:${p.hand.length}/${c.handSize}</span>
+          <span>U:${p.ultimateCharge}/${c.ultimateCost}${p.ultimateReady ? ' ⚡' : ''}</span>
+        </div>
+        ${isBound ? '<div style="font-size:8px;color:#e05050;margin-top:2px;">BOUND</div>' : ''}
+      </div>`;
+  }
+
+  // Insert above the board
+  const boardArea = document.getElementById('board-area');
+  const boardContainer = document.getElementById('board-container');
+  if (boardArea && boardContainer) {
+    boardArea.insertBefore(strip, boardContainer);
+  }
+}
+
 function renderAll() {
   renderPanels();
   renderBoard();
   renderLog();
   updateTurnBanner();
   updateActionBar();
+  adjustLayoutForMode();
   updateUltimateButton(0);
   updateUltimateButton(1);
   if (debugVisible) updateDebug();
@@ -14222,7 +14301,14 @@ function showVictory(winner) {
   const champion = gameState.players[winner].champion.name;
 
   if (title) {
-    title.textContent  = (gameMode === 'mp' ? (winner === mp_localSeat ? 'YOU WIN' : (mp_opponentName||'OPPONENT').toUpperCase() + ' WINS') : (winner === AI_PLAYER ? 'AI WINS' : 'YOU WIN'));
+    if (gameMode === 'mp') {
+      title.textContent = winner === mp_localSeat ? 'YOU WIN' : (mp_opponentName||'OPPONENT').toUpperCase() + ' WINS';
+    } else if (winner === 0) {
+      title.textContent = 'YOU WIN';
+    } else {
+      const winnerName = gameState.players[winner]?.champion?.name || 'AI';
+      title.textContent = winnerName.toUpperCase() + ' WINS';
+    }
     title.style.color  = winner === 0 ? 'var(--p0)' : 'var(--p1)';
   }
   if (subtitle) subtitle.textContent = `${champion} reached the goal line — Turn ${gameState.turnNumber}`;
@@ -14284,7 +14370,7 @@ function showVictory(winner) {
 
   // ── Issue shard reward if logged in (SP: shards only for wins, nothing for losses) ──
   if (_userProfile) {
-    const isWinner = winner !== AI_PLAYER;
+    const isWinner = winner === 0; // human always seat 0 in SP
     if (isWinner) {
       issueSPWinReward(aiDifficulty).then(shardAmount => {
         if (shardAmount > 0) {
