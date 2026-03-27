@@ -13219,11 +13219,14 @@ function renderAIStatusStrip() {
       </div>`;
   }
 
-  // Insert above the board
+  // Insert above the board (board-container is inside board-with-stare wrapper)
   const boardArea = document.getElementById('board-area');
-  const boardContainer = document.getElementById('board-container');
-  if (boardArea && boardContainer) {
-    boardArea.insertBefore(strip, boardContainer);
+  const boardWrapper = document.getElementById('board-with-stare') || document.getElementById('board-container');
+  if (boardArea && boardWrapper && boardWrapper.parentNode === boardArea) {
+    boardArea.insertBefore(strip, boardWrapper);
+  } else if (boardArea) {
+    // Fallback: just prepend to board area
+    boardArea.insertBefore(strip, boardArea.children[2] || null);
   }
 }
 
