@@ -113,17 +113,15 @@
   main.layout-bottom .panel.right { display: none; }
   main.layout-bottom .board-area { grid-column: 1; }
   main.layout-bottom #player-bottom-panel { display: flex; }
-  /* Bottom panel cards: horizontal layout with fixed width */
+  /* Bottom panel cards: grid layout, 5 per row */
+  #bp-hand, #bp-revealed-cards {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 6px;
+  }
   #bp-hand .card, #bp-revealed-cards .card {
-    width: 160px;
-    flex-shrink: 0;
-  }
-  #bp-hand {
-    overflow-x: auto;
-    padding-bottom: 4px;
-  }
-  #bp-revealed-cards {
-    overflow-x: auto;
+    width: auto;
+    min-width: 0;
   }
 
   /* ── Side panels ───────────────────────────────────────────────── */
@@ -2348,7 +2346,7 @@
     </div>
     <!-- Bottom row: Cards -->
     <div style="padding:8px 16px;max-width:1400px;margin:0 auto;">
-      <div id="bp-hand" style="display:flex;gap:6px;flex-wrap:nowrap;"></div>
+      <div id="bp-hand"></div>
       <!-- Revealed opponent hand (Warden's Stare) -->
       <div id="bp-revealed-hand" style="display:none;margin-top:8px;padding-top:8px;border-top:1px solid var(--border);">
         <div style="font-size:9px;color:var(--wall-ward);letter-spacing:.1em;margin-bottom:6px;">⬡ OPPONENT'S HAND — WARDEN'S STARE</div>
@@ -3363,6 +3361,8 @@ function checkVictory(pi, pos) {
     const place = gameState._ffaPlacements.length + 1;
     gameState._ffaPlacements.push({ seat: pi, place, turn: gameState.turnNumber });
     addLog(pi, 'system', `${gameState.players[pi].champion.name} finishes in ${placeLabel(place)}!`);
+    // Move finished champion off the board so they don't block the goal
+    gameState.players[pi] = { ...gameState.players[pi], position: { row: -10, col: -10 } };
 
     // If 3 of 4 have finished, auto-place the remaining player as 4th and end
     const remaining = [];
@@ -3894,26 +3894,30 @@ function getLegalMoves(state, pIdx, overrideSpeed, tunnelThrough, diagonal, ownW
     frontier = nextFrontier;
   }
 
-  // Jump rules when directly adjacent to opponent
-  const dr = opPos.row - pos.row, dc = opPos.col - pos.col;
-  const adjacent = (Math.abs(dr)===1 && dc===0) || (dr===0 && Math.abs(dc)===1);
-  // Check for Condemned Passage (noJump) walls blocking the jump path
+  // Jump rules — check against ALL other players (not just one opponent)
   const noJumpWalls = state.walls.filter(w => w.noJump && !w.isPhantom);
-  const jumpBlockedByCondemnedPassage = noJumpWalls.some(w =>
-    wallEdges(w).some(e => edgeKey(e.a, e.b) === edgeKey(pos, opPos))
-  );
-  if (adjacent && !isEdgeBlocked(pos, opPos, blocked) && !jumpBlockedByCondemnedPassage) {
-    const straight = {row: opPos.row+dr, col: opPos.col+dc};
+  for (const other of otherPlayers) {
+    // Skip finished FFA players (they've been removed from the board)
+    if (gameState._ffaFinished?.has(state.players.indexOf(other))) continue;
+    const oPos = other.position;
+    const dr = oPos.row - pos.row, dc = oPos.col - pos.col;
+    const adjacent = (Math.abs(dr)===1 && dc===0) || (dr===0 && Math.abs(dc)===1);
+    if (!adjacent) continue;
+    const jumpBlockedByCondemnedPassage = noJumpWalls.some(w =>
+      wallEdges(w).some(e => edgeKey(e.a, e.b) === edgeKey(pos, oPos))
+    );
+    if (isEdgeBlocked(pos, oPos, blocked) || jumpBlockedByCondemnedPassage) continue;
+    const straight = {row: oPos.row+dr, col: oPos.col+dc};
     const straightInBounds = straight.row>=0&&straight.row<BOARD_SIZE&&straight.col>=0&&straight.col<BOARD_SIZE;
-    if (straightInBounds && !isEdgeBlocked(opPos, straight, blocked)) {
+    if (straightInBounds && !isEdgeBlocked(oPos, straight, blocked) && !otherPosSet.has(key(straight))) {
       if (!visited.has(key(straight))) reachable.push(straight);
     } else {
       const diags = dr===0
-        ? [{row:opPos.row-1,col:opPos.col},{row:opPos.row+1,col:opPos.col}]
-        : [{row:opPos.row,col:opPos.col-1},{row:opPos.row,col:opPos.col+1}];
+        ? [{row:oPos.row-1,col:oPos.col},{row:oPos.row+1,col:oPos.col}]
+        : [{row:oPos.row,col:oPos.col-1},{row:oPos.row,col:oPos.col+1}];
       for (const d of diags) {
         if (d.row<0||d.row>=BOARD_SIZE||d.col<0||d.col>=BOARD_SIZE) continue;
-        if (!isEdgeBlocked(opPos, d, blocked) && !visited.has(key(d))) reachable.push(d);
+        if (!isEdgeBlocked(oPos, d, blocked) && !visited.has(key(d)) && !otherPosSet.has(key(d))) reachable.push(d);
       }
     }
   }
@@ -13111,6 +13115,7 @@ function renderAll() {
   updateTurnBanner();
   updateActionBar();
   adjustLayoutForMode();
+  scaleBoardToFit();
   updateUltimateButton(0);
   updateUltimateButton(1);
   if (debugVisible) updateDebug();
@@ -14244,6 +14249,40 @@ function updateTurnBanner() {
   if (headerPhase) {
     headerPhase.innerHTML = `<span class="phase-dot"></span>${phaseLabel}`;
     headerPhase.className = `phase-display phase-${phase}`;
+  }
+}
+
+function scaleBoardToFit() {
+  const container = document.getElementById('board-container');
+  if (!container) return;
+  // Calculate the board's natural pixel size
+  const boardW = BOARD_COLS * CELL + (BOARD_COLS - 1) * GAP + GAP * 2;
+  const boardH = BOARD_ROWS * CELL + (BOARD_ROWS - 1) * GAP + GAP * 2;
+  // Available space: viewport minus header, action bar, bottom panel, AI strip, padding
+  const header = document.querySelector('header');
+  const bottomPanel = document.getElementById('player-bottom-panel');
+  const aiStrip = document.getElementById('ai-status-strip');
+  const headerH = header?.offsetHeight || 40;
+  const bottomH = bottomPanel?.offsetHeight || 0;
+  const aiStripH = aiStrip?.offsetHeight || 0;
+  const actionBarH = 50; // approximate
+  const padding = 80; // margins + turn banner
+  const availH = window.innerHeight - headerH - bottomH - aiStripH - actionBarH - padding;
+  const availW = window.innerWidth - 60; // some horizontal padding
+  // Scale factor: fit the board in available space
+  const scaleX = availW / boardW;
+  const scaleY = availH / boardH;
+  const scale = Math.min(scaleX, scaleY, 1); // never scale up, only down
+  if (scale < 0.98) {
+    container.style.transform = `scale(${scale.toFixed(3)})`;
+    container.style.transformOrigin = 'top center';
+    // Set explicit height so parent doesn't overflow
+    container.style.height = (boardH * scale) + 'px';
+    container.style.marginBottom = (-boardH * (1 - scale)) + 'px';
+  } else {
+    container.style.transform = '';
+    container.style.height = '';
+    container.style.marginBottom = '';
   }
 }
 
@@ -16722,32 +16761,160 @@ async function saveUserProfile(updates) {
   return true;
 }
 
-// ── Faction Balance Dashboard ─────────────────────────────────────────
-async function loadFactionBalanceData() {
+// ── Balance Dashboard ─────────────────────────────────────────────────
+let _balanceTab = 'all';
+let _balanceData = null;
+
+async function loadBalanceData() {
   const sb = mpInit();
   if (!sb) return null;
   try {
-    const { data, error } = await sb.from('match_records').select('p0_faction, p1_faction, winner_seat, turns, game_mode, difficulty');
+    const { data, error } = await sb.from('match_records')
+      .select('p0_faction, p1_faction, p0_champion, p1_champion, winner_seat, turns, game_mode, game_mode_type, difficulty, player_count, ffa_placements');
     if (error || !data) return null;
-    // Build matchup matrix
-    const factions = FACTION_WHEEL;
-    const matrix = {};
-    const champStats = {};
-    for (const f of factions) { matrix[f] = {}; for (const g of factions) matrix[f][g] = { wins: 0, total: 0 }; }
-    for (const row of data) {
-      const f0 = row.p0_faction, f1 = row.p1_faction;
-      if (!f0 || !f1) continue;
-      if (matrix[f0] && matrix[f0][f1]) {
-        matrix[f0][f1].total++;
-        if (row.winner_seat === 0) matrix[f0][f1].wins++;
-      }
-      if (matrix[f1] && matrix[f1][f0]) {
-        matrix[f1][f0].total++;
-        if (row.winner_seat === 1) matrix[f1][f0].wins++;
-      }
-    }
-    return { matrix, raw: data, factions };
+    return data;
   } catch(e) { console.warn('[BALANCE]', e); return null; }
+}
+
+function buildBalanceAnalysis(raw, modeFilter) {
+  let filtered = raw;
+  if (modeFilter === '1v1') filtered = raw.filter(r => !r.game_mode_type || r.game_mode_type === '1v1');
+  else if (modeFilter === '2v2') filtered = raw.filter(r => r.game_mode_type === '2v2');
+  else if (modeFilter === 'ffa') filtered = raw.filter(r => r.game_mode_type === 'ffa');
+
+  const factions = FACTION_WHEEL;
+
+  // Faction matchup matrix (1v1 / 2v2 only — factions are seat-based)
+  const matrix = {};
+  for (const f of factions) { matrix[f] = {}; for (const g of factions) matrix[f][g] = { wins: 0, total: 0 }; }
+
+  // Champion win rates
+  const champStats = {};
+
+  for (const row of filtered) {
+    const f0 = row.p0_faction, f1 = row.p1_faction;
+    const c0 = row.p0_champion, c1 = row.p1_champion;
+
+    // Faction matrix (skip FFA — no clear 1v1 faction matchup)
+    if (modeFilter !== 'ffa' && f0 && f1 && matrix[f0] && matrix[f0][f1]) {
+      matrix[f0][f1].total++; if (row.winner_seat === 0) matrix[f0][f1].wins++;
+      matrix[f1][f0].total++; if (row.winner_seat === 1) matrix[f1][f0].wins++;
+    }
+
+    // Champion stats — track wins/losses per champion name
+    if (c0) {
+      if (!champStats[c0]) champStats[c0] = { name: c0, faction: f0, wins: 0, losses: 0, games: 0, totalTurns: 0 };
+      champStats[c0].games++;
+      champStats[c0].totalTurns += row.turns || 0;
+      if (row.winner_seat === 0) champStats[c0].wins++; else champStats[c0].losses++;
+    }
+    if (c1 && modeFilter !== 'ffa') {
+      if (!champStats[c1]) champStats[c1] = { name: c1, faction: f1, wins: 0, losses: 0, games: 0, totalTurns: 0 };
+      champStats[c1].games++;
+      champStats[c1].totalTurns += row.turns || 0;
+      if (row.winner_seat === 1) champStats[c1].wins++; else champStats[c1].losses++;
+    }
+  }
+
+  // Summary
+  const totalGames = filtered.length;
+  const avgTurns = totalGames ? Math.round(filtered.reduce((s, r) => s + (r.turns || 0), 0) / totalGames) : 0;
+  const byMode = { sp: 0, gauntlet: 0, mp: 0 };
+  for (const r of filtered) byMode[r.game_mode] = (byMode[r.game_mode] || 0) + 1;
+
+  // Sort champions by games played
+  const champList = Object.values(champStats).sort((a, b) => b.games - a.games);
+
+  return { matrix, champList, factions, totalGames, avgTurns, byMode, filtered };
+}
+
+function renderBalanceContent(analysis) {
+  const { matrix, champList, factions, totalGames, avgTurns, byMode } = analysis;
+  const shortName = f => f.slice(0, 4).toUpperCase();
+  const factionColor = f => {
+    const colors = {Architects:'var(--wall-arch)',Pathfinders:'var(--wall-path)',Wardens:'var(--wall-ward)',
+      Phantoms:'var(--wall-phan)',Pushers:'var(--wall-push)',Trappers:'var(--wall-trap)',Chronists:'var(--wall-chro)'};
+    return colors[f] || '#888';
+  };
+
+  // Stat boxes
+  const statBox = (label, val) => `<div style="text-align:center;min-width:60px;">
+    <div style="font-size:8px;color:#666;letter-spacing:.12em;">${label}</div>
+    <div style="font-family:'Teko',sans-serif;font-size:22px;color:#ccc;line-height:1;">${val}</div></div>`;
+
+  // Faction matrix (skip for FFA tab)
+  let matrixHtml = '';
+  if (_balanceTab !== 'ffa') {
+    matrixHtml = `<div style="margin:20px 0;">
+      <div style="font-family:'Teko',sans-serif;font-size:18px;color:#888;letter-spacing:.1em;margin-bottom:4px;">FACTION MATCHUP WIN RATES</div>
+      <div style="font-size:8px;color:#555;margin-bottom:8px;">Row = your faction · Column = opponent · <span style="color:#4ade80;">green &gt;55%</span> · <span style="color:#e05050;">red &lt;45%</span></div>
+      <table style="border-collapse:collapse;margin:0 auto;width:100%;">
+        <tr><td style="padding:6px;border-bottom:1px solid var(--border);"></td>
+        ${factions.map(f => `<td style="padding:4px 2px;font-size:8px;color:${factionColor(f)};text-align:center;letter-spacing:.05em;border-bottom:1px solid var(--border);">${shortName(f)}</td>`).join('')}
+        </tr>
+        ${factions.map(f0 => `<tr>
+          <td style="padding:4px 8px;font-size:9px;color:${factionColor(f0)};text-align:right;letter-spacing:.05em;border-right:1px solid var(--border);">${shortName(f0)}</td>
+          ${factions.map(f1 => {
+            const cell = matrix[f0][f1];
+            if (f0 === f1) return `<td style="padding:6px;text-align:center;background:rgba(255,255,255,0.02);color:#333;">—</td>`;
+            if (cell.total === 0) return `<td style="padding:6px;text-align:center;color:#333;">—</td>`;
+            const wr = Math.round(100 * cell.wins / cell.total);
+            const bg = wr >= 60 ? 'rgba(74,222,128,0.1)' : wr <= 40 ? 'rgba(224,80,80,0.1)' : 'transparent';
+            const color = wr >= 55 ? '#4ade80' : wr <= 45 ? '#e05050' : '#aaa';
+            return `<td style="padding:4px;text-align:center;background:${bg};">
+              <div style="font-size:12px;font-family:'Teko',sans-serif;color:${color};">${wr}%</div>
+              <div style="font-size:7px;color:#555;">${cell.total} game${cell.total!==1?'s':''}</div></td>`;
+          }).join('')}
+        </tr>`).join('')}
+      </table>
+    </div>`;
+  }
+
+  // Champion win rate table
+  let champHtml = '';
+  if (champList.length > 0) {
+    champHtml = `<div style="margin:20px 0;">
+      <div style="font-family:'Teko',sans-serif;font-size:18px;color:#888;letter-spacing:.1em;margin-bottom:8px;">CHAMPION PERFORMANCE</div>
+      <table style="border-collapse:collapse;width:100%;">
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:6px 8px;font-size:8px;color:#666;letter-spacing:.1em;">CHAMPION</td>
+          <td style="padding:6px;font-size:8px;color:#666;letter-spacing:.1em;text-align:center;">FACTION</td>
+          <td style="padding:6px;font-size:8px;color:#666;letter-spacing:.1em;text-align:center;">GAMES</td>
+          <td style="padding:6px;font-size:8px;color:#666;letter-spacing:.1em;text-align:center;">WIN RATE</td>
+          <td style="padding:6px;font-size:8px;color:#666;letter-spacing:.1em;text-align:center;">W/L</td>
+          <td style="padding:6px;font-size:8px;color:#666;letter-spacing:.1em;text-align:center;">AVG TURNS</td>
+          <td style="padding:6px;font-size:8px;color:#666;letter-spacing:.1em;">WIN RATE BAR</td>
+        </tr>
+        ${champList.slice(0, 30).map(c => {
+          const wr = c.games > 0 ? Math.round(100 * c.wins / c.games) : 0;
+          const wrColor = wr >= 55 ? '#4ade80' : wr <= 45 ? '#e05050' : '#aaa';
+          const barW = Math.max(2, wr);
+          const avg = c.games > 0 ? Math.round(c.totalTurns / c.games) : 0;
+          return `<tr style="border-bottom:1px solid rgba(255,255,255,0.03);">
+            <td style="padding:5px 8px;font-family:'Teko',sans-serif;font-size:14px;color:#ccc;">${c.name}</td>
+            <td style="padding:5px;font-size:9px;color:${factionColor(c.faction)};text-align:center;">${c.faction || '?'}</td>
+            <td style="padding:5px;font-size:11px;color:#888;text-align:center;">${c.games}</td>
+            <td style="padding:5px;font-family:'Teko',sans-serif;font-size:16px;color:${wrColor};text-align:center;">${wr}%</td>
+            <td style="padding:5px;font-size:10px;text-align:center;"><span style="color:#4ade80;">${c.wins}</span>/<span style="color:#e05050;">${c.losses}</span></td>
+            <td style="padding:5px;font-size:10px;color:#888;text-align:center;">${avg}</td>
+            <td style="padding:5px;"><div style="background:rgba(255,255,255,0.05);height:8px;width:100%;position:relative;">
+              <div style="background:${wrColor};height:100%;width:${barW}%;"></div>
+              <div style="position:absolute;left:50%;top:0;bottom:0;width:1px;background:rgba(255,255,255,0.15);"></div>
+            </div></td>
+          </tr>`;
+        }).join('')}
+      </table>
+    </div>`;
+  }
+
+  return `
+    <div style="display:flex;gap:16px;margin-bottom:20px;flex-wrap:wrap;">
+      ${statBox('GAMES', totalGames)} ${statBox('AVG TURNS', avgTurns)}
+      ${statBox('SP', byMode.sp || 0)} ${statBox('GAUNTLET', byMode.gauntlet || 0)} ${statBox('MP', byMode.mp || 0)}
+    </div>
+    ${matrixHtml}
+    ${champHtml}
+  `;
 }
 
 async function showBalanceScreen() {
@@ -16757,61 +16924,42 @@ async function showBalanceScreen() {
   overlay.innerHTML = '<div style="text-align:center;padding:40px;color:#888;">Loading balance data...</div>';
   document.body.appendChild(overlay);
 
-  const data = await loadFactionBalanceData();
-  if (!data) {
-    overlay.innerHTML = `<div style="max-width:800px;margin:0 auto;text-align:center;padding:40px;">
+  _balanceData = await loadBalanceData();
+  if (!_balanceData || !_balanceData.length) {
+    overlay.innerHTML = `<div style="max-width:900px;margin:0 auto;text-align:center;padding:40px;">
       <div style="color:#888;margin-bottom:16px;">No match data available yet. Play some games!</div>
       <button onclick="document.getElementById('balance-overlay')?.remove();showLandingScreen();" style="font-size:11px;padding:4px 12px;background:transparent;border:1px solid var(--text-dim);color:var(--text-dim);cursor:pointer;">BACK</button>
     </div>`;
     return;
   }
 
-  const { matrix, raw, factions } = data;
-  const shortName = f => f.slice(0, 4).toUpperCase();
+  renderBalanceScreen();
+}
 
-  // Build matrix HTML
-  let matrixHtml = '<table style="border-collapse:collapse;margin:0 auto;">';
-  matrixHtml += '<tr><td style="padding:4px;"></td>';
-  for (const f of factions) matrixHtml += `<td style="padding:4px 6px;font-size:9px;color:#888;text-align:center;letter-spacing:.05em;">${shortName(f)}</td>`;
-  matrixHtml += '</tr>';
-  for (const f0 of factions) {
-    matrixHtml += `<tr><td style="padding:4px 8px;font-size:9px;color:#888;text-align:right;letter-spacing:.05em;">${shortName(f0)}</td>`;
-    for (const f1 of factions) {
-      const cell = matrix[f0][f1];
-      if (cell.total === 0) {
-        matrixHtml += '<td style="padding:4px 6px;text-align:center;font-size:10px;color:#444;">—</td>';
-      } else {
-        const wr = Math.round(100 * cell.wins / cell.total);
-        const color = wr >= 55 ? '#4ade80' : wr <= 45 ? '#e05050' : '#888';
-        matrixHtml += `<td style="padding:4px 6px;text-align:center;font-size:10px;color:${color};">${wr}%<div style="font-size:8px;color:#555;">${cell.total}g</div></td>`;
-      }
-    }
-    matrixHtml += '</tr>';
-  }
-  matrixHtml += '</table>';
+function renderBalanceScreen() {
+  const overlay = document.getElementById('balance-overlay');
+  if (!overlay || !_balanceData) return;
 
-  // Summary stats
-  const totalGames = raw.length;
-  const avgTurns = totalGames ? Math.round(raw.reduce((s, r) => s + (r.turns || 0), 0) / totalGames) : 0;
-  const spGames = raw.filter(r => r.game_mode === 'sp').length;
-  const gauntletGames = raw.filter(r => r.game_mode === 'gauntlet').length;
-  const mpGames = raw.filter(r => r.game_mode === 'mp').length;
+  const analysis = buildBalanceAnalysis(_balanceData, _balanceTab);
 
-  overlay.innerHTML = `<div style="max-width:800px;margin:0 auto;">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
+  const tabBtn = (id, label) => {
+    const active = _balanceTab === id;
+    return `<button onclick="_balanceTab='${id}';renderBalanceScreen();" style="
+      padding:6px 16px;font-size:11px;letter-spacing:.1em;cursor:pointer;
+      font-family:'JetBrains Mono',monospace;border:1px solid ${active ? 'var(--amber)' : 'var(--border)'};
+      background:${active ? 'rgba(212,144,58,0.1)' : 'transparent'};
+      color:${active ? 'var(--amber)' : 'var(--text-dim)'};">${label}</button>`;
+  };
+
+  overlay.innerHTML = `<div style="max-width:900px;margin:0 auto;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
       <h1 style="font-family:'Teko',sans-serif;font-size:32px;color:var(--accent);margin:0;">BALANCE DATA</h1>
       <button onclick="document.getElementById('balance-overlay')?.remove();showLandingScreen();" style="font-size:11px;padding:4px 12px;background:transparent;border:1px solid var(--text-dim);color:var(--text-dim);cursor:pointer;letter-spacing:.1em;font-family:'JetBrains Mono',monospace;">BACK</button>
     </div>
-    <div style="display:flex;gap:24px;margin-bottom:24px;flex-wrap:wrap;">
-      <div style="text-align:center;"><div style="font-size:10px;color:#888;">TOTAL GAMES</div><div style="font-family:'Teko',sans-serif;font-size:24px;color:#ccc;">${totalGames}</div></div>
-      <div style="text-align:center;"><div style="font-size:10px;color:#888;">AVG TURNS</div><div style="font-family:'Teko',sans-serif;font-size:24px;color:#ccc;">${avgTurns}</div></div>
-      <div style="text-align:center;"><div style="font-size:10px;color:#888;">SP</div><div style="font-family:'Teko',sans-serif;font-size:24px;color:#ccc;">${spGames}</div></div>
-      <div style="text-align:center;"><div style="font-size:10px;color:#888;">GAUNTLET</div><div style="font-family:'Teko',sans-serif;font-size:24px;color:#ccc;">${gauntletGames}</div></div>
-      <div style="text-align:center;"><div style="font-size:10px;color:#888;">MP</div><div style="font-family:'Teko',sans-serif;font-size:24px;color:#ccc;">${mpGames}</div></div>
+    <div style="display:flex;gap:4px;margin-bottom:20px;">
+      ${tabBtn('all','ALL')} ${tabBtn('1v1','1v1')} ${tabBtn('2v2','2v2')} ${tabBtn('ffa','FFA')}
     </div>
-    <h2 style="font-family:'Teko',sans-serif;font-size:20px;color:#888;margin:16px 0 8px;">FACTION MATCHUP WIN RATES</h2>
-    <div style="font-size:9px;color:#555;margin-bottom:8px;">Row = faction played · Column = opponent faction · Green &gt;55% · Red &lt;45%</div>
-    ${matrixHtml}
+    ${renderBalanceContent(analysis)}
   </div>`;
 }
 // ════════════════════════════════════════════════════════════════════
@@ -18664,6 +18812,8 @@ async function dbSaveDeck() {
 }
 
 // ── Init ─────────────────────────────────────────────────────────────
+window.addEventListener('resize', () => { if (gameState) scaleBoardToFit(); });
+
 document.addEventListener('DOMContentLoaded', async () => {
   const urlParams  = new URLSearchParams(window.location.search);
   const inviteCode = urlParams.get('join');
