@@ -4826,8 +4826,9 @@ function executePlaceWall(anchor, orientation, length, isPhantom=false, isDurabl
   uiMode = 'idle';
   const _pendingOnPlaced = selectedCard?._onPlaced || null;
   const _wasDelayedCard = !!(selectedCard && selectedCard._delayed);
+  const _placedCard = selectedCard; // preserve before nulling for onWallPlaced chain checks
   selectedCard = null;
-  onWallPlaced(pi, fromCardId, _wasDelayedCard);
+  onWallPlaced(pi, fromCardId, _wasDelayedCard, _placedCard);
   // WD5 Total Seizure chain: fire after onWallPlaced so state is stable
   if (_pendingOnPlaced) { _pendingOnPlaced(); return; }
 }
@@ -10507,7 +10508,7 @@ function trackCategory(type) {
   // Thorne (Wardens) — hand always revealed (handled in renderPanels)
 }
 
-function onWallPlaced(pi, fromCardId, _wasDelayedCard) {
+function onWallPlaced(pi, fromCardId, _wasDelayedCard, _placedCard) {
   // Temporal Maze free wall: mark as temporary, refund wall slot, decrement counter
   if (gameState._temporalMazePending && fromCardId === 'CH10') {
     gameState._temporalMazePending = false;
@@ -10542,13 +10543,15 @@ function onWallPlaced(pi, fromCardId, _wasDelayedCard) {
   const isDelayedWall = !!_wasDelayedCard;
   // Chained wall placements (Corner Block 2nd wall, Veil Lattice 2nd wall, Echo Strike mirror)
   // are part of the SAME card play — don't count again
+  // Use _placedCard (saved before selectedCard was nulled in executePlaceWall)
+  const pc = _placedCard || selectedCard;
   // AR12 Controlled Collapse: subsequent walls are chained from the same card
-  const isCollapseChain = !!(selectedCard && selectedCard.id === 'AR12' && gameState._collapseWallsRemaining > 0);
-  const isChainedWall = selectedCard && (
-    selectedCard.id === 'CB_second' ||
-    selectedCard.id === 'PH3_real' ||
-    (selectedCard.id === 'PH4' && gameState._veilCount >= 2) ||
-    (selectedCard.id === 'PH10' && gameState._doppelgangerCount >= 1) ||
+  const isCollapseChain = !!(pc && pc.id === 'AR12' && gameState._collapseWallsRemaining > 0);
+  const isChainedWall = pc && (
+    pc.id === 'CB_second' ||
+    pc.id === 'PH3_real' ||
+    (pc.id === 'PH4' && gameState._veilCount >= 2) ||
+    (pc.id === 'PH10' && gameState._doppelgangerCount >= 1) ||
     isCollapseChain
   );
   if (!isT2Phantom && !isSeizureChain && !isDelayedWall && !isChainedWall) countCardPlayed(pi);
