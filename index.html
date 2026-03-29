@@ -8620,9 +8620,6 @@ function startGauntletFFA() {
     champions.push(pick);
   }
 
-  // Store gauntlet context so we can return after the FFA
-  gameState._gauntletFFAReturn = true;
-
   initMultiPlayerGame({
     playerCount: 4,
     mode: 'ffa',
@@ -8631,6 +8628,9 @@ function startGauntletFFA() {
     decks: [_gauntletRun.deck, null, null, null],
     teams: null,
   });
+
+  // Store gauntlet context AFTER init so the flag is on the new gameState
+  gameState._gauntletFFAReturn = true;
 }
 
 // Called after an FFA game ends during gauntlet — hook into showVictory
