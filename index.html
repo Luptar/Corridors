@@ -8875,7 +8875,7 @@ function showGauntletBossReward(shardsEarned, goldEarned) {
   const stage = _gauntletRun.stage;
   const faction = _gauntletRun.champion.faction;
   const isLastBoss = stage >= 12;
-  let upgrades = [...(GAUNTLET_BOSS_UPGRADES[stage] || GAUNTLET_BOSS_UPGRADES[3])];
+  let upgrades = [...(GAUNTLET_BOSS_UPGRADES[stage] || GAUNTLET_BOSS_UPGRADES[4])];
   // Final boss can offer speed upgrade
   if (isLastBoss || stage >= 9) {
     upgrades.push({id:'speed1',label:'+1 Move Speed',stat:'moveSpeed',delta:1});
@@ -9111,8 +9111,35 @@ function showGauntletMap(autoStartNext) {
     </div>
   `;
 
-  // Map area
-  html += '<div style="width:100%;max-width:600px;position:relative;">';
+  // Build set of available connection edges (from current node to its connections)
+  const availableEdges = new Set();
+  const visitedEdges = new Set();
+  if (_gauntletRun.currentNodeId) {
+    const curNode = gauntletGetNode(_gauntletRun.currentNodeId);
+    if (curNode) for (const cid of (curNode.connections || [])) availableEdges.add(`${curNode.id}->${cid}`);
+  }
+  // Mark visited edges (connections between consecutive visited nodes)
+  const visitedList = _gauntletRun.visitedNodeIds || [];
+  for (let vi = 0; vi < visitedList.length - 1; vi++) {
+    const vNode = gauntletGetNode(visitedList[vi]);
+    if (vNode && (vNode.connections || []).includes(visitedList[vi + 1])) {
+      visitedEdges.add(`${visitedList[vi]}->${visitedList[vi + 1]}`);
+    }
+  }
+  // Also mark edge from last visited to current
+  if (_gauntletRun.currentNodeId && visitedList.length > 0) {
+    const lastVisited = visitedList[visitedList.length - 1];
+    const lvNode = gauntletGetNode(lastVisited);
+    if (lvNode && (lvNode.connections || []).includes(_gauntletRun.currentNodeId)) {
+      visitedEdges.add(`${lastVisited}->${_gauntletRun.currentNodeId}`);
+    }
+  }
+
+  // Map area — relative container for SVG overlay
+  html += '<div id="gauntlet-map-container" style="width:100%;max-width:600px;position:relative;">';
+
+  // SVG will be inserted here after DOM render
+  html += '<svg id="gauntlet-map-svg" style="position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:1;"></svg>';
 
   // Render floors bottom (0) to top (last) — natural direction
   for (let f = map.length - 1; f >= 0; f--) {
@@ -9121,14 +9148,14 @@ function showGauntletMap(autoStartNext) {
     const floorBg = f === currentFloor ? 'rgba(212,144,58,0.04)' : 'transparent';
 
     // Floor label + nodes row
-    html += `<div style="display:flex;align-items:center;gap:8px;padding:3px 0;background:${floorBg};
+    html += `<div style="display:flex;align-items:center;gap:8px;padding:6px 0;background:${floorBg};position:relative;z-index:2;
       ${f === currentFloor ? 'border-left:2px solid var(--amber);padding-left:6px;' : 'padding-left:8px;'}">`;
 
     // Floor number
     html += `<div style="width:20px;font-size:8px;color:${f === currentFloor ? 'var(--amber)' : '#444'};text-align:right;flex-shrink:0;">${f}</div>`;
 
     // Nodes
-    html += `<div style="display:flex;gap:8px;flex:1;justify-content:center;">`;
+    html += `<div style="display:flex;gap:12px;flex:1;justify-content:center;">`;
     for (const node of floorNodes) {
       const nodeType = GAUNTLET_NODE_TYPES[node.type] || GAUNTLET_NODE_TYPES.battle;
       const isVisited = visited.has(node.id);
@@ -9153,10 +9180,10 @@ function showGauntletMap(autoStartNext) {
       const isBig = node.type === 'boss';
       const nodeW = isBig ? 'min-width:100px;padding:6px 14px;' : 'min-width:70px;padding:5px 10px;';
 
-      html += `<div ${clickHandler} ${hoverFx} style="
+      html += `<div data-node-id="${node.id}" ${clickHandler} ${hoverFx} style="
         background:${bg};border:1px solid ${border};${nodeW}text-align:center;
         cursor:${isAvailable ? 'pointer' : 'default'};transition:transform 0.15s;${glow}
-        border-radius:${isBig ? '4px' : '3px'};
+        border-radius:${isBig ? '4px' : '3px'};position:relative;
       ">
         <div style="font-size:${isBig ? '20px' : '14px'};">${isVisited ? '<span style="color:var(--amber);">✓</span>' : nodeType.icon}</div>
         <div style="font-size:${isBig ? '10px' : '8px'};color:${textCol};letter-spacing:.06em;">${nodeType.label}</div>
@@ -9165,12 +9192,6 @@ function showGauntletMap(autoStartNext) {
       </div>`;
     }
     html += '</div></div>';
-
-    // Connection line between floors
-    if (f > 0) {
-      const lineColor = f <= currentFloor ? 'rgba(212,144,58,0.3)' : '#222';
-      html += `<div style="display:flex;justify-content:center;"><div style="width:1px;height:8px;background:${lineColor};"></div></div>`;
-    }
   }
 
   html += '</div>';
@@ -9190,11 +9211,65 @@ function showGauntletMap(autoStartNext) {
   overlay.innerHTML = html;
   document.body.appendChild(overlay);
 
-  // Auto-scroll to current floor
+  // Draw SVG connection lines between nodes
   setTimeout(() => {
-    const youMarker = overlay.querySelector('[style*="▲ YOU"]') || overlay.querySelector('[style*="amber"]');
+    const container = document.getElementById('gauntlet-map-container');
+    const svg = document.getElementById('gauntlet-map-svg');
+    if (!container || !svg) return;
+
+    const containerRect = container.getBoundingClientRect();
+    svg.setAttribute('width', containerRect.width);
+    svg.setAttribute('height', containerRect.height);
+    svg.setAttribute('viewBox', `0 0 ${containerRect.width} ${containerRect.height}`);
+
+    // Collect all connection edges from the map data
+    for (let f = 0; f < map.length - 1; f++) {
+      for (const node of map[f]) {
+        const srcEl = container.querySelector(`[data-node-id="${node.id}"]`);
+        if (!srcEl) continue;
+        for (const targetId of (node.connections || [])) {
+          const tgtEl = container.querySelector(`[data-node-id="${targetId}"]`);
+          if (!tgtEl) continue;
+
+          const srcRect = srcEl.getBoundingClientRect();
+          const tgtRect = tgtEl.getBoundingClientRect();
+
+          // Positions relative to container — src top-center, tgt bottom-center
+          // (map renders top=high floor, bottom=low floor, so lower floor is visually below)
+          const x1 = srcRect.left + srcRect.width / 2 - containerRect.left;
+          const y1 = srcRect.top - containerRect.top;
+          const x2 = tgtRect.left + tgtRect.width / 2 - containerRect.left;
+          const y2 = tgtRect.bottom - containerRect.top;
+
+          const edgeKey = `${node.id}->${targetId}`;
+          let color, width, opacity;
+          if (availableEdges.has(edgeKey)) {
+            // Paths the player can take right now
+            color = '#d4903a'; width = 2.5; opacity = 0.9;
+          } else if (visitedEdges.has(edgeKey)) {
+            // Already-traveled path
+            color = '#d4903a'; width = 1.5; opacity = 0.4;
+          } else {
+            // Inactive/future paths
+            color = '#555'; width = 1; opacity = 0.25;
+          }
+
+          const midY = (y1 + y2) / 2;
+          const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+          path.setAttribute('d', `M${x1},${y1} C${x1},${midY} ${x2},${midY} ${x2},${y2}`);
+          path.setAttribute('stroke', color);
+          path.setAttribute('stroke-width', width);
+          path.setAttribute('fill', 'none');
+          path.setAttribute('opacity', opacity);
+          svg.appendChild(path);
+        }
+      }
+    }
+
+    // Auto-scroll to current floor
+    const youMarker = overlay.querySelector('[data-node-id="' + (_gauntletRun.currentNodeId || 'f0_0') + '"]');
     if (youMarker) youMarker.scrollIntoView({ behavior: 'smooth', block: 'center' });
-  }, 100);
+  }, 50);
 }
 
 // ════════════════════════════════════════════════════════════════════
