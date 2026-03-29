@@ -2656,8 +2656,8 @@ const GAUNTLET_BOSSES = {
   15: [
     { bossName:'Ozryn', bossTitle:'the Corridor Lord', faction:'Architects',
       passiveId:'magnus', ultimateId:'pushaman', // Master Mason walls + Breach teleport
-      stats:{wallLimit:14, handSize:8, cardDraw:6, moveSpeed:1, ultimateCost:4},
-      deck:['AR1','AR1','AR1','AR11','AR15','BB','BB','BB','CB','CB','AR2','AR3','AR5','AR9','RC','RC','AV','AV','B08','B08'],
+      stats:{wallLimit:16, handSize:9, cardDraw:7, moveSpeed:2, ultimateCost:3},
+      deck:['AR1','AR1','AR1','AR11','AR15','AR15','BB','BB','CB','CB','AR2','AR3','AR5','AR9','AR9','RC','AV','AV','B08','B08'],
       boardName:'THE FINAL CORRIDOR', boardDesc:'A deadly 3-column corridor. Ozryn seals every path.',
       preWalls:[
         {anchor:{row:0,col:2},orientation:'V',length:2},{anchor:{row:2,col:2},orientation:'V',length:2},
@@ -2716,7 +2716,13 @@ function generateGauntletMap() {
         // Guarantee one shop on shop floors, one FFA race on FFA floors
         if (isShopFloor && n === 0) { type = 'shop'; }
         else if (isFFAFloor && n === 0) { type = 'ffa_race'; }
-        else {
+        else if (floor >= 13) {
+          // Floors 13-14 (path to final boss): heavily biased toward elite battles
+          const roll = Math.random();
+          if (roll < 0.55) type = 'elite';
+          else if (roll < 0.80) type = 'battle';
+          else type = 'rest'; // rare breather
+        } else {
           const roll = Math.random();
           if (roll < 0.40) type = 'battle';
           else if (roll < 0.55) type = 'elite';
@@ -8031,9 +8037,9 @@ function startGauntletNode(nodeId) {
       <div style="font-size:10px;color:#e05050;margin-bottom:4px;">Deck: ${b.deck.length} tailored cards · Hard AI</div>
     `;
   } else {
-    const aiRarity = node.type === 'elite' ? (GAUNTLET_AI_RARITY[Math.min(stage + 2, 12)] || 'Uncommon')
+    const aiRarity = node.type === 'elite' ? (GAUNTLET_AI_RARITY[Math.min(stage + 2, GAUNTLET_STAGES)] || 'Uncommon')
                    : (GAUNTLET_AI_RARITY[stage] || 'Common');
-    const deckStage = node.type === 'elite' ? Math.min(stage + 2, 12) : stage;
+    const deckStage = node.type === 'elite' ? Math.min(stage + 2, GAUNTLET_STAGES) : stage;
     const deckDist = GAUNTLET_AI_DECK_DIST[deckStage] || GAUNTLET_AI_DECK_DIST[1];
     const deckStr = Object.entries(deckDist).filter(([r,n])=>n>0).map(([r,n])=>`${n} ${r}`).join(', ');
     const rc = aiRarity==='Common'?'#aaa':aiRarity==='Uncommon'?'#4ade80':aiRarity==='Rare'?'#60a5fa':aiRarity==='Epic'?'#c084fc':'#fbbf24';
@@ -8108,8 +8114,8 @@ function startGauntletCombat(node) {
   }
 
   // ── ELITE / REGULAR battles ──
-  const deckStage = node.type === 'elite' ? Math.min(stage + 2, 12) : stage;
-  const aiRarity = node.type === 'elite' ? (GAUNTLET_AI_RARITY[Math.min(stage + 2, 12)] || 'Uncommon')
+  const deckStage = node.type === 'elite' ? Math.min(stage + 2, GAUNTLET_STAGES) : stage;
+  const aiRarity = node.type === 'elite' ? (GAUNTLET_AI_RARITY[Math.min(stage + 2, GAUNTLET_STAGES)] || 'Uncommon')
                  : (GAUNTLET_AI_RARITY[stage] || 'Common');
   const aiChamp = generateChampion(aiRarity);
   const aiDeck = buildGauntletAIDeck(deckStage, aiChamp.faction);
@@ -8215,7 +8221,7 @@ async function gauntletRestDoRemove(idx) {
   _gauntletRun.deck.splice(idx, 1);
   _gauntletRun.visitedNodeIds.push(_gauntletRun.currentNodeId);
   _gauntletRun.currentFloor++;
-  _gauntletRun.stage = Math.min(_gauntletRun.stage + 1, 12);
+  _gauntletRun.stage = Math.min(_gauntletRun.stage + 1, GAUNTLET_STAGES);
   if (_userProfile) await saveUserProfile({ gauntlet_run: _gauntletRun });
   document.getElementById('gauntlet-event-overlay')?.remove();
   showGauntletMap(false);
@@ -8224,7 +8230,7 @@ async function gauntletRestDoRemove(idx) {
 async function gauntletRestSkip() {
   _gauntletRun.visitedNodeIds.push(_gauntletRun.currentNodeId);
   _gauntletRun.currentFloor++;
-  _gauntletRun.stage = Math.min(_gauntletRun.stage + 1, 12);
+  _gauntletRun.stage = Math.min(_gauntletRun.stage + 1, GAUNTLET_STAGES);
   if (_userProfile) await saveUserProfile({ gauntlet_run: _gauntletRun });
   document.getElementById('gauntlet-event-overlay')?.remove();
   showGauntletMap(false);
@@ -8406,7 +8412,7 @@ async function gauntletResolveEvent(btn) {
 async function gauntletFinishEvent(event, resultText) {
   _gauntletRun.visitedNodeIds.push(_gauntletRun.currentNodeId);
   _gauntletRun.currentFloor++;
-  _gauntletRun.stage = Math.min(_gauntletRun.stage + 1, 12);
+  _gauntletRun.stage = Math.min(_gauntletRun.stage + 1, GAUNTLET_STAGES);
   if (_userProfile) await saveUserProfile({ gauntlet_run: _gauntletRun });
 
   const resultColor = event.good ? '#4ade80' : '#e05050';
@@ -8752,7 +8758,7 @@ function showGauntletCardReward(shardsEarned, goldEarned) {
   const faction = _gauntletRun.champion.faction;
   const currentNode = _gauntletRun.currentNodeId ? gauntletGetNode(_gauntletRun.currentNodeId) : null;
   const isElite = currentNode && currentNode.type === 'elite';
-  const cards = isElite ? generateGauntletCardRewards(Math.min(stage + 2, 12), faction) : generateGauntletCardRewards(stage, faction);
+  const cards = isElite ? generateGauntletCardRewards(Math.min(stage + 2, GAUNTLET_STAGES), faction) : generateGauntletCardRewards(stage, faction);
   let cardPicked = false;
 
   const overlay = document.createElement('div');
@@ -8874,7 +8880,7 @@ async function gauntletElitePickStat(idx) {
 async function gauntletAdvanceStage() {
   _gauntletRun.visitedNodeIds.push(_gauntletRun.currentNodeId);
   _gauntletRun.currentFloor++;
-  _gauntletRun.stage = Math.min(_gauntletRun.stage + 1, 12);
+  _gauntletRun.stage = Math.min(_gauntletRun.stage + 1, GAUNTLET_STAGES);
   if (_userProfile) await saveUserProfile({ gauntlet_run: _gauntletRun });
   document.getElementById('gauntlet-reward-overlay')?.remove();
   showGauntletMap(false);
@@ -8885,7 +8891,7 @@ function showGauntletBossReward(shardsEarned, goldEarned) {
   goldEarned = goldEarned || 0;
   const stage = _gauntletRun.stage;
   const faction = _gauntletRun.champion.faction;
-  const isLastBoss = stage >= 12;
+  const isLastBoss = stage >= 15;
   let upgrades = [...(GAUNTLET_BOSS_UPGRADES[stage] || GAUNTLET_BOSS_UPGRADES[4])];
   // Final boss can offer speed upgrade
   if (isLastBoss || stage >= 9) {
@@ -8990,7 +8996,7 @@ function showGauntletBossLeaveChoice() {
   if (!overlay) return;
   const stage = _gauntletRun.stage;
   const promotedRarity = GAUNTLET_BOSS_PROMOTION[stage];
-  const isLastBoss = stage >= 12;
+  const isLastBoss = stage >= 15;
 
   overlay.innerHTML = `
     <div style="font-family:'Teko',sans-serif;font-size:28px;color:#fbbf24;margin-bottom:8px;">BOSS REWARDS CLAIMED</div>
@@ -9049,7 +9055,7 @@ async function gauntletLeaveAlive() {
 async function gauntletContinueDeeper() {
   _gauntletRun.visitedNodeIds.push(_gauntletRun.currentNodeId);
   _gauntletRun.currentFloor++;
-  _gauntletRun.stage = Math.min(_gauntletRun.stage + 1, 12);
+  _gauntletRun.stage = Math.min(_gauntletRun.stage + 1, GAUNTLET_STAGES);
   if (_userProfile) await saveUserProfile({ gauntlet_run: _gauntletRun });
   document.getElementById('gauntlet-reward-overlay')?.remove();
   showGauntletMap(false);
@@ -10210,45 +10216,47 @@ function selectCard(cardId, idx) {
   updateActionBar();
 }
 
-function countCardPlayed(pi) {
+function countCardPlayed(pi, _playedCard) {
+  // Use the passed card reference if selectedCard was already cleared
+  const card = _playedCard || selectedCard;
   // Skip counting for free/delayed card plays (they don't consume the card budget)
-  const isFreePlay = (selectedCard && (selectedCard._freePlay || selectedCard._delayed || selectedCard._isDejaVuReplay))
+  const isFreePlay = (card && (card._freePlay || card._delayed || card._isDejaVuReplay))
     || gameState._freePlayActive;
   // Skip counting for Instant cards (they don't consume the card-play budget)
-  const isInstant = selectedCard && CARDS[selectedCard.id] && CARDS[selectedCard.id].instant;
+  const isInstant = card && CARDS[card.id] && CARDS[card.id].instant;
   // CH11 Infinite Recursion: cards marked _instantOnce don't cost a card play (first use only)
-  const isInstantOnce = selectedCard && selectedCard._instantOnce;
+  const isInstantOnce = card && card._instantOnce;
   if (isFreePlay) {
     console.log('[countCardPlayed] Skipping count — free/delayed/dejaVu replay. freePlayActive=', gameState._freePlayActive);
   } else if (isInstant) {
-    console.log('[countCardPlayed] Skipping count — Instant card:', selectedCard.id);
+    console.log('[countCardPlayed] Skipping count — Instant card:', card.id);
   } else if (isInstantOnce) {
-    console.log('[countCardPlayed] Skipping count — Infinite Recursion instant-once:', selectedCard.id);
+    console.log('[countCardPlayed] Skipping count — Infinite Recursion instant-once:', card.id);
     // Remove _instantOnce from the card (already discarded at this point, but clear the flag)
   } else {
     cardsPlayedThisTurn++;
     hasPlayedCard = true;
   }
   // Track card history for Infinite Recursion
-  if (selectedCard && selectedCard.id && selectedCard.id !== '__breach__') {
+  if (card && card.id && card.id !== '__breach__') {
     if (!gameState._cardHistory) gameState._cardHistory = [];
-    gameState._cardHistory.push(selectedCard.id);
+    gameState._cardHistory.push(card.id);
   }
   // Track last card played per seat
-  if (selectedCard && selectedCard.id && CARDS[selectedCard.id]) {
+  if (card && card.id && CARDS[card.id]) {
     if (!gameState._lastCardPlayed) gameState._lastCardPlayed = [null, null];
-    gameState._lastCardPlayed[pi] = CARDS[selectedCard.id];
+    gameState._lastCardPlayed[pi] = CARDS[card.id];
   }
   // ── Déjà Vu: schedule replay if this card was marked ──
-  const _dvFromSelected = selectedCard?._dejaVuQueued && !selectedCard?._isDejaVuReplay;
+  const _dvFromSelected = card?._dejaVuQueued && !card?._isDejaVuReplay;
   const _dvFromPending = gameState._pendingDejaVu;
   console.log('[DEJA VU countCardPlayed] dvFromSelected=', _dvFromSelected, 'dvFromPending=', !!_dvFromPending,
-    'selectedCard=', selectedCard?.id, 'queued=', selectedCard?._dejaVuQueued, 'isReplay=', selectedCard?._isDejaVuReplay);
+    'card=', card?.id, 'queued=', card?._dejaVuQueued, 'isReplay=', card?._isDejaVuReplay);
   if (_dvFromSelected || _dvFromPending) {
     const replayCard = _dvFromSelected
-      ? {...CARDS[selectedCard.id]}
+      ? {...CARDS[card.id]}
       : {..._dvFromPending.card};
-    if (selectedCard) selectedCard._dejaVuQueued = false; // consume
+    if (card) card._dejaVuQueued = false; // consume
     gameState._pendingDejaVu = null; // consume
     console.log('[DEJA VU] Scheduling replay for:', replayCard.name, 'type:', replayCard.type);
     setTimeout(() => {
@@ -12516,7 +12524,7 @@ async function applyDisruptionCard(pi, card, idx) {
       wallsInPlay: Math.max(0, gameState.players[pi].wallsInPlay - 1),
       hand: [...gameState.players[pi].hand, {...CARDS['BB']}].slice(0, gameState.players[pi].champion.handSize)};
     addLog(pi, 'card', `Rewind Wall: wall returned to hand as Basic Barrier`);
-    discardCard(pi, idx); selectedCard = null; countCardPlayed(pi);
+    discardCard(pi, idx); selectedCard = null; countCardPlayed(pi, card);
     if (isTurnDone()) gameState.phase = 'end_turn';
     renderAll(); showStatus('Wall rewound to hand!', 'success'); return;
   }
