@@ -3624,10 +3624,12 @@ function initMultiPlayerGame(config) {
 
   const players = [];
   for (let i = 0; i < config.playerCount; i++) {
-    const champId = config.champions[i];
-    const champ = resolveChampion(champId);
+    const champEntry = config.champions[i];
+    // Support both string IDs and full champion objects
+    const isObj = typeof champEntry === 'object' && champEntry !== null;
+    const champ = isObj ? champEntry : resolveChampion(champEntry);
     if (!champ) continue;
-    players.push(createPlayer(i, champId, champ.faction, config.decks?.[i] || null, startPositions[i]));
+    players.push(createPlayer(i, champ, champ.faction, config.decks?.[i] || null, startPositions[i]));
   }
 
   gameState = {
@@ -3745,6 +3747,7 @@ function initTutorialMatch(matchNum) {
 // ── Gauntlet Match Init ─────────────────────────────────────────────
 function initGauntletGame(playerChamp, aiChamp, playerDeckIds, aiDeckCards) {
   resetBoardSize(); // Reset to default; boss boards may override after init
+  resetGameConfig(); // Reset to 1v1 / 2 players (critical after FFA races)
   gameMode = 'gauntlet';
   mp_isMultiplayer = false;
   mp_gameId = null; mp_localSeat = null; mp_opponentName = null;
@@ -8603,10 +8606,18 @@ function startGauntletFFA() {
   const stage = _gauntletRun.stage;
   const aiRarity = GAUNTLET_AI_RARITY[stage] || 'Common';
   const allChampIds = Object.keys(CHAMPIONS);
-  const champions = [_gauntletRun.champion.id || 'soren'];
+  // Pass the full champion object for the gauntlet player (generated champs aren't in CHAMPIONS)
+  const playerChamp = _gauntletRun.champion;
+  const usedBaseIds = new Set();
+  // Track the base champion IDs used by the player's passive/ultimate to avoid duplicates
+  if (playerChamp.passiveId) usedBaseIds.add(playerChamp.passiveId);
+  if (playerChamp.ultimateId) usedBaseIds.add(playerChamp.ultimateId);
+  const champions = [playerChamp];
   for (let i = 0; i < 3; i++) {
-    const available = allChampIds.filter(id => !champions.includes(id));
-    champions.push(available[Math.floor(Math.random() * available.length)]);
+    const available = allChampIds.filter(id => !usedBaseIds.has(id));
+    const pick = available[Math.floor(Math.random() * available.length)];
+    usedBaseIds.add(pick);
+    champions.push(pick);
   }
 
   // Store gauntlet context so we can return after the FFA
@@ -14822,7 +14833,9 @@ function updateTurnBanner() {
   const banner = document.getElementById('turn-banner');
   const pi = gameState.activePlayer;
   const phase = gameState.phase;
-  const champion = gameState.players[pi].champion.name;
+  const player = gameState.players[pi];
+  if (!player) return;
+  const champion = player.champion.name;
   const isAI = !isHumanSeat(pi);
   const phaseLabel = {draw:'DRAW', action: isAI ? 'AI THINKING' : 'ACTION', end_turn:'END', ended:'GAME OVER'}[phase] || phase;
   if (banner) {
