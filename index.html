@@ -2477,11 +2477,11 @@ const FACTION_COUNTER = {
 const FACTION_AI = {
   Architects:  { moveBonus: 0,  wallBonus: 4,  aggression: 0.7, control: 1.4 },
   Pathfinders: { moveBonus: 4,  wallBonus: 0,  aggression: 1.6, control: 0.5 },
-  Wardens:     { moveBonus:-1,  wallBonus: 2,  aggression: 0.5, control: 1.8 },
-  Phantoms:    { moveBonus: 1,  wallBonus: 3,  aggression: 0.9, control: 1.1 },
+  Wardens:     { moveBonus: 1,  wallBonus: 2,  aggression: 0.8, control: 1.5 },
+  Phantoms:    { moveBonus: 2,  wallBonus: 3,  aggression: 1.1, control: 0.9 },
   Pushers:     { moveBonus: 3,  wallBonus: 1,  aggression: 1.5, control: 0.6 },
-  Trappers:    { moveBonus: 0,  wallBonus: 2,  aggression: 0.6, control: 1.6 },
-  Chronists:   { moveBonus: 1,  wallBonus: 2,  aggression: 1.0, control: 1.0 },
+  Trappers:    { moveBonus: 2,  wallBonus: 2,  aggression: 1.0, control: 1.2 },
+  Chronists:   { moveBonus: 2,  wallBonus: 2,  aggression: 1.2, control: 0.9 },
 };
 
 // ── ELO & Balance Constants ──────────────────────────────────────────
@@ -2778,7 +2778,7 @@ const CHAMPIONS = {
   // Pathfinders: speed, mobility, racing
   soren: {
     id:'soren', simplicity:1, name:'Soren', title:'Swiftstride', faction:'Pathfinders',
-    wallLimit:7, handSize:4, cardDraw:2, moveSpeed:1,
+    wallLimit:7, handSize:4, cardDraw:3, moveSpeed:1,
     ultimateCost:6, ultimateName:'Stormpath',
     passiveName:'Fleetfoot',
     passiveDesc:'Each turn you may take a 2nd move instead of playing a card.',
@@ -2789,8 +2789,8 @@ const CHAMPIONS = {
   // Wardens: disruption, hand control, wall repositioning
   thorne: {
     id:'thorne', simplicity:3, name:'Thorne', title:'the Lockmaster', faction:'Wardens',
-    wallLimit:5, handSize:5, cardDraw:4, moveSpeed:1,
-    ultimateCost:7, ultimateName:'Total Reordering',
+    wallLimit:6, handSize:5, cardDraw:4, moveSpeed:1,
+    ultimateCost:6, ultimateName:'Total Reordering',
     passiveName:"Warden's Stare",
     passiveDesc:"Opponent's hand is always revealed to you.",
     ultimateDesc:'Randomly reorders ALL walls on the board to new legal locations.',
@@ -2822,7 +2822,7 @@ const CHAMPIONS = {
   // Trappers: invisible traps on tiles, area denial
   shade: {
     id:'shade', simplicity:3, name:'Shade', title:'the Stalker', faction:'Trappers',
-    wallLimit:8, handSize:5, cardDraw:3, moveSpeed:1,
+    wallLimit:8, handSize:5, cardDraw:4, moveSpeed:1,
     ultimateCost:5, ultimateName:'Killing Field',
     passiveName:'Trapsmith',
     passiveDesc:'Move over your own traps without triggering them.',
@@ -3060,6 +3060,8 @@ const CARDS = {
          desc:'Place a mark on a random tile exactly 2 steps away. If you reach it within 2 turns, gain a bonus move on that turn. Mark is shown on the board.' },
   PF15:{ id:'PF15',name:'Unstoppable Charge', faction:'Pathfinders', rarity:'Legendary', type:'Movement',
          desc:'Move up to 3 spaces. Cannot cross reinforced walls. All non-reinforced walls you pass through are destroyed. Destroyed walls return their slot to their owner.', overrideSpeed:3, tunnelThrough:true, special:'unstoppableCharge' },
+  PF16:{ id:'PF16',name:'Trailguard',       faction:'Pathfinders', rarity:'Common',    type:'Wall',
+         desc:'Place a 1-tile wall. Gain +1 move this turn.', wallLen:1, special:'trailguard' },
 
   // ── WARDENS ──────────────────────────────────────────────────────────
   WD1: { id:'WD1', name:'Binding Wall',   faction:'Wardens', rarity:'Uncommon',   type:'Wall',
@@ -3199,7 +3201,7 @@ function buildStarterDeck(faction) {
   // Small 10-card common-only starter decks — approachable for new players
   const deckDefs = {
     Architects:  ['BB','BB','BB','AR1','AR2','AR3','RC','CB','AV','B01'],
-    Pathfinders: ['BB','BB','RC','AV','AV','QS','B01','CB','PF11','B04'],
+    Pathfinders: ['BB','PF16','RC','AV','AV','QS','B01','CB','PF11','B04'],
     Wardens:     ['BB','BB','BB','RC','AV','CB','WD8','WD12','B01','B04'],
     Phantoms:    ['BB','PH1','PH1','PH2','PH3','RC','AV','CB','QS','B01'],
     Pushers:     ['BB','BB','BB','PU4','RC','AV','AV','CB','B01','B04'],
@@ -6230,6 +6232,15 @@ function scoreAction(action, walls, aiPos, oppPos) {
   const oppLoss = (oppDistAfter  - oppDistBefore) * ctrlWeight;
   const base    = myGain * W.me + oppLoss * W.opp;
 
+  // Rush bonus: when AI is close to goal, aggressively prioritize forward movement.
+  // This matches human behavior (humans rush the last few tiles).
+  let rushBonus = 0;
+  if (!blocking && (action.type === 'move') && myDistAfter !== Infinity && myDistAfter <= 4) {
+    rushBonus = (5 - myDistAfter) * 3; // +3 at dist 4, +6 at 3, +9 at 2, +12 at 1
+    // Double the gain multiplier when close — forward moves matter exponentially more
+    if (myDistBefore > myDistAfter) rushBonus += (myDistBefore - myDistAfter) * W.me;
+  }
+
   // In blocking mode, walls/disruption get a big bonus since the AI's job is to block
   if (blocking) {
     if (action.type === 'wall' || action.type === 'phantom') return base + F.wallBonus * 3;
@@ -6237,7 +6248,7 @@ function scoreAction(action, walls, aiPos, oppPos) {
     return base; // movement gets no bonus
   }
 
-  if (action.type === 'move')    return base + F.moveBonus;
+  if (action.type === 'move')    return base + F.moveBonus + rushBonus;
   if (action.type === 'wall')    return base + F.wallBonus;
   if (action.type === 'phantom') return base + F.wallBonus * 0.8;
   return base + scoreDisruptionContext(oppDistBefore, walls);
@@ -6526,6 +6537,9 @@ async function runAI() {
   }
 
   // ── A: Wall cards (real placement) ────────────────────────────────
+  // Early-game wall bonus: On Hard, turns 1-3, prioritize wall placement to
+  // build defensive infrastructure before speed factions can rush the goal.
+  const _earlyWallBonus = (aiDifficulty === 'hard' && gameState.turnNumber <= 3) ? 15 : 0;
   if (st.aiWalls < st.aiLimit && !_aiCardPhaseBlocked && _aiEmbargoType !== 'Wall') {
     const wallCards = st.aiHand.filter(c =>
       c.type === 'Wall' && !c.phantom && !c.special
@@ -6537,7 +6551,7 @@ async function runAI() {
         if (!isWallLegal(anchor, orientation, len, st.walls,
             st.oppPos, st.aiPos, false)) continue;
         const s = scoreAction({type:'wall', anchor, orientation, length:len},
-                              st.walls, st.aiPos, st.oppPos);
+                              st.walls, st.aiPos, st.oppPos) + _earlyWallBonus;
         if (s > bestCardScore) {
           secondBestCardScore = bestCardScore; secondBestCardAction = bestCardAction;
           bestCardScore = s;
@@ -6558,7 +6572,7 @@ async function runAI() {
         if (!isWallLegal(anchor, orientation, len, st.walls,
             st.oppPos, st.aiPos, true)) continue;
         const s = scoreAction({type:'phantom', anchor, orientation, length:len},
-                              st.walls, st.aiPos, st.oppPos);
+                              st.walls, st.aiPos, st.oppPos) + _earlyWallBonus * 0.8;
         if (s > bestCardScore) {
           secondBestCardScore = bestCardScore; secondBestCardAction = bestCardAction;
           bestCardScore = s;
@@ -6568,18 +6582,35 @@ async function runAI() {
     }
   }
 
-  // ── C: Special wall cards (Double Bluff, Corner Piece) ────────────
+  // ── C: Special wall cards (Double Bluff, Corner Piece, Nightmare Maze, etc.) ──
   if (st.aiWalls < st.aiLimit && !_aiCardPhaseBlocked && _aiEmbargoType !== 'Wall') {
     const specialCards = st.aiHand.filter(c => c.type === 'Wall' && c.special);
     for (const card of specialCards) {
       // Treat as a standard wall of the base length for scoring
       const len = getCardWallLength(card.id);
       const cands = generateWallCandidates(st.oppPos, len);
+
+      // Phantom-faction special card bonuses:
+      // PH12 Nightmare Maze: converts ALL existing phantoms to real — massive value
+      let specialBonus = 1; // default slight bonus
+      if (card.id === 'PH12' || card.special === 'nightmareMaze') {
+        const existingPhantoms = st.walls.filter(w => w.isPhantom && w.owner === pi).length;
+        specialBonus = 1 + existingPhantoms * 6; // each phantom→real is like placing a wall
+      }
+      // PH3 Echo Strike: places phantom on your side + free real wall on opponent side
+      else if (card.id === 'PH3' || card.special === 'echoStrike') {
+        specialBonus = 4; // free real wall on opponent side is very valuable
+      }
+      // PH4 Veil Lattice: phantom + real wall combo
+      else if (card.id === 'PH4' || card.special === 'veilLattice') {
+        specialBonus = 3; // real wall + phantom = strong board presence
+      }
+
       for (const {anchor, orientation} of cands) {
         if (!isWallLegal(anchor, orientation, len, st.walls,
             st.oppPos, st.aiPos, false)) continue;
         const s = scoreAction({type:'wall', anchor, orientation, length:len},
-                              st.walls, st.aiPos, st.oppPos) + 1; // slight bonus for special
+                              st.walls, st.aiPos, st.oppPos) + specialBonus + _earlyWallBonus;
         if (s > bestCardScore) {
           secondBestCardScore = bestCardScore; secondBestCardAction = bestCardAction;
           bestCardScore = s;
@@ -6747,12 +6778,27 @@ async function runAI() {
     // WD2 Tax Notice: steal opponent's best card (much stronger than discard)
     if (card.id === 'WD2') {
       const oppWallCount = st.walls.filter(w => w.owner === 0 && !w.isPhantom).length;
-      if (oppWallCount >= 3) {
-        const s = 7; // steal = deny opponent + gain for us = double value
+      if (oppWallCount >= 2) {
+        // Scale with opponent wall count — more walls = more leverage for stealing
+        const oppBlocking = bfsDistanceFor(st.aiPos, getGoalRow(pi), st.walls, pi) > bfsDistanceAI(st.aiPos, getGoalRow(pi), []);
+        const s = oppWallCount * 2 + (oppBlocking ? 3 : 0);
         if (s > bestCardScore) {
           secondBestCardScore = bestCardScore; secondBestCardAction = bestCardAction;
           bestCardScore = s;
           bestCardAction = {kind:'disruption', subkind:'taxSteal', card};
+        }
+      }
+    }
+
+    // WD4 Confiscate: you discard 1, opponent discards 2 — strong hand denial
+    if (card.id === 'WD4') {
+      const oppHand = gameState.players[getFirstOpponent(pi)].hand.length;
+      if (oppHand >= 2) {
+        const s = oppHand * 2.5 + scoreDisruptionContext(bfsDistanceFor(st.oppPos, getGoalRow(getFirstOpponent(pi)), st.walls, 0), st.walls);
+        if (s > bestCardScore) {
+          secondBestCardScore = bestCardScore; secondBestCardAction = bestCardAction;
+          bestCardScore = s;
+          bestCardAction = {kind:'disruption', subkind:'confiscate', card};
         }
       }
     }
@@ -6905,23 +6951,27 @@ async function runAI() {
       }
     }
 
-    // WD8 Embargo: type lockout — value scales with opponent hand
+    // WD8 Embargo: type lockout — value scales with opponent hand size
     if (card.id === 'WD8') {
-      const s = 4;
+      const oppHand = gameState.players[getFirstOpponent(pi)].hand.length;
+      const s = oppHand > 0 ? 4 + oppHand : 0;
       if (s > bestCardScore) { secondBestCardScore = bestCardScore; secondBestCardAction = bestCardAction; bestCardScore = s; bestCardAction = {kind:'disruption', subkind:'embargo', card}; }
     }
 
     // WD10 Asset Freeze: REMOVED
 
-    // WD11 Warden's Decree: skip opponent card phase
+    // WD11 Warden's Decree: skip opponent card phase — value depends on opponent having cards
     if (card.id === 'WD11') {
-      const s = 7; // very high value — denies entire card play
+      const oppHand = gameState.players[getFirstOpponent(pi)].hand.length;
+      const s = oppHand > 2 ? 8 : (oppHand > 0 ? 4 : 0);
       if (s > bestCardScore) { secondBestCardScore = bestCardScore; secondBestCardAction = bestCardAction; bestCardScore = s; bestCardAction = {kind:'disruption', subkind:'decree', card}; }
     }
 
-    // WD12 Conscription: draw 2, opponent draws 1
+    // WD12 Conscription: draw 2, opponent draws 1 — better when hand is low
     if (card.id === 'WD12') {
-      const s = 3; // net +1 card advantage
+      const aiHandLimit = gameState.players[pi].champion.handSize || 5;
+      const aiDeckSize = gameState.players[pi].deck?.length || 0;
+      const s = (st.aiHand.length < aiHandLimit ? 4 : 1) + (aiDeckSize > 0 ? 2 : 0);
       if (s > bestCardScore) { secondBestCardScore = bestCardScore; secondBestCardAction = bestCardAction; bestCardScore = s; bestCardAction = {kind:'disruption', subkind:'conscription', card}; }
     }
 
@@ -6981,9 +7031,10 @@ async function runAI() {
     }
 
     // ── TRAPPER DISRUPTION SCORING ──
-    // TR1 Root Trap
+    // TR1 Root Trap — more valuable when opponent is close to goal
     if (card.id === 'TR1') {
-      const s = 3.5; // root trap value
+      const oppDist = bfsDistanceFor(st.oppPos, getGoalRow(getFirstOpponent(pi)), st.walls, 0);
+      const s = oppDist <= 3 ? 6 : (oppDist <= 5 ? 4 : 2);
       if (s > bestCardScore) { secondBestCardScore = bestCardScore; secondBestCardAction = bestCardAction; bestCardScore = s; bestCardAction = {kind:'disruption', subkind:'rootTrap', card}; }
     }
     // TR3 Pit Trap
@@ -7019,10 +7070,12 @@ async function runAI() {
     }
 
     // ── CHRONIST DISRUPTION SCORING ──
-    // CH1 Delay
+    // CH1 Delay — value depends on best OTHER card in hand (delay the strongest card for free next turn)
     if (card.id === 'CH1') {
-      const handSize = st.aiHand.length;
-      const s = handSize > 1 ? 3.5 : 0.5; // need another card to delay
+      const otherCards = st.aiHand.filter(c => c.id !== 'CH1');
+      // Estimate: delay is worth ~80% of the best card's value since it plays free next turn
+      const bestOtherValue = otherCards.length > 0 ? Math.max(3.5, bestCardScore * 0.8) : 0.5;
+      const s = otherCards.length > 0 ? Math.min(bestOtherValue, 10) : 0.5;
       if (s > bestCardScore) { secondBestCardScore = bestCardScore; secondBestCardAction = bestCardAction; bestCardScore = s; bestCardAction = {kind:'disruption', subkind:'delay', card}; }
     }
     // CH2 Rewind Wall
@@ -7049,9 +7102,11 @@ async function runAI() {
       const s = Math.min(histLen, 3) * 4; // value scales with history
       if (s > bestCardScore) { secondBestCardScore = bestCardScore; secondBestCardAction = bestCardAction; bestCardScore = s; bestCardAction = {kind:'disruption', subkind:'recursion', card}; }
     }
-    // CH12 Déjà Vu
+    // CH12 Déjà Vu — value scales with best card in hand (play double next turn)
     if (card.id === 'CH12') {
-      const s = 3.5; // double next card
+      const otherCards = st.aiHand.filter(c => c.id !== 'CH12');
+      // Playing double next turn is worth ~60% of the best card's value on top of base
+      const s = otherCards.length > 0 ? Math.max(3.5, bestCardScore * 0.6) : 3.5;
       if (s > bestCardScore) { secondBestCardScore = bestCardScore; secondBestCardAction = bestCardAction; bestCardScore = s; bestCardAction = {kind:'disruption', subkind:'dejaVu', card}; }
     }
     // CH13 Revert — returns most recent wall (any owner) to owner's hand
@@ -9808,6 +9863,12 @@ function handleWallClick(anchor, orientation, length, isPhantom, isDurable) {
     }
   }
 
+  // If a chained wall placement was set up by onWallPlaced (Corner Block 2nd wall,
+  // Veil Lattice real wall, Doppelganger 2nd phantom, etc.), the UI is already
+  // configured with renderAll() + showStatus(). Return early to avoid overwriting
+  // the status message with "Wall placed — end your turn" and enabling End Turn.
+  if (uiMode === 'wall' && selectedCard) return;
+
   renderAll();
   const _wpi = gameState.activePlayer;
   const _wchamp = getPassiveId(_wpi);
@@ -9932,6 +9993,10 @@ function resetTurnState() {
   gameState._bonusMovePi = null;
   gameState._freePlayQueue = null;     // Clear any pending Infinite Recursion queue
   gameState._emergencyBarrierMode = false;  // Clear Emergency Barrier placement flag
+  gameState._cornerSecond = false;             // Clear Corner Block chained placement state
+  gameState._cornerFirstWall = null;
+  gameState._doppelgangerCount = 0;            // Clear Doppelganger chained placement state
+  gameState._veilCount = 0;                    // Clear Veil Lattice chained placement state
   gameState._collapsePickPending = false;   // Clear Controlled Collapse pick state
   gameState._collapseWallsRemaining = 0;    // Clear Controlled Collapse wall counter
   gameState._slipstreamActive = false;      // Clear Slipstream wall-ignore flag
@@ -10817,6 +10882,24 @@ function onWallPlaced(pi, fromCardId, _wasDelayedCard, _placedCard) {
           break;
         }
       }
+    }
+  }
+
+  // PF16 Trailguard: place 1-tile wall, then gain +1 move this turn
+  if (fromCardId === 'PF16') {
+    if (!isHumanSeat(pi)) {
+      // AI: auto-move 1 space toward goal
+      const aiMvs = getLegalMoves(gameState, pi, 1);
+      if (aiMvs.length) {
+        aiMvs.sort((a,b) => pi===0 ? a.row-b.row : b.row-a.row);
+        gameState.players[pi] = {...gameState.players[pi], position: aiMvs[0]};
+        hasMoved = true;
+        addLog(pi, 'card', 'Trailguard: placed wall and moved');
+      }
+    } else {
+      // Human: enter move mode with speed 1
+      selectedCard = {id:'PF16', idx:-1, overrideSpeed:1, _pendingMove:true, _freePlay:true};
+      uiMode = 'move'; renderAll(); showStatus('Trailguard: move 1 space', 'active'); return;
     }
   }
 
@@ -13278,8 +13361,40 @@ function applyUltimate(pi, champId) {
 function maybeAIUltimate(pi) {
   const p = gameState.players[pi];
   if (!p.ultimateReady || p.ultimateUsed) return false;
+
+  // Smart ultimate timing: don't fire unconditionally — check board state
+  const ultId = getUltimateId(pi);
+  const aiDist = bfsDistanceFor(p.position, getGoalRow(pi), gameState.walls, pi);
+  const oppIdx = getFirstOpponent(pi);
+  const oppDist = bfsDistanceFor(gameState.players[oppIdx].position, getGoalRow(oppIdx), gameState.walls, oppIdx);
+
+  // Per-champion conditional firing
+  if (ultId === 'nyx') {
+    // Nyx invisibility: save for when close to goal (within 4 tiles)
+    if (aiDist > 4) return false;
+  } else if (ultId === 'thorne') {
+    // Thorne wall reorder: only fire when AI is significantly blocked
+    if (aiDist < 6) return false;
+  } else if (ultId === 'vex') {
+    // Vex Temporal Fold: only fire when hand has 2+ non-Basic cards worth playing
+    const nonBasicCards = p.hand.filter(c => c.id !== 'BB' && c.id !== 'B01');
+    if (nonBasicCards.length < 2) return false;
+  } else if (ultId === 'shade') {
+    // Shade Killing Field: fire when opponent is close (traps matter most near goal)
+    if (oppDist > 5) return false;
+  } else if (ultId === 'magnus') {
+    // Magnus Living Blueprint: fire when hand is nearly empty
+    if (p.hand.length > 2) return false;
+  } else if (ultId === 'pushaman') {
+    // Pushaman Breach: fire when opponent is within jump range
+    const manhattanDist = Math.abs(p.position.row - gameState.players[oppIdx].position.row)
+                        + Math.abs(p.position.col - gameState.players[oppIdx].position.col);
+    if (manhattanDist > 3) return false;
+  }
+  // Soren (and any others): always fire — simple passives benefit immediately
+
   gameState.players[pi] = { ...p, ultimateUsed:true, ultimateReady:false, ultimateCharge:0 };
-  applyUltimate(pi, getUltimateId(pi));
+  applyUltimate(pi, ultId);
   return true;
 }function onEndTurnPassives(pi) {
   const champId = getPassiveId(pi);
@@ -14803,8 +14918,33 @@ function showWallPreview(anchor, orientation, length, isPhantom) {
   hideWallPreview();
   const layer = document.getElementById('wall-layer');
   if (!layer) return;
-  const legal = isWallLegal(anchor, orientation, length, gameState.walls,
+  let legal = isWallLegal(anchor, orientation, length, gameState.walls,
     gameState.players[0].position, gameState.players[1].position, isPhantom);
+  // Corner Block 2nd wall: also check adjacency to the first wall so preview
+  // correctly shows invalid for positions that aren't adjacent
+  if (legal && selectedCard && selectedCard.id === 'CB_second' && gameState._cornerFirstWall) {
+    const fw = gameState._cornerFirstWall;
+    const fTiles = [];
+    for (let i = 0; i < fw.length; i++) {
+      fTiles.push(fw.orientation === 'H' ? {row: fw.anchor.row, col: fw.anchor.col + i} : {row: fw.anchor.row + i, col: fw.anchor.col});
+    }
+    const sTiles = [];
+    for (let i = 0; i < length; i++) {
+      sTiles.push(orientation === 'H' ? {row: anchor.row, col: anchor.col + i} : {row: anchor.row + i, col: anchor.col});
+    }
+    const adj = sTiles.some(st => fTiles.some(ft =>
+      (Math.abs(st.row - ft.row) + Math.abs(st.col - ft.col)) <= 1
+    ));
+    if (!adj) legal = false;
+  }
+  // Emergency Barrier: also check distance to champion so preview is accurate
+  if (legal && gameState._emergencyBarrierMode) {
+    const myPos = gameState.players[gameState.activePlayer].position;
+    for (let i = 0; i < length; i++) {
+      const t = orientation === 'H' ? {row: anchor.row, col: anchor.col + i} : {row: anchor.row + i, col: anchor.col};
+      if (Math.abs(t.row - myPos.row) + Math.abs(t.col - myPos.col) > 3) { legal = false; break; }
+    }
+  }
   previewEl = document.createElement('div');
   previewEl.className = `wall-preview-segment${legal ? '' : ' invalid'}`;
   // Apply faction-specific wall color for preview
