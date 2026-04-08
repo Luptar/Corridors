@@ -2709,23 +2709,39 @@ const GAUNTLET_BOSSES = {
       stats:{wallLimit:12, handSize:10, cardDraw:5, moveSpeed:1, energy:4, ultimateCost:4},
       // Tailored deck: heavy wall cards to exploit the narrow board
       deck:['AR1','AR1','AR1','BB','BB','BB','BB','CB','CB','AR2','AR2','AR3','AR5','AR9','RC','AV','B08','B08','B07','B04'],
-      boardName:'THE NARROW', boardDesc:'Walled-off edges create a 5-column corridor. Kael fills it with walls.',
+      boardName:'THE GAUNTLET', boardDesc:'A narrow 3-wide corridor with walled-off alcoves. Kael controls the chokepoints.',
       preWalls:[
-        {anchor:{row:0,col:1},orientation:'V',length:2},{anchor:{row:2,col:1},orientation:'V',length:2},
-        {anchor:{row:4,col:1},orientation:'V',length:2},{anchor:{row:6,col:1},orientation:'V',length:2},
-        {anchor:{row:0,col:6},orientation:'V',length:2},{anchor:{row:2,col:6},orientation:'V',length:2},
-        {anchor:{row:4,col:6},orientation:'V',length:2},{anchor:{row:6,col:6},orientation:'V',length:2},
+        // Left V wall along col 2 (full height in segments)
+        {anchor:{row:0,col:2},orientation:'V',length:2},{anchor:{row:2,col:2},orientation:'V',length:1},
+        {anchor:{row:3,col:2},orientation:'V',length:3},
+        {anchor:{row:6,col:2},orientation:'V',length:1},{anchor:{row:7,col:2},orientation:'V',length:2},
+        // Right V wall along col 6 (full height in segments)
+        {anchor:{row:0,col:6},orientation:'V',length:2},{anchor:{row:2,col:6},orientation:'V',length:1},
+        {anchor:{row:3,col:6},orientation:'V',length:3},
+        {anchor:{row:6,col:6},orientation:'V',length:1},{anchor:{row:7,col:6},orientation:'V',length:2},
+        // H walls sealing top corners at row 2
+        {anchor:{row:2,col:0},orientation:'H',length:2},
+        {anchor:{row:2,col:7},orientation:'H',length:2},
+        // H walls sealing bottom corners at row 6
+        {anchor:{row:6,col:0},orientation:'H',length:2},
+        {anchor:{row:6,col:7},orientation:'H',length:2},
       ]},
     { bossName:'Vael', bossTitle:'the Maze Keeper', faction:'Architects',
       passiveId:'magnus', ultimateId:'thorne',
       stats:{wallLimit:10, handSize:10, cardDraw:5, moveSpeed:1, energy:3, ultimateCost:5},
       deck:['AR1','AR1','BB','BB','BB','BB','CB','CB','AR3','AR3','AR2','AR5','AR9','AR11','RC','RC','AV','B08','B07','B04'],
-      boardName:'THE MAZE', boardDesc:'Staggered walls force a winding path. Vael knows every shortcut.',
+      boardName:'THE ARENA', boardDesc:'A walled box with narrow entrances. Vael controls the interior.',
       preWalls:[
-        {anchor:{row:1,col:0},orientation:'H',length:4},
-        {anchor:{row:3,col:4},orientation:'H',length:4},
-        {anchor:{row:5,col:0},orientation:'H',length:4},
-        {anchor:{row:7,col:4},orientation:'H',length:4},
+        // Top wall of box at row 2, gap at col 4
+        {anchor:{row:2,col:2},orientation:'H',length:2},
+        {anchor:{row:2,col:5},orientation:'H',length:2},
+        // Bottom wall of box at row 6, gap at col 4
+        {anchor:{row:6,col:2},orientation:'H',length:2},
+        {anchor:{row:6,col:5},orientation:'H',length:2},
+        // Left V wall of box, col 2
+        {anchor:{row:2,col:2},orientation:'V',length:4},
+        // Right V wall of box, col 6
+        {anchor:{row:2,col:6},orientation:'V',length:4},
       ]},
   ],
   8: [
@@ -2733,22 +2749,36 @@ const GAUNTLET_BOSSES = {
       passiveId:'thorne', ultimateId:'thorne', // Reveal + Reposition walls
       stats:{wallLimit:8, handSize:10, cardDraw:5, moveSpeed:1, energy:3, ultimateCost:5},
       deck:['WD1','WD1','WD2','WD2','WD3','WD3','WD4','WD6','WD8','WD12','BB','BB','BB','RC','RC','AV','AV','CB','B07','B09'],
-      boardName:'THE CAGE', boardDesc:'A walled box dominates the center. Ghrel controls the edges.',
+      boardName:'THE CAGE', boardDesc:'A massive enclosed cage spans the board. Only one way in from each side.',
       preWalls:[
-        {anchor:{row:2,col:3},orientation:'H',length:3},
-        {anchor:{row:5,col:3},orientation:'H',length:3},
-        {anchor:{row:3,col:2},orientation:'V',length:3},
-        {anchor:{row:3,col:5},orientation:'V',length:3},
+        // Top wall at row 1: spans col 1-4 and 5-8, gap at col 4
+        {anchor:{row:1,col:1},orientation:'H',length:3},
+        {anchor:{row:1,col:5},orientation:'H',length:3},
+        // Bottom wall at row 7: spans col 1-4 and 5-8, gap at col 4
+        {anchor:{row:7,col:1},orientation:'H',length:3},
+        {anchor:{row:7,col:5},orientation:'H',length:3},
+        // Left V wall, col 1
+        {anchor:{row:1,col:1},orientation:'V',length:3},{anchor:{row:4,col:1},orientation:'V',length:3},
+        // Right V wall, col 7
+        {anchor:{row:1,col:7},orientation:'V',length:3},{anchor:{row:4,col:7},orientation:'V',length:3},
+        // Internal staggered H walls for obstacle
+        {anchor:{row:3,col:3},orientation:'H',length:2},
+        {anchor:{row:5,col:4},orientation:'H',length:2},
       ]},
     { bossName:'Nira', bossTitle:'the Phantom Queen', faction:'Phantoms',
       passiveId:'nyx', ultimateId:'nyx', // Illusory Trail + Invisibility
       stats:{wallLimit:9, handSize:10, cardDraw:5, moveSpeed:1, energy:3, ultimateCost:3},
       deck:['PH1','PH1','PH1','PH2','PH2','PH3','PH3','PH4','PH8','PH10','PH16','BB','BB','RC','AV','AV','QS','QS','B01','B07'],
-      boardName:'THE FUNNEL', boardDesc:'Wide at edges, narrow in the center. Nira vanishes through the gap.',
+      boardName:'THE MIRROR', boardDesc:'Symmetric S-curves force a winding path. Nira exploits every blind spot.',
       preWalls:[
-        {anchor:{row:3,col:0},orientation:'V',length:3},{anchor:{row:3,col:1},orientation:'V',length:3},
-        {anchor:{row:3,col:7},orientation:'V',length:3},{anchor:{row:3,col:8},orientation:'V',length:3},
-        {anchor:{row:4,col:2},orientation:'H',length:2},{anchor:{row:4,col:5},orientation:'H',length:2},
+        // S-curve: alternating long H walls with gaps on opposite sides
+        {anchor:{row:1,col:0},orientation:'H',length:4},{anchor:{row:1,col:4},orientation:'H',length:3},  // row 1: gap at col 7-8
+        {anchor:{row:2,col:6},orientation:'V',length:1},  // V wall forces turn at col 6
+        {anchor:{row:3,col:1},orientation:'H',length:3},{anchor:{row:3,col:4},orientation:'H',length:4},  // row 3: gap at col 0
+        {anchor:{row:4,col:1},orientation:'V',length:1},  // V wall forces turn at col 1
+        {anchor:{row:5,col:0},orientation:'H',length:3},{anchor:{row:5,col:3},orientation:'H',length:4},  // row 5: gap at col 7-8
+        {anchor:{row:6,col:6},orientation:'V',length:1},  // V wall forces turn at col 6
+        {anchor:{row:7,col:1},orientation:'H',length:3},{anchor:{row:7,col:4},orientation:'H',length:4},  // row 7: gap at col 0
       ]},
   ],
   12: [
@@ -2756,26 +2786,42 @@ const GAUNTLET_BOSSES = {
       passiveId:'pushaman', ultimateId:'pushaman', // Chad Aura + Breach
       stats:{wallLimit:8, handSize:10, cardDraw:5, moveSpeed:1, energy:3, ultimateCost:4},
       deck:['PU2','PU2','PU3','PU3','PU4','PU4','PU7','PU9','PU9','PU11','PU12','BB','BB','BB','RC','AV','AV','AV','CB','B07'],
-      boardName:'THE PIT', boardDesc:'A tiny walled arena. Nowhere to hide from Ruk.',
+      boardName:'THE PIT', boardDesc:'A tight walled pit with side corridors. Ruk pushes you into corners.',
       preWalls:[
-        {anchor:{row:1,col:0},orientation:'H',length:3},{anchor:{row:1,col:3},orientation:'H',length:3},{anchor:{row:1,col:6},orientation:'H',length:2},
-        {anchor:{row:6,col:0},orientation:'H',length:3},{anchor:{row:6,col:3},orientation:'H',length:3},{anchor:{row:6,col:6},orientation:'H',length:2},
-        {anchor:{row:2,col:1},orientation:'V',length:2},{anchor:{row:4,col:1},orientation:'V',length:2},
-        {anchor:{row:2,col:6},orientation:'V',length:2},{anchor:{row:4,col:6},orientation:'V',length:2},
+        // Top of pit at row 1, gap at col 4 for entry
+        {anchor:{row:1,col:2},orientation:'H',length:2},
+        {anchor:{row:1,col:5},orientation:'H',length:2},
+        // Bottom of pit at row 7, gap at col 4 for entry
+        {anchor:{row:7,col:2},orientation:'H',length:2},
+        {anchor:{row:7,col:5},orientation:'H',length:2},
+        // Left V walls with side corridor
+        {anchor:{row:1,col:2},orientation:'V',length:2},
+        {anchor:{row:5,col:2},orientation:'V',length:2},
+        // Right V walls with side corridor
+        {anchor:{row:1,col:6},orientation:'V',length:2},
+        {anchor:{row:5,col:6},orientation:'V',length:2},
+        // Side walls extending to edges at row 3 and row 5
+        {anchor:{row:3,col:0},orientation:'H',length:2},
+        {anchor:{row:3,col:7},orientation:'H',length:2},
+        {anchor:{row:5,col:0},orientation:'H',length:2},
+        {anchor:{row:5,col:7},orientation:'H',length:2},
       ]},
     { bossName:'Wyrd', bossTitle:'the Timeweaver', faction:'Chronists',
       passiveId:'vex', ultimateId:'vex', // Echo Chamber + Temporal Fold
       stats:{wallLimit:9, handSize:10, cardDraw:6, moveSpeed:1, energy:3, ultimateCost:3},
       deck:['CH1','CH1','CH3','CH3','CH6','CH6','CH8','CH10','CH12','CH13','BB','BB','BB','RC','RC','AV','AV','CB','B07','B12'],
-      boardName:'THE LABYRINTH', boardDesc:'Dense permanent walls form a puzzle. Wyrd warps time to navigate.',
+      boardName:'THE CLOCKTOWER', boardDesc:'Spiraling walls force a twisting path. Wyrd manipulates time inside.',
       preWalls:[
-        {anchor:{row:1,col:1},orientation:'H',length:2},{anchor:{row:1,col:5},orientation:'H',length:2},
-        {anchor:{row:2,col:3},orientation:'V',length:2},
-        {anchor:{row:3,col:0},orientation:'H',length:2},{anchor:{row:3,col:6},orientation:'H',length:2},
-        {anchor:{row:4,col:2},orientation:'V',length:2},{anchor:{row:4,col:5},orientation:'V',length:2},
-        {anchor:{row:5,col:3},orientation:'H',length:3},
-        {anchor:{row:6,col:1},orientation:'V',length:2},{anchor:{row:6,col:7},orientation:'V',length:2},
-        {anchor:{row:7,col:3},orientation:'H',length:2},
+        // Outer box
+        {anchor:{row:1,col:1},orientation:'H',length:3},{anchor:{row:1,col:5},orientation:'H',length:3}, // top, gap col 4
+        {anchor:{row:7,col:1},orientation:'H',length:3},{anchor:{row:7,col:5},orientation:'H',length:3}, // bottom, gap col 4
+        {anchor:{row:1,col:1},orientation:'V',length:3},{anchor:{row:5,col:1},orientation:'V',length:2}, // left wall
+        {anchor:{row:1,col:7},orientation:'V',length:2},{anchor:{row:4,col:7},orientation:'V',length:3}, // right wall
+        // Inner spiral walls
+        {anchor:{row:3,col:3},orientation:'H',length:2}, // inner top
+        {anchor:{row:5,col:4},orientation:'H',length:2}, // inner bottom
+        {anchor:{row:3,col:3},orientation:'V',length:1}, // inner left
+        {anchor:{row:4,col:5},orientation:'V',length:1}, // inner right
       ]},
   ],
   15: [
@@ -2783,15 +2829,26 @@ const GAUNTLET_BOSSES = {
       passiveId:'magnus', ultimateId:'pushaman', // Master Mason walls + Breach teleport
       stats:{wallLimit:16, handSize:10, cardDraw:7, moveSpeed:2, energy:5, ultimateCost:3},
       deck:['AR1','AR1','AR1','AR11','AR15','AR15','BB','BB','CB','CB','AR2','AR3','AR5','AR9','AR9','RC','AV','AV','B08','B08'],
-      boardName:'THE FINAL CORRIDOR', boardDesc:'A deadly 3-column corridor. Ozryn seals every path.',
+      boardName:'THE FINAL ARENA', boardDesc:'A massive enclosed arena with internal barriers. Ozryn traps you inside.',
       preWalls:[
-        {anchor:{row:0,col:2},orientation:'V',length:2},{anchor:{row:2,col:2},orientation:'V',length:2},
-        {anchor:{row:4,col:2},orientation:'V',length:2},{anchor:{row:6,col:2},orientation:'V',length:2},
-        {anchor:{row:0,col:5},orientation:'V',length:2},{anchor:{row:2,col:5},orientation:'V',length:2},
-        {anchor:{row:4,col:5},orientation:'V',length:2},{anchor:{row:6,col:5},orientation:'V',length:2},
-        {anchor:{row:2,col:3},orientation:'H',length:1},
-        {anchor:{row:4,col:3},orientation:'H',length:2},
-        {anchor:{row:6,col:3},orientation:'H',length:1},
+        // Outer box: top wall row 1, gap at col 4
+        {anchor:{row:1,col:0},orientation:'H',length:2},{anchor:{row:1,col:2},orientation:'H',length:2},
+        {anchor:{row:1,col:5},orientation:'H',length:2},{anchor:{row:1,col:7},orientation:'H',length:2},
+        // Outer box: bottom wall row 7, gap at col 4
+        {anchor:{row:7,col:0},orientation:'H',length:2},{anchor:{row:7,col:2},orientation:'H',length:2},
+        {anchor:{row:7,col:5},orientation:'H',length:2},{anchor:{row:7,col:7},orientation:'H',length:2},
+        // Left outer V wall
+        {anchor:{row:1,col:0},orientation:'V',length:3},{anchor:{row:4,col:0},orientation:'V',length:3},
+        // Right outer V wall
+        {anchor:{row:1,col:8},orientation:'V',length:3},{anchor:{row:4,col:8},orientation:'V',length:3},
+        // Internal cross walls — V walls creating inner chambers
+        {anchor:{row:2,col:3},orientation:'V',length:2},
+        {anchor:{row:5,col:3},orientation:'V',length:2},
+        {anchor:{row:2,col:5},orientation:'V',length:2},
+        {anchor:{row:5,col:5},orientation:'V',length:2},
+        // Mid H wall with gaps at edges for internal maze
+        {anchor:{row:4,col:1},orientation:'H',length:2},
+        {anchor:{row:4,col:6},orientation:'H',length:2},
       ]},
   ],
 };
@@ -3210,7 +3267,7 @@ const CARDS = {
   WD11:{ id:'WD11',name:'Warden\'s Decree', faction:'Wardens', rarity:'Rare',   type:'Disruption',
          desc:'Opponent skips their card play phase next turn (may still move).', energyCost:3 },
   WD12:{ id:'WD12',name:'Conscription',   faction:'Wardens', rarity:'Common',   type:'Disruption',
-         desc:'Draw 2 cards (if below hand limit). Opponent draws 1 (if below their limit).', instant: true, energyCost:0 },
+         desc:'(Instant) Draw 2 cards. Opponent gains +1 energy next turn.', instant: true, energyCost:0 },
   WD14:{ id:'WD14',name:'Evidence Locker', faction:'Wardens', rarity:'Rare',    type:'Disruption',
          desc:'Exile the top card of opponent discard (removed from game). Draw 1 card.', energyCost:2 },
   WD15:{ id:'WD15',name:'Martial Law',    faction:'Wardens', rarity:'Legendary', type:'Disruption',
@@ -7176,11 +7233,12 @@ async function runAI() {
       if (s > bestCardScore) { secondBestCardScore = bestCardScore; secondBestCardAction = bestCardAction; bestCardScore = s; bestCardAction = {kind:'disruption', subkind:'decree', card}; }
     }
 
-    // WD12 Conscription: draw 2, opponent draws 1 — better when hand is low
+    // WD12 Conscription: draw 2 (instant, free) — opponent gains +1 energy next turn
     if (card.id === 'WD12') {
-      const aiHandLimit = gameState.players[pi].champion.handSize || 5;
+      const aiHandLimit = gameState.players[pi].champion.handSize || 10;
       const aiDeckSize = gameState.players[pi].deck?.length || 0;
-      const s = (st.aiHand.length < aiHandLimit ? 4 : 1) + (aiDeckSize > 0 ? 2 : 0);
+      // Still good when hand is low, but slightly penalized for giving opponent energy
+      const s = (st.aiHand.length < aiHandLimit ? 3 : 0) + (aiDeckSize > 0 ? 2 : 0);
       if (s > bestCardScore) { secondBestCardScore = bestCardScore; secondBestCardAction = bestCardAction; bestCardScore = s; bestCardAction = {kind:'disruption', subkind:'conscription', card}; }
     }
 
@@ -7814,6 +7872,26 @@ async function runAI() {
 
   // PHASE 4 — execute move (skip if Binding Wall effect active)
   // ══════════════════════════════════════════════════════════════════
+  // Recalculate best move: wall state may have changed from card plays (RC, B14, etc.)
+  if (!hasMoved) {
+    const postSt = snap();
+    const postLegal = getLegalMoves(gameState, pi);
+    if (postLegal.length) {
+      const goalRow = getGoalRow(pi);
+      let recalcBest = null, recalcDist = Infinity;
+      for (const dest of postLegal) {
+        const d = bfsDistanceFor(dest, goalRow, postSt.walls, pi);
+        if (d < recalcDist) { recalcDist = d; recalcBest = dest; }
+      }
+      if (recalcBest) {
+        const oldDist = bestMoveDest ? bfsDistanceFor(bestMoveDest, goalRow, postSt.walls, pi) : Infinity;
+        if (recalcDist < oldDist || !bestMoveDest) {
+          console.log('[AI] Recalculated move after card plays:', bestMoveDest, '→', recalcBest, '(dist', oldDist, '→', recalcDist, ')');
+          bestMoveDest = recalcBest;
+        }
+      }
+    }
+  }
   const isAIBound = (gameState.players[AI_PLAYER].statusEffects || []).some(e => (e.type === 'skip_move' || e.type === 'bound') && e.turnsRemaining > 0);
   if (bestMoveDest && !hasMoved && !isAIBound) {
     // Phantom probe moves target a cell through a (suspected) phantom wall edge.
@@ -9222,32 +9300,68 @@ async function gauntletPickCard(idx) {
 function showEliteStatChoice() {
   const overlay = document.getElementById('gauntlet-reward-overlay');
   if (!overlay) return;
-  const upgrades = [
-    {stat:'wallLimit', label:'+1 Wall Limit', current: _gauntletRun.champion.wallLimit},
-    {stat:'cardDraw', label:'+1 Card Draw', current: _gauntletRun.champion.cardDraw},
-    {stat:'energy', label:'+1 Energy', current: _gauntletRun.champion.energy || 3},
+
+  // Weighted pool: common upgrades appear more often, rare ones less
+  const pool = [
+    {stat:'cardDraw',    label:'+1 Card Draw',     weight:35, color:'#4ade80'},
+    {stat:'wallLimit',   label:'+1 Wall Limit',    weight:30, color:'#60a5fa'},
+    {stat:'ultimateCost',label:'-1 Ultimate Cost',  weight:10, color:'#c084fc', delta:-1},
+    {stat:'energy',      label:'+1 Energy',         weight:5,  color:'#fbbf24'},
   ];
-  const html = upgrades.map((u, i) => `
-    <div onclick="gauntletElitePickStat(${i})" style="cursor:pointer;background:var(--surface);border:2px solid #f59e0b;
-      padding:16px 20px;width:150px;text-align:center;transition:transform 0.15s;"
+
+  // Weighted random pick without replacement → pick 2
+  function weightedPick(items) {
+    const total = items.reduce((s, i) => s + i.weight, 0);
+    let r = Math.random() * total;
+    for (const item of items) {
+      r -= item.weight;
+      if (r <= 0) return item;
+    }
+    return items[items.length - 1];
+  }
+
+  const remaining = [...pool];
+  const picks = [];
+  for (let i = 0; i < 2 && remaining.length; i++) {
+    const pick = weightedPick(remaining);
+    picks.push({
+      ...pick,
+      current: pick.stat === 'ultimateCost'
+        ? (_gauntletRun.champion[pick.stat] || 6)
+        : (_gauntletRun.champion[pick.stat] || 3),
+    });
+    remaining.splice(remaining.indexOf(pick), 1);
+  }
+
+  const html = picks.map((u, i) => {
+    const deltaLabel = u.delta === -1 ? '-1' : '+1';
+    const previewVal = u.delta === -1
+      ? Math.max(1, u.current - 1)
+      : u.current + 1;
+    return `<div onclick="gauntletElitePickStat(${i})" style="cursor:pointer;background:var(--surface);border:2px solid ${u.color};
+      padding:20px 24px;width:170px;text-align:center;transition:transform 0.15s;border-radius:4px;"
       onmouseover="this.style.transform='scale(1.05)'" onmouseout="this.style.transform='scale(1)'">
-      <div style="font-family:'Teko',sans-serif;font-size:18px;color:#f59e0b;">${u.label}</div>
-      <div style="font-size:10px;color:#888;margin-top:4px;">Currently: ${u.current}</div>
-    </div>
-  `).join('');
+      <div style="font-family:'Teko',sans-serif;font-size:22px;color:${u.color};">${u.label}</div>
+      <div style="font-size:11px;color:#888;margin-top:6px;">${u.current} → <span style="color:${u.color}">${previewVal}</span></div>
+    </div>`;
+  }).join('');
+
   overlay.innerHTML = `
     <div style="font-family:'Teko',sans-serif;font-size:28px;color:#f59e0b;margin-bottom:4px;">⚡ ELITE BONUS</div>
-    <div style="font-size:12px;color:var(--text-dim);margin-bottom:8px;">Card added! Now choose a stat upgrade:</div>
-    <div style="display:flex;gap:12px;margin-bottom:24px;flex-wrap:wrap;justify-content:center;">${html}</div>
+    <div style="font-size:12px;color:var(--text-dim);margin-bottom:12px;">Card added! Choose one stat upgrade:</div>
+    <div style="display:flex;gap:16px;margin-bottom:24px;flex-wrap:wrap;justify-content:center;">${html}</div>
   `;
-  overlay._eliteUpgrades = upgrades;
+  overlay._eliteUpgrades = picks;
 }
 
 async function gauntletElitePickStat(idx) {
   const overlay = document.getElementById('gauntlet-reward-overlay');
   if (!overlay?._eliteUpgrades) return;
   const upgrade = overlay._eliteUpgrades[idx];
-  _gauntletRun.champion[upgrade.stat] = (_gauntletRun.champion[upgrade.stat] || 3) + 1;
+  const delta = upgrade.delta || 1;
+  const defaultVal = upgrade.stat === 'ultimateCost' ? 6 : 3;
+  _gauntletRun.champion[upgrade.stat] = (_gauntletRun.champion[upgrade.stat] || defaultVal) + delta;
+  if (upgrade.stat === 'ultimateCost') _gauntletRun.champion[upgrade.stat] = Math.max(1, _gauntletRun.champion[upgrade.stat]);
   if (_userProfile) await saveUserProfile({ gauntlet_run: _gauntletRun });
   // Show confirmation, then advance button
   overlay.innerHTML = `
@@ -12571,21 +12685,17 @@ async function applyDisruptionCard(pi, card, idx) {
     renderAll(); showStatus('Warden\'s Decree: opponent\'s card play denied!', 'success'); return;
   }
 
-  // ── WD12: Conscription — draw 2, all opponents draw 1 ──
+  // ── WD12: Conscription — draw 2, opponent gains +1 energy next turn ──
   if (card.id === 'WD12') {
     discardCard(pi, idx); countCardPlayed(pi); selectedCard = null;
     drawCards(pi, 2, true);
     const allOpps = getOpponents(pi);
-    if (gameMode === 'mp') {
-      if (!gameState._bonusDraws) gameState._bonusDraws = {};
-      for (const oi of allOpps) gameState._bonusDraws[oi] = (gameState._bonusDraws[oi] || 0) + 1;
-      addLog(pi, 'card', `Conscription: drew 2, ${allOpps.length} opponent(s) get +1 draw next turn`);
-    } else {
-      for (const oi of allOpps) drawCards(oi, 1);
-      addLog(pi, 'card', `Conscription: drew 2, ${allOpps.length} opponent(s) drew 1`);
+    for (const oi of allOpps) {
+      gameState.players[oi].energyNextTurnBonus = (gameState.players[oi].energyNextTurnBonus || 0) + 1;
     }
+    addLog(pi, 'card', `Conscription: drew 2, opponent(s) gain +1 energy next turn`);
     if (isTurnDone()) gameState.phase = 'end_turn';
-    renderAll(); showStatus('Conscription: drew 2, opponents drew 1', 'success'); return;
+    renderAll(); showStatus('Conscription: drew 2! Opponents gain +1 energy next turn', 'success'); return;
   }
 
   // ── WD14: Evidence Locker — exile top of opponent discard, draw 1 ──
