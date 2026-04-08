@@ -99,7 +99,7 @@
   /* ── Main layout ───────────────────────────────────────────────── */
   main {
     display: grid;
-    grid-template-columns: 220px 1fr 220px;
+    grid-template-columns: 220px 1fr 220px 150px;
     gap: 0;
     flex: 1;
     padding: 0;
@@ -137,6 +137,58 @@
     border-right: none;
     border-left: 1px solid var(--border);
   }
+
+  /* ── Card History Panel ─────────────────────────────────────────── */
+  .card-history-panel {
+    background: var(--surface);
+    border-left: 1px solid var(--border);
+    padding: 12px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    overflow-y: auto;
+  }
+  main.layout-bottom .card-history-panel { display: none; }
+  .card-history-label {
+    font-family: 'Teko', sans-serif;
+    font-size: 14px;
+    font-weight: 500;
+    letter-spacing: 0.15em;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    margin-bottom: 4px;
+  }
+  .history-card {
+    padding: 6px 8px;
+    border-radius: 3px;
+    border-left: 3px solid var(--border);
+    background: var(--surface2);
+    font-size: 9px;
+    line-height: 1.3;
+  }
+  .history-card .hc-name {
+    font-weight: 600;
+    font-size: 10px;
+    margin-bottom: 2px;
+  }
+  .history-card .hc-player {
+    font-size: 8px;
+    letter-spacing: 0.08em;
+    opacity: 0.6;
+    margin-bottom: 1px;
+  }
+  .history-card .hc-type {
+    font-size: 8px;
+    letter-spacing: 0.1em;
+    opacity: 0.5;
+  }
+  .history-card.hc-p0 { border-left-color: var(--p0); }
+  .history-card.hc-p1 { border-left-color: var(--p1); }
+  .history-card.hc-p2 { border-left-color: #50c878; }
+  .history-card.hc-p3 { border-left-color: #c878c8; }
+  .history-card.hc-wall .hc-name { color: #8a9ab0; }
+  .history-card.hc-movement .hc-name { color: #80c080; }
+  .history-card.hc-disruption .hc-name { color: #c0a060; }
   .panel-label {
     font-family: 'Teko', sans-serif;
     font-size: 13px;
@@ -2273,15 +2325,15 @@
           <div class="stat-value" id="p0-walls">0/5</div>
         </div>
         <div class="stat">
-          <div class="stat-label">HAND</div>
-          <div class="stat-value" id="p0-hand-count">0/4</div>
+          <div class="stat-label">ENERGY</div>
+          <div class="stat-value" id="p0-energy-stat" style="color:var(--amber)">3</div>
         </div>
         <div class="stat">
           <div class="stat-label">SPEED</div>
           <div class="stat-value" id="p0-speed">1</div>
         </div>
         <div class="stat">
-          <div class="stat-label">OPENING</div>
+          <div class="stat-label">DRAW</div>
           <div class="stat-value" id="p0-draw">2</div>
         </div>
       </div>
@@ -2359,15 +2411,15 @@
           <div class="stat-value" id="p1-walls">0/2</div>
         </div>
         <div class="stat">
-          <div class="stat-label">HAND</div>
-          <div class="stat-value" id="p1-hand-count">0/4</div>
+          <div class="stat-label">ENERGY</div>
+          <div class="stat-value" id="p1-energy-stat" style="color:var(--amber)">3</div>
         </div>
         <div class="stat">
           <div class="stat-label">SPEED</div>
           <div class="stat-value" id="p1-speed">1</div>
         </div>
         <div class="stat">
-          <div class="stat-label">OPENING</div>
+          <div class="stat-label">DRAW</div>
           <div class="stat-value" id="p1-draw">4</div>
         </div>
       </div>
@@ -2429,8 +2481,8 @@
       <!-- Stats -->
       <div style="padding:10px 16px;border-right:1px solid var(--border);display:flex;gap:16px;align-items:center;">
         <div style="text-align:center;">
-          <div style="font-size:8px;color:var(--text-dim);letter-spacing:.12em;">HAND</div>
-          <div id="bp-hand-count" style="font-family:'Teko',sans-serif;font-size:18px;color:#ccc;line-height:1;">0/4</div>
+          <div style="font-size:8px;color:var(--text-dim);letter-spacing:.12em;">ENERGY</div>
+          <div id="bp-energy-count" style="font-family:'Teko',sans-serif;font-size:18px;color:var(--amber);line-height:1;">3/3</div>
         </div>
         <div style="text-align:center;">
           <div style="font-size:8px;color:var(--text-dim);letter-spacing:.12em;">SPEED</div>
@@ -2448,6 +2500,12 @@
     <div style="padding:8px 16px;max-width:1400px;margin:0 auto;">
       <div id="bp-hand"></div>
     </div>
+  </div>
+
+  <!-- Card Play History -->
+  <div class="card-history-panel" id="card-history-panel">
+    <div class="card-history-label">HISTORY</div>
+    <div id="card-history-list"></div>
   </div>
 </main>
 
@@ -2609,10 +2667,10 @@ const GAUNTLET_REMOVAL_COST = {1:0,2:0,3:0,4:0,5:0,6:0,7:10,8:10,9:15,10:15,11:2
 const GAUNTLET_BOSS_PROMOTION = {4:'Uncommon',8:'Rare',12:'Epic',15:'Legendary'};
 
 const GAUNTLET_BOSS_UPGRADES = {
-  4:[{id:'wall2',label:'+2 Wall Limit',stat:'wallLimit',delta:2},{id:'hand1',label:'+1 Hand Size',stat:'handSize',delta:1},{id:'draw1',label:'+1 Card Draw',stat:'cardDraw',delta:1},{id:'ult1',label:'-1 Ultimate Cost',stat:'ultimateCost',delta:-1}],
-  8:[{id:'wall3',label:'+3 Wall Limit',stat:'wallLimit',delta:3},{id:'hand1',label:'+1 Hand Size',stat:'handSize',delta:1},{id:'draw1',label:'+1 Card Draw',stat:'cardDraw',delta:1},{id:'ult2',label:'-2 Ultimate Cost',stat:'ultimateCost',delta:-2}],
-  12:[{id:'wall3',label:'+3 Wall Limit',stat:'wallLimit',delta:3},{id:'hand2',label:'+2 Hand Size',stat:'handSize',delta:2},{id:'draw2',label:'+2 Card Draw',stat:'cardDraw',delta:2},{id:'ult2',label:'-2 Ultimate Cost',stat:'ultimateCost',delta:-2}],
-  15:[{id:'wall4',label:'+4 Wall Limit',stat:'wallLimit',delta:4},{id:'hand2',label:'+2 Hand Size',stat:'handSize',delta:2},{id:'draw2',label:'+2 Card Draw',stat:'cardDraw',delta:2},{id:'ult3',label:'-3 Ultimate Cost',stat:'ultimateCost',delta:-3}],
+  4:[{id:'wall2',label:'+2 Wall Limit',stat:'wallLimit',delta:2},{id:'draw1',label:'+1 Card Draw',stat:'cardDraw',delta:1},{id:'ult1',label:'-1 Ultimate Cost',stat:'ultimateCost',delta:-1}],
+  8:[{id:'wall3',label:'+3 Wall Limit',stat:'wallLimit',delta:3},{id:'draw1',label:'+1 Card Draw',stat:'cardDraw',delta:1},{id:'ult2',label:'-2 Ultimate Cost',stat:'ultimateCost',delta:-2}],
+  12:[{id:'wall3',label:'+3 Wall Limit',stat:'wallLimit',delta:3},{id:'draw2',label:'+2 Card Draw',stat:'cardDraw',delta:2},{id:'ult2',label:'-2 Ultimate Cost',stat:'ultimateCost',delta:-2},{id:'energy1',label:'+1 Energy',stat:'energy',delta:1}],
+  15:[{id:'wall4',label:'+4 Wall Limit',stat:'wallLimit',delta:4},{id:'draw2',label:'+2 Card Draw',stat:'cardDraw',delta:2},{id:'ult3',label:'-3 Ultimate Cost',stat:'ultimateCost',delta:-3},{id:'energy1',label:'+1 Energy',stat:'energy',delta:1}],
 };
 
 // Gold: in-gauntlet currency for shops
@@ -2648,7 +2706,7 @@ const GAUNTLET_BOSSES = {
   4: [
     { bossName:'Kael', bossTitle:'the Wallwright', faction:'Architects',
       passiveId:'magnus', ultimateId:'magnus', // Master Mason passive + ult
-      stats:{wallLimit:12, handSize:7, cardDraw:5, moveSpeed:1, ultimateCost:4},
+      stats:{wallLimit:12, handSize:10, cardDraw:5, moveSpeed:1, energy:4, ultimateCost:4},
       // Tailored deck: heavy wall cards to exploit the narrow board
       deck:['AR1','AR1','AR1','BB','BB','BB','BB','CB','CB','AR2','AR2','AR3','AR5','AR9','RC','AV','B08','B08','B07','B04'],
       boardName:'THE NARROW', boardDesc:'Walled-off edges create a 5-column corridor. Kael fills it with walls.',
@@ -2660,7 +2718,7 @@ const GAUNTLET_BOSSES = {
       ]},
     { bossName:'Vael', bossTitle:'the Maze Keeper', faction:'Architects',
       passiveId:'magnus', ultimateId:'thorne',
-      stats:{wallLimit:10, handSize:6, cardDraw:5, moveSpeed:1, ultimateCost:5},
+      stats:{wallLimit:10, handSize:10, cardDraw:5, moveSpeed:1, energy:3, ultimateCost:5},
       deck:['AR1','AR1','BB','BB','BB','BB','CB','CB','AR3','AR3','AR2','AR5','AR9','AR11','RC','RC','AV','B08','B07','B04'],
       boardName:'THE MAZE', boardDesc:'Staggered walls force a winding path. Vael knows every shortcut.',
       preWalls:[
@@ -2673,7 +2731,7 @@ const GAUNTLET_BOSSES = {
   8: [
     { bossName:'Ghrel', bossTitle:'the Cage Master', faction:'Wardens',
       passiveId:'thorne', ultimateId:'thorne', // Reveal + Reposition walls
-      stats:{wallLimit:8, handSize:7, cardDraw:5, moveSpeed:1, ultimateCost:5},
+      stats:{wallLimit:8, handSize:10, cardDraw:5, moveSpeed:1, energy:3, ultimateCost:5},
       deck:['WD1','WD1','WD2','WD2','WD3','WD3','WD4','WD6','WD8','WD12','BB','BB','BB','RC','RC','AV','AV','CB','B07','B09'],
       boardName:'THE CAGE', boardDesc:'A walled box dominates the center. Ghrel controls the edges.',
       preWalls:[
@@ -2684,7 +2742,7 @@ const GAUNTLET_BOSSES = {
       ]},
     { bossName:'Nira', bossTitle:'the Phantom Queen', faction:'Phantoms',
       passiveId:'nyx', ultimateId:'nyx', // Illusory Trail + Invisibility
-      stats:{wallLimit:9, handSize:6, cardDraw:5, moveSpeed:1, ultimateCost:3},
+      stats:{wallLimit:9, handSize:10, cardDraw:5, moveSpeed:1, energy:3, ultimateCost:3},
       deck:['PH1','PH1','PH1','PH2','PH2','PH3','PH3','PH4','PH8','PH10','PH16','BB','BB','RC','AV','AV','QS','QS','B01','B07'],
       boardName:'THE FUNNEL', boardDesc:'Wide at edges, narrow in the center. Nira vanishes through the gap.',
       preWalls:[
@@ -2696,7 +2754,7 @@ const GAUNTLET_BOSSES = {
   12: [
     { bossName:'Ruk', bossTitle:'the Pit Fighter', faction:'Pushers',
       passiveId:'pushaman', ultimateId:'pushaman', // Chad Aura + Breach
-      stats:{wallLimit:8, handSize:6, cardDraw:5, moveSpeed:1, ultimateCost:4},
+      stats:{wallLimit:8, handSize:10, cardDraw:5, moveSpeed:1, energy:3, ultimateCost:4},
       deck:['PU2','PU2','PU3','PU3','PU4','PU4','PU7','PU9','PU9','PU11','PU12','BB','BB','BB','RC','AV','AV','AV','CB','B07'],
       boardName:'THE PIT', boardDesc:'A tiny walled arena. Nowhere to hide from Ruk.',
       preWalls:[
@@ -2707,7 +2765,7 @@ const GAUNTLET_BOSSES = {
       ]},
     { bossName:'Wyrd', bossTitle:'the Timeweaver', faction:'Chronists',
       passiveId:'vex', ultimateId:'vex', // Echo Chamber + Temporal Fold
-      stats:{wallLimit:9, handSize:8, cardDraw:6, moveSpeed:1, ultimateCost:3},
+      stats:{wallLimit:9, handSize:10, cardDraw:6, moveSpeed:1, energy:3, ultimateCost:3},
       deck:['CH1','CH1','CH3','CH3','CH6','CH6','CH8','CH10','CH12','CH13','BB','BB','BB','RC','RC','AV','AV','CB','B07','B12'],
       boardName:'THE LABYRINTH', boardDesc:'Dense permanent walls form a puzzle. Wyrd warps time to navigate.',
       preWalls:[
@@ -2723,7 +2781,7 @@ const GAUNTLET_BOSSES = {
   15: [
     { bossName:'Ozryn', bossTitle:'the Corridor Lord', faction:'Architects',
       passiveId:'magnus', ultimateId:'pushaman', // Master Mason walls + Breach teleport
-      stats:{wallLimit:16, handSize:9, cardDraw:7, moveSpeed:2, ultimateCost:3},
+      stats:{wallLimit:16, handSize:10, cardDraw:7, moveSpeed:2, energy:5, ultimateCost:3},
       deck:['AR1','AR1','AR1','AR11','AR15','AR15','BB','BB','CB','CB','AR2','AR3','AR5','AR9','AR9','RC','AV','AV','B08','B08'],
       boardName:'THE FINAL CORRIDOR', boardDesc:'A deadly 3-column corridor. Ozryn seals every path.',
       preWalls:[
@@ -8232,7 +8290,7 @@ function showGauntletEntry() {
       onmouseover="this.style.borderColor='var(--amber)'" onmouseout="this.style.borderColor='var(--border)'">
       <div style="font-family:'Teko',sans-serif;font-size:22px;color:${col};">${c.name}</div>
       <div style="font-size:9px;color:var(--text-dim);letter-spacing:.12em;margin-bottom:6px;">${c.title} · ${c.faction}</div>
-      <div style="font-size:10px;color:#aaa;">W:${c.wallLimit} H:${c.handSize} D:${c.cardDraw} U:${c.ultimateCost}</div>
+      <div style="font-size:10px;color:#aaa;">W:${c.wallLimit} E:${c.energy||3} D:${c.cardDraw} U:${c.ultimateCost}</div>
       <div style="font-size:11px;color:var(--amber);margin-top:6px;">${c.passiveName}</div>
       <div style="font-size:10px;color:var(--text);line-height:1.3;margin-top:2px;">${c.passiveDesc}</div>
       <div style="font-size:11px;color:#f59e0b;margin-top:6px;">${c.ultimateName}</div>
@@ -8350,7 +8408,7 @@ function startGauntletNode(nodeId) {
       <div style="font-family:'Teko',sans-serif;font-size:30px;color:#e05050;margin-bottom:2px;">${b.bossName}</div>
       <div style="font-size:11px;color:#888;letter-spacing:.1em;margin-bottom:12px;">${b.bossTitle}</div>
       <div style="font-size:12px;color:${rc};margin-bottom:4px;">${bossRarity} · ${b.faction}</div>
-      <div style="font-size:11px;color:#ccc;margin-bottom:2px;">W:${b.stats.wallLimit} H:${b.stats.handSize} D:${b.stats.cardDraw} U:${b.stats.ultimateCost}</div>
+      <div style="font-size:11px;color:#ccc;margin-bottom:2px;">W:${b.stats.wallLimit} E:${b.stats.energy||3} D:${b.stats.cardDraw} U:${b.stats.ultimateCost}</div>
       <div style="font-size:10px;color:var(--amber);margin:6px 0 2px;">${CHAMPIONS[b.passiveId]?.passiveName || ''}</div>
       <div style="font-size:10px;color:#888;margin-bottom:4px;">${CHAMPIONS[b.passiveId]?.passiveDesc || ''}</div>
       <div style="font-size:10px;color:#f59e0b;margin-bottom:2px;">⚡ ${CHAMPIONS[b.ultimateId]?.ultimateName || ''}</div>
@@ -8576,9 +8634,9 @@ function showGauntletRandomEvent() {
       }},
     { title:'TRAINING GROUNDS', desc:'You practice and hone your skills.', good:true,
       execute: () => {
-        const stats = ['wallLimit','handSize','cardDraw'];
+        const stats = ['wallLimit','cardDraw'];
         const stat = stats[Math.floor(Math.random() * stats.length)];
-        const labels = {wallLimit:'Wall Limit',handSize:'Hand Size',cardDraw:'Card Draw'};
+        const labels = {wallLimit:'Wall Limit',cardDraw:'Card Draw'};
         _gauntletRun.champion[stat] = (_gauntletRun.champion[stat] || 3) + 1;
         return `+1 ${labels[stat]}!`;
       }},
@@ -8593,9 +8651,9 @@ function showGauntletRandomEvent() {
       }},
     { title:'STAT DRAIN', desc:'A dark force weakens your champion.', good:false,
       execute: () => {
-        const stats = ['wallLimit','handSize','cardDraw'];
+        const stats = ['wallLimit','cardDraw'];
         const stat = stats[Math.floor(Math.random() * stats.length)];
-        const labels = {wallLimit:'Wall Limit',handSize:'Hand Size',cardDraw:'Card Draw'};
+        const labels = {wallLimit:'Wall Limit',cardDraw:'Card Draw'};
         _gauntletRun.champion[stat] = Math.max(2, (_gauntletRun.champion[stat] || 3) - 1);
         return `-1 ${labels[stat]}! Champion weakened.`;
       }},
@@ -8877,9 +8935,10 @@ async function gauntletShopStatUpgrade() {
   const price = GAUNTLET_SHOP_PRICES.statUpgrade;
   if ((_gauntletRun.gold || 0) < price) return;
   _gauntletRun.gold -= price;
-  const stats = ['wallLimit','handSize','cardDraw'];
-  const stat = stats[Math.floor(Math.random() * stats.length)];
-  const labels = {wallLimit:'Wall Limit',handSize:'Hand Size',cardDraw:'Card Draw'};
+  // Energy is rare (10% chance), otherwise wall limit or card draw
+  const roll = Math.random();
+  const stat = roll < 0.1 ? 'energy' : (roll < 0.55 ? 'wallLimit' : 'cardDraw');
+  const labels = {wallLimit:'Wall Limit',cardDraw:'Card Draw',energy:'Energy'};
   _gauntletRun.champion[stat] = (_gauntletRun.champion[stat] || 3) + 1;
   if (_userProfile) await saveUserProfile({ gauntlet_run: _gauntletRun });
   showOverlayFeedback(`+1 ${labels[stat]}!`, 'success');
@@ -9165,8 +9224,8 @@ function showEliteStatChoice() {
   if (!overlay) return;
   const upgrades = [
     {stat:'wallLimit', label:'+1 Wall Limit', current: _gauntletRun.champion.wallLimit},
-    {stat:'handSize', label:'+1 Hand Size', current: _gauntletRun.champion.handSize},
     {stat:'cardDraw', label:'+1 Card Draw', current: _gauntletRun.champion.cardDraw},
+    {stat:'energy', label:'+1 Energy', current: _gauntletRun.champion.energy || 3},
   ];
   const html = upgrades.map((u, i) => `
     <div onclick="gauntletElitePickStat(${i})" style="cursor:pointer;background:var(--surface);border:2px solid #f59e0b;
@@ -9196,7 +9255,7 @@ async function gauntletElitePickStat(idx) {
     <div style="font-size:13px;color:#4ade80;margin-bottom:24px;">${_gauntletRun.champion.name} grows stronger!</div>
     <div style="background:var(--surface);border:1px solid var(--border);padding:12px 20px;margin-bottom:20px;text-align:center;">
       <div style="font-size:10px;color:var(--text-dim);margin-bottom:6px;">STATS</div>
-      <div style="font-size:12px;color:#ccc;">W:${_gauntletRun.champion.wallLimit} H:${_gauntletRun.champion.handSize} D:${_gauntletRun.champion.cardDraw} U:${_gauntletRun.champion.ultimateCost}</div>
+      <div style="font-size:12px;color:#ccc;">W:${_gauntletRun.champion.wallLimit} E:${_gauntletRun.champion.energy||3} D:${_gauntletRun.champion.cardDraw} U:${_gauntletRun.champion.ultimateCost}</div>
     </div>
     <button class="landing-btn amber" style="width:220px;" onclick="gauntletAdvanceStage();">CONTINUE →</button>
   `;
@@ -9328,7 +9387,7 @@ function showGauntletBossLeaveChoice() {
     <div style="font-size:12px;color:#aaa;margin-bottom:24px;">${_gauntletRun.champion.name} grows stronger</div>
     <div style="background:var(--surface);border:1px solid var(--border);padding:16px 24px;margin-bottom:24px;text-align:center;">
       <div style="font-size:10px;color:var(--text-dim);margin-bottom:8px;">CHAMPION STATS</div>
-      <div style="font-size:12px;color:#ccc;">W:${_gauntletRun.champion.wallLimit} H:${_gauntletRun.champion.handSize} D:${_gauntletRun.champion.cardDraw} U:${_gauntletRun.champion.ultimateCost} SPD:${_gauntletRun.champion.moveSpeed || 1}</div>
+      <div style="font-size:12px;color:#ccc;">W:${_gauntletRun.champion.wallLimit} E:${_gauntletRun.champion.energy||3} D:${_gauntletRun.champion.cardDraw} U:${_gauntletRun.champion.ultimateCost} SPD:${_gauntletRun.champion.moveSpeed || 1}</div>
     </div>
     <div style="font-size:13px;color:var(--text-dim);margin-bottom:16px;">
       ${isLastBoss ? 'You have conquered the Gauntlet!' : `Leave now to save your champion as ${promotedRarity}, or risk it all going deeper.`}
@@ -9370,7 +9429,7 @@ async function gauntletLeaveAlive() {
     <div style="background:var(--surface);border:2px solid ${rc};padding:20px 28px;margin-bottom:24px;">
       <div style="font-family:'Teko',sans-serif;font-size:24px;color:${rc};">${champion.name}</div>
       <div style="font-size:11px;color:#888;">${champion.title} · ${champion.faction}</div>
-      <div style="font-size:11px;color:#ccc;margin-top:6px;">W:${champion.wallLimit} H:${champion.handSize} D:${champion.cardDraw} U:${champion.ultimateCost}</div>
+      <div style="font-size:11px;color:#ccc;margin-top:6px;">W:${champion.wallLimit} E:${champion.energy||3} D:${champion.cardDraw} U:${champion.ultimateCost}</div>
     </div>
     <button class="landing-btn amber" style="width:200px;" onclick="document.getElementById('gauntlet-complete-overlay')?.remove();showLandingScreen();">CONTINUE</button>
   `;
@@ -9444,7 +9503,7 @@ function showGauntletMap(autoStartNext) {
           <span style="font-size:9px;color:#666;margin-left:6px;">${c.faction}</span>
         </div>
         <div style="display:flex;gap:10px;font-size:9px;color:#aaa;">
-          <span>W:${c.wallLimit}</span><span>H:${c.handSize}</span><span>D:${c.cardDraw}</span><span>SPD:${c.moveSpeed||1}</span>
+          <span>W:${c.wallLimit}</span><span>E:${c.energy||3}</span><span>D:${c.cardDraw}</span><span>SPD:${c.moveSpeed||1}</span>
         </div>
         <div style="font-size:10px;color:#888;">Deck: ${_gauntletRun.deck.length}</div>
         <div style="font-size:10px;color:var(--amber);">◆ ${_gauntletRun.earnedShards}</div>
@@ -10599,6 +10658,16 @@ function countCardPlayed(pi, _playedCard) {
   if (card && card.id && card.id !== '__breach__') {
     if (!gameState._cardHistory) gameState._cardHistory = [];
     gameState._cardHistory.push(card.id);
+  }
+  // Track card play history for UI panel
+  if (card && card.id && CARDS[card.id]) {
+    if (!gameState._playHistory) gameState._playHistory = [];
+    gameState._playHistory.push({
+      cardId: card.id,
+      player: pi,
+      turn: gameState.turnNumber,
+    });
+    renderCardHistory();
   }
   // Track last card played per seat
   if (card && card.id && CARDS[card.id]) {
@@ -13120,11 +13189,19 @@ async function applyDisruptionCard(pi, card, idx) {
 
   // WD17: Energy Tax — opponent loses 2 energy next turn
   if (card.id === 'WD17') {
-    gameState.players[opp].energyDebt = (gameState.players[opp].energyDebt || 0) + 2;
-    discardCard(pi, idx); countCardPlayed(pi); selectedCard = null;
-    addLog(pi, 'card', 'Energy Tax: opponent loses 2 energy next turn');
-    if (isTurnDone()) gameState.phase = 'end_turn';
-    renderAll(); showStatus('Energy Tax applied!', 'success'); return;
+    function doEnergyTax(targetOpp) {
+      gameState.players[targetOpp].energyDebt = (gameState.players[targetOpp].energyDebt || 0) + 2;
+      discardCard(pi, idx); countCardPlayed(pi); selectedCard = null;
+      addLog(pi, 'card', `Energy Tax: ${gameState.players[targetOpp].champion.name} loses 2 energy next turn`);
+      if (isTurnDone()) gameState.phase = 'end_turn';
+      renderAll(); showStatus('Energy Tax applied!', 'success');
+    }
+    if (!isHumanSeat(pi)) { doEnergyTax(opp); return; }
+    showTargetPicker(pi, doEnergyTax, 'ENERGY TAX', () => {
+      selectedCard = null; uiMode = 'idle';
+      renderAll(); showStatus('Energy Tax cancelled', '');
+    });
+    return;
   }
 
   // PH17: Phantom Siphon — place invisible energy trap within 6 spaces
@@ -14165,7 +14242,7 @@ function renderBottomPanel() {
   setText('bp-name', c.name);
   setText('bp-title', `${c.title || ''} · ${c.faction}`);
   setText('bp-walls', `${p.wallsInPlay}/${p.wallLimitCurrent}`);
-  setText('bp-hand-count', `${p.hand.length}/${c.handSize}`);
+  setText('bp-energy-count', `${p.energyCurrent}/${p.energyPerTurn}`);
   setText('bp-speed', c.moveSpeed || 1);
   setText('bp-passive-name', c.passiveName || '');
   setText('bp-passive-desc', c.passiveDesc || '');
@@ -14353,7 +14430,7 @@ function renderAIStatusStrip() {
         <div style="color:#888;font-size:9px;letter-spacing:.08em;margin-bottom:3px;">${c.faction} · ${c.passiveName}</div>
         <div style="display:flex;gap:8px;color:#aaa;font-size:9px;">
           <span>W:${p.wallsInPlay}/${p.wallLimitCurrent}</span>
-          <span>H:${p.hand.length}/${c.handSize}</span>
+          <span>E:${p.energyCurrent}/${p.energyPerTurn}</span>
           <span>U:${p.ultimateCharge}/${c.ultimateCost}${p.ultimateReady ? ' ⚡' : ''}</span>
         </div>
         ${isBound ? '<div style="font-size:8px;color:#e05050;margin-top:2px;">BOUND</div>' : ''}`}
@@ -14375,6 +14452,7 @@ function renderAll() {
   renderPanels();
   renderBoard();
   renderLog();
+  renderCardHistory();
   updateTurnBanner();
   updateActionBar();
   adjustLayoutForMode();
@@ -14438,7 +14516,7 @@ function renderPanels() {
     setText(`${prefix}-title`, def.title);
     setText(`${prefix}-faction`, def.faction);
     setText(`${prefix}-walls`, `${p.wallsInPlay}/${p.wallLimitCurrent}`);
-    setText(`${prefix}-hand-count`, `${p.hand.length}/${def.handSize}`);
+    setText(`${prefix}-energy-stat`, `${p.energyCurrent}/${p.energyPerTurn}`);
     setText(`${prefix}-speed`, def.moveSpeed);
     setText(`${prefix}-draw`, def.cardDraw);
     const deckCount = (gameMode === 'mp' && p.deck.length === 0 && gameState._deckCounts)
@@ -14543,6 +14621,25 @@ function renderWallPips(id, inPlay, limit) {
   if (!el) return;
   el.innerHTML = Array.from({length:limit},(_,i)=>
     `<div class="wall-pip${i<inPlay?' filled':''}"></div>`).join('');
+}
+
+function renderCardHistory() {
+  const el = document.getElementById('card-history-list');
+  if (!el || !gameState?._playHistory) return;
+  const history = gameState._playHistory;
+  const recent = history.slice(-6).reverse(); // last 6, newest first
+  el.innerHTML = recent.map(entry => {
+    const def = CARDS[entry.cardId];
+    if (!def) return '';
+    const pClass = `hc-p${entry.player}`;
+    const tClass = `hc-${(def.type || '').toLowerCase()}`;
+    const champName = gameState.players[entry.player]?.champion?.name || `P${entry.player}`;
+    return `<div class="history-card ${pClass} ${tClass}">
+      <div class="hc-player">${champName} · T${entry.turn}</div>
+      <div class="hc-name">${def.name}</div>
+      <div class="hc-type">${def.type}</div>
+    </div>`;
+  }).join('');
 }
 
 function renderEnergyBar(id, current, max) {
@@ -16743,7 +16840,7 @@ function mpRenderCreateTab(content) {
       <div class="cs-champ-name" style="font-size:20px;color:${rc};">${c.name}</div>
       <div class="cs-champ-title" style="font-size:10px;">${c.title}</div>
       <div class="cs-faction" style="font-size:9px;margin-top:3px;">${c.faction}</div>
-      <div style="font-size:9px;color:#888;margin-top:2px;">W:${c.wallLimit} H:${c.handSize} D:${c.cardDraw} U:${c.ultimateCost}</div>
+      <div style="font-size:9px;color:#888;margin-top:2px;">W:${c.wallLimit} E:${c.energy||3} D:${c.cardDraw} U:${c.ultimateCost}</div>
     </div>`;
   }).join('');
 
@@ -16974,7 +17071,7 @@ function mpRenderJoinTab(content) {
       <div class="cs-champ-name" style="font-size:20px;color:${rc};">${c.name}</div>
       <div class="cs-champ-title" style="font-size:10px;">${c.title}</div>
       <div class="cs-faction" style="font-size:9px;margin-top:3px;">${c.faction}</div>
-      <div style="font-size:9px;color:#888;margin-top:2px;">W:${c.wallLimit} H:${c.handSize} D:${c.cardDraw} U:${c.ultimateCost}</div>
+      <div style="font-size:9px;color:#888;margin-top:2px;">W:${c.wallLimit} E:${c.energy||3} D:${c.cardDraw} U:${c.ultimateCost}</div>
     </div>`;
   }).join('') : '<div style="color:#888;padding:20px;text-align:center;grid-column:1/-1;">No roster champions. Visit the Shop or play Gauntlet first.</div>';
 
@@ -19198,7 +19295,7 @@ function showPackReveal(items, type) {
         <div style="font-family:'Teko',sans-serif;font-size:24px;color:${rc};">${item.name}</div>
         <div style="font-size:11px;color:#888;">${item.title}</div>
         <div style="font-size:12px;color:${rc};margin:4px 0;">${item.rarity} · ${item.faction}</div>
-        <div style="font-size:11px;color:#ccc;margin-top:8px;">W:${item.wallLimit} H:${item.handSize} D:${item.cardDraw} U:${item.ultimateCost}</div>
+        <div style="font-size:11px;color:#ccc;margin-top:8px;">W:${item.wallLimit} E:${item.energy||3} D:${item.cardDraw} U:${item.ultimateCost}</div>
         <div style="font-size:11px;color:#888;margin-top:4px;">${item.passiveName} · ${item.ultimateName}</div>
       </div>`;
     } else {
@@ -19236,7 +19333,7 @@ function showRosterScreen() {
     html += `<div style="background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:12px;text-align:center;">
       <div style="font-family:'Teko',sans-serif;font-size:18px;color:#ccc;">${cdef.name}</div>
       <div style="font-size:10px;color:#888;">${cdef.title} · ${cdef.faction}</div>
-      <div style="font-size:10px;color:#aaa;margin-top:4px;">W:${cdef.wallLimit} H:${cdef.handSize} D:${cdef.cardDraw} U:${cdef.ultimateCost}</div>
+      <div style="font-size:10px;color:#aaa;margin-top:4px;">W:${cdef.wallLimit} E:${cdef.energy||3} D:${cdef.cardDraw} U:${cdef.ultimateCost}</div>
     </div>`;
   }
 
@@ -19252,7 +19349,7 @@ function showRosterScreen() {
         <div style="font-family:'Teko',sans-serif;font-size:20px;color:${rc};">${c.name}</div>
         <div style="font-size:10px;color:#888;">${c.title}</div>
         <div style="font-size:11px;color:${rc};margin:4px 0;">${c.rarity} · ${c.faction}</div>
-        <div style="font-size:10px;color:#aaa;">W:${c.wallLimit} H:${c.handSize} D:${c.cardDraw} U:${c.ultimateCost}</div>
+        <div style="font-size:10px;color:#aaa;">W:${c.wallLimit} E:${c.energy||3} D:${c.cardDraw} U:${c.ultimateCost}</div>
         <div style="font-size:10px;color:#888;margin-top:4px;">${c.passiveName} · ${c.ultimateName}</div>
       </div>`;
     }
