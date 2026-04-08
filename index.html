@@ -4305,32 +4305,23 @@ function performDraw() {
   const pi = gameState.activePlayer;
   const p = gameState.players[pi];
 
-  // First draw: fill to handSize. Subsequent turns: draw 1, but only if
-  // hand is below max. Never draw when at or above handSize.
+  // Energy system: draw cardDraw cards every turn (hand was discarded at end of previous turn).
+  // First draw flag still tracked for opening hand special case.
   const isFirst = !!gameState.firstDraw[pi];
+  if (isFirst) gameState.firstDraw[pi] = false;
   const maxHand = p.champion.handSize;
 
   let deck = [...p.deck], discard = [...p.discard];
   const drawn = [];
 
-  if (isFirst) {
-    gameState.firstDraw[pi] = false;
-    // Opening hand = cardDraw cards (not full handSize)
-    const need = Math.min(p.champion.cardDraw, Math.max(0, maxHand - p.hand.length));
-    for (let i = 0; i < need; i++) {
-      if (!deck.length) {
-        if (!discard.length) break;
-        deck = shuffle([...discard]); discard = [];
-      }
-      drawn.push(deck.shift());
+  // Draw cardDraw cards (capped by handSize)
+  const need = Math.min(p.champion.cardDraw, Math.max(0, maxHand - p.hand.length));
+  for (let i = 0; i < need; i++) {
+    if (!deck.length) {
+      if (!discard.length) break;
+      deck = shuffle([...discard]); discard = [];
     }
-  } else {
-    // Subsequent turns: always draw exactly 1 card (if hand not full)
-    const drawCount = Math.min(1, Math.max(0, maxHand - p.hand.length));
-    for (let i = 0; i < drawCount; i++) {
-      if (!deck.length && discard.length) { deck = shuffle([...discard]); discard = []; }
-      if (deck.length) drawn.push(deck.shift());
-    }
+    drawn.push(deck.shift());
   }
 
   const newHand = [...p.hand, ...drawn];
@@ -4482,8 +4473,14 @@ function executeMove(to) {
     }
     const mc = discardIdx >= 0 ? gameState.players[pi].hand[discardIdx] : null;
     if (mc) discardCard(pi, discardIdx);
-    // NOTE: countCardPlayed was already called in applyMovementCard on activation — do NOT call again.
+    // Energy system: countCardPlayed deferred to here so energy is only spent when move is confirmed
+    countCardPlayed(pi);
     addLog(pi, 'card', 'Played: ' + (mc ? mc.name : 'movement card') + ' (speed ' + (selectedCard.overrideSpeed||1) + ')');
+    // PF17 Runner's High: +2 energy on confirmed move
+    if (selectedCard._runnersHigh) {
+      gameState.players[pi].energyCurrent += 2;
+      addLog(pi, 'card', "Runner's High: +2 energy!");
+    }
   }
   // Re-read state after potential discard mutation, then update position
   gameState.players[pi] = {...gameState.players[pi], position: to};
@@ -6115,10 +6112,11 @@ function endTurnHuman() {
     showStatus("It's not your turn", 'error'); return;
   }
   // If a movement card is pending (selected but destination not chosen), discard it.
-  // hasPlayedCard was already set true on activation — do NOT call countCardPlayed again.
+  // Energy system: countCardPlayed was deferred, so call it now to consume the card.
   if (selectedCard && selectedCard._pendingMove && selectedCard.idx >= 0) {
     const pi = gameState.activePlayer;
     discardCard(pi, selectedCard.idx);
+    countCardPlayed(pi);
     selectedCard = null;
     uiMode = 'idle';
   }
@@ -6220,6 +6218,18 @@ function endTurn() {
   // DV expiry via status tick
 
   onEndTurnPassives(pi);
+
+  // ── Discard all remaining cards in hand at end of turn ──
+  const remainingHand = gameState.players[pi].hand;
+  if (remainingHand.length > 0) {
+    gameState.players[pi] = {
+      ...gameState.players[pi],
+      hand: [],
+      discard: [...gameState.players[pi].discard, ...remainingHand],
+    };
+    addLog(pi, 'system', `End of turn: discarded ${remainingHand.length} card(s)`);
+  }
+
   const next = getNextPlayer(pi);
   gameState.activePlayer = next;
   // Increment turn number when the last player in rotation finishes
@@ -7626,6 +7636,124 @@ async function runAI() {
 
   // ══════════════════════════════════════════════════════════════════
   console.log('[AI] Phase 3 complete. phase:', gameState.phase, 'uiMode:', uiMode);
+
+  // ══════════════════════════════════════════════════════════════════
+  // PHASE 3b — ENERGY LOOP: play additional cards while energy remains
+  // ══════════════════════════════════════════════════════════════════
+  let energyLoopCount = 0;
+  const MAX_ENERGY_LOOPS = 6; // safety cap
+  while (energyLoopCount < MAX_ENERGY_LOOPS && gameState.phase === 'action') {
+    energyLoopCount++;
+    const curEnergy = gameState.players[pi].energyCurrent;
+    if (curEnergy <= 0) break;
+    const curHand = gameState.players[pi].hand;
+    if (!curHand.length) break;
+
+    // Find affordable non-movement cards (walls + disruption) since move hasn't happened yet
+    const _loopEmbargoType = (gameState._embargo && gameState._embargo[pi] && gameState._embargo[pi].turnsRemaining > 0)
+      ? gameState._embargo[pi].type : null;
+    const _loopCardBlocked = isCardPhaseSkipped(pi);
+    if (_loopCardBlocked) break;
+
+    const loopSt = snap();
+    let loopBestScore = 0; // minimum score threshold — only play if positive
+    let loopBestAction = null;
+
+    // Evaluate wall cards
+    if (loopSt.aiWalls < loopSt.aiLimit && _loopEmbargoType !== 'Wall') {
+      const wallCards = loopSt.aiHand.filter(c =>
+        c.type === 'Wall' && !c.phantom && !c.special
+        && getEffectiveEnergyCost(c, pi) <= curEnergy);
+      for (const card of wallCards) {
+        const len = getCardWallLength(card.id);
+        const cands = generateWallCandidates(loopSt.oppPos, len);
+        for (const {anchor, orientation} of cands) {
+          if (!isWallLegal(anchor, orientation, len, loopSt.walls, loopSt.oppPos, loopSt.aiPos, false)) continue;
+          const s = scoreAction({type:'wall', anchor, orientation, length:len}, loopSt.walls, loopSt.aiPos, loopSt.oppPos);
+          if (s > loopBestScore) {
+            loopBestScore = s;
+            loopBestAction = {kind:'wall', card, anchor, orientation, len};
+          }
+        }
+      }
+    }
+
+    // Evaluate phantom wall cards
+    if (loopSt.aiWalls < loopSt.aiLimit && _loopEmbargoType !== 'Wall') {
+      const phantomCards = loopSt.aiHand.filter(c => c.type === 'Wall' && c.phantom && !c.special
+        && getEffectiveEnergyCost(c, pi) <= curEnergy);
+      for (const card of phantomCards) {
+        const len = 2;
+        const cands = generateWallCandidates(loopSt.oppPos, len);
+        for (const {anchor, orientation} of cands) {
+          if (!isWallLegal(anchor, orientation, len, loopSt.walls, loopSt.oppPos, loopSt.aiPos, true)) continue;
+          const s = scoreAction({type:'phantom', anchor, orientation, length:len}, loopSt.walls, loopSt.aiPos, loopSt.oppPos);
+          if (s > loopBestScore) {
+            loopBestScore = s;
+            loopBestAction = {kind:'phantom', card, anchor, orientation, len};
+          }
+        }
+      }
+    }
+
+    // Evaluate simple disruption cards (energy-generating, self-utility)
+    if (_loopEmbargoType !== 'Disruption') {
+      const simpleDisruptions = loopSt.aiHand.filter(c =>
+        c.type === 'Disruption' && getEffectiveEnergyCost(c, pi) <= curEnergy
+        && ['RC','B04','B07','B08','AR16','AR17','PF18','WD17','PH18','PU13','TR14','AD6','B15','B16'].includes(c.id));
+      for (const card of simpleDisruptions) {
+        // Simple heuristic: energy-gaining cards are worth playing, disruptions get base score
+        let s = 3; // base value for playing a disruption
+        if (['AR16','PF18','PH18','PU13','TR14','AD6','B15','B16','AR17'].includes(card.id)) s = 5; // energy cards
+        if (card.id === 'WD17') s = 8; // energy denial is high value
+        if (card.id === 'RC' && loopSt.aiWalls > 0) s = 2; // reclaim only if walls exist
+        if (card.id === 'B07') s = 4; // undermine
+        if (s > loopBestScore) {
+          loopBestScore = s;
+          loopBestAction = {kind:'disruption', card, subkind: card.id === 'RC' ? 'reclaim' : 'generic'};
+        }
+      }
+    }
+
+    if (!loopBestAction) break; // nothing worth playing
+
+    console.log('[AI Energy Loop] Playing additional card:', loopBestAction.card.id, 'energy:', curEnergy);
+
+    // Execute the action
+    const {kind: lk, card: lcard} = loopBestAction;
+    const lCardIdx = gameState.players[pi].hand.findIndex(c => c.id === lcard.id);
+    if (lCardIdx === -1) break;
+
+    if (lk === 'wall' || lk === 'phantom') {
+      discardCard(pi, lCardIdx);
+      executePlaceWall(loopBestAction.anchor, loopBestAction.orientation,
+                       loopBestAction.len, lk === 'phantom', false, lcard.id);
+    } else if (lk === 'disruption') {
+      if (loopBestAction.subkind === 'reclaim') {
+        const myWalls = gameState.walls.filter(w => w.owner === pi && !w.isPhantom && !w.permanent)
+                                       .sort((a,b) => a.placedOnTurn - b.placedOnTurn);
+        if (myWalls.length) {
+          const target = myWalls[0];
+          gameState.walls = gameState.walls.filter(w => w.id !== target.id);
+          gameState.players[pi] = {...gameState.players[pi],
+            wallsInPlay: Math.max(0, gameState.players[pi].wallsInPlay - 1)};
+          discardCard(pi, lCardIdx);
+          drawCards(pi, 1);
+          countCardPlayed(pi);
+          addLog(pi, 'card', 'AI energy loop: ' + lcard.name);
+        } else break;
+      } else {
+        // Generic disruption — let applyDisruptionCard handle it
+        await applyDisruptionCard(pi, lcard, lCardIdx);
+        if (uiMode !== 'idle' && !isHumanSeat(pi)) {
+          uiMode = 'idle';
+          selectedCard = null;
+        }
+      }
+    }
+  }
+  if (energyLoopCount > 0) console.log('[AI] Energy loop played', energyLoopCount, 'additional cards');
+
   // PHASE 4 — execute move (skip if Binding Wall effect active)
   // ══════════════════════════════════════════════════════════════════
   const isAIBound = (gameState.players[AI_PLAYER].statusEffects || []).some(e => (e.type === 'skip_move' || e.type === 'bound') && e.turnsRemaining > 0);
@@ -10280,7 +10408,8 @@ function selectCard(cardId, idx) {
   // Same card re-clicked: deselect it (but not if Eviction has been committed).
   if (selectedCard && selectedCard.idx === idx && (uiMode === 'wall' || uiMode === 'move' || uiMode === 'wallShrink' || uiMode === 'wallFortify')) {
     if (selectedCard._evictionPlacing) { showStatus('Eviction committed — place the wall to finish', 'error'); return; }
-    if (selectedCard._pendingMove) { cardsPlayedThisTurn = Math.max(0, cardsPlayedThisTurn - 1); hasPlayedCard = cardsPlayedThisTurn > 0; }
+    // Energy system: movement cards no longer call countCardPlayed on selection,
+    // so no need to decrement on cancel — energy was never deducted.
     gameState._shrinkCardIdx = null;
     gameState._emergencyBarrierMode = false;
     gameState._desperationSprint = false;
@@ -10288,10 +10417,9 @@ function selectCard(cardId, idx) {
     gameState._slipstreamCard = false;
     selectedCard = null; uiMode = 'idle'; renderAll(); showStatus('Card deselected', ''); return;
   }
-  // Different card clicked while a movement card is pending: cancel and restore budget.
+  // Different card clicked while a movement card is pending: cancel.
+  // Energy system: no budget to restore — countCardPlayed was not called yet.
   if (selectedCard && selectedCard._pendingMove && uiMode === 'move') {
-    cardsPlayedThisTurn = Math.max(0, cardsPlayedThisTurn - 1);
-    hasPlayedCard = cardsPlayedThisTurn > 0;
     gameState._desperationSprint = false;
     gameState._slipstreamActive = false;
     gameState._slipstreamCard = false;
@@ -11277,19 +11405,12 @@ function applyMovementCard(pi, card, idx) {
   let speed = card.overrideSpeed !== undefined ? card.overrideSpeed : 1;
 
 
-  // PF17 Runner's High: move 1 + gain +2 energy
+  // PF17 Runner's High: move 1 + gain +2 energy (energy deducted + gained when move confirmed in executeMove)
   if (card.id === 'PF17') {
-    // Treat as a normal movement card with speed 1, but also grant +2 energy when move completes
-    // The energy gain happens after the card is counted
     selectedCard = { id: card.id, idx, overrideSpeed: 1, _pendingMove: true, _runnersHigh: true };
-    cardsPlayedThisTurn++;
-    hasPlayedCard = true;
-    const energyCost = getEffectiveEnergyCost(card, pi);
-    gameState.players[pi].energyCurrent = Math.max(0, gameState.players[pi].energyCurrent - energyCost);
-    gameState.players[pi].energyCurrent += 2; // +2 energy gain
     uiMode = 'move';
     renderAll();
-    showStatus("Runner's High — move 1 space (+2 energy gained!)", 'active');
+    showStatus("Runner's High — move 1 space (will gain +2 energy)", 'active');
     return;
   }
 
@@ -11439,12 +11560,11 @@ function applyMovementCard(pi, card, idx) {
   // TR5 Trapper's Stride: record starting position for auto-trap placement after move
   if (card.id === 'TR5') { gameState._trapperStrideFrom = gameState.players[pi].position; }
 
-  // Mark the card play as consumed immediately on activation (countCardPlayed increments
-  // cardsPlayedThisTurn so cancellation can decrement it back symmetrically).
-  // The physical discard still happens in executeMove once a destination is confirmed.
-  countCardPlayed(pi);
+  // Energy system: do NOT call countCardPlayed here — defer until move is confirmed in
+  // executeMove. This ensures energy is only deducted when the card actually resolves.
+  // The physical discard also happens in executeMove once a destination is confirmed.
 
-  // Store pending card info with all movement flags; discard happens in executeMove.
+  // Store pending card info with all movement flags; discard + countCardPlayed happen in executeMove.
   selectedCard = { id: card.id, idx, overrideSpeed: speed, tunnelThrough: !!card.tunnelThrough,
                    diagonal: !!card.diagonal, ownWallsPassthrough: !!card.ownWallsPassthrough,
                    lateralOnly: !!(card.special === 'flanking'),
@@ -13081,8 +13201,12 @@ async function applyDisruptionCard(pi, card, idx) {
 
   // TR14: Trap Harvest — remove all traps, +1 energy each
   if (card.id === 'TR14') {
-    const myTraps = (gameState._traps || []).filter(t => t.owner === pi);
-    const count = myTraps.length;
+    // Count traps from BOTH trap systems: trapTokens (main) and _traps (energy traps)
+    const mainTraps = (gameState.trapTokens || []).filter(t => t.owner === pi);
+    const energyTraps = (gameState._traps || []).filter(t => t.owner === pi);
+    const count = mainTraps.length + energyTraps.length;
+    // Remove all player-owned traps from both systems
+    gameState.trapTokens = (gameState.trapTokens || []).filter(t => t.owner !== pi);
     gameState._traps = (gameState._traps || []).filter(t => t.owner !== pi);
     gameState.players[pi].energyCurrent += count;
     discardCard(pi, idx); countCardPlayed(pi); selectedCard = null;
@@ -13602,10 +13726,14 @@ function applyUltimate(pi, champId) {
       renderAll(); return; // skip countCardPlayed; handled when move completes
 
     case 'thorne': {
-      // Total Reordering: reposition all walls to random legal locations
-      const allWalls = [...gameState.walls.filter(w => !w.isPhantom)];
-      for (const w of allWalls) {
-        gameState.walls = gameState.walls.filter(x => x.id !== w.id);
+      // Total Reordering: remove all non-phantom walls, then re-place them one-by-one
+      // at random legal positions. This avoids stale-position conflicts.
+      const phantomWalls = gameState.walls.filter(w => w.isPhantom);
+      const realWalls = gameState.walls.filter(w => !w.isPhantom);
+      // Start with only phantoms, then place real walls fresh
+      gameState.walls = [...phantomWalls];
+      let placedCount = 0;
+      for (const w of shuffle(realWalls)) {
         const cands = generateWallCandidates(gameState.players[0].position, w.length);
         let placed = false;
         for (const {anchor, orientation} of shuffle(cands)) {
@@ -13613,15 +13741,25 @@ function applyUltimate(pi, champId) {
               gameState.players[0].position, gameState.players[1].position, false)) {
             gameState.walls.push({...w, anchor, orientation});
             placed = true;
+            placedCount++;
             break;
           }
         }
-        // If can't place, restore original — don't lose the wall
         if (!placed) {
-          gameState.walls.push({...w});
+          // Wall couldn't be placed — return it to owner's hand as a Basic Barrier
+          const ownerState = gameState.players[w.owner];
+          if (ownerState && ownerState.hand.length < ownerState.champion.handSize) {
+            gameState.players[w.owner] = {...ownerState,
+              hand: [...ownerState.hand, {...CARDS['BB']}],
+              wallsInPlay: Math.max(0, ownerState.wallsInPlay - 1)};
+          } else {
+            gameState.players[w.owner] = {...ownerState,
+              wallsInPlay: Math.max(0, ownerState.wallsInPlay - 1)};
+          }
+          addLog(pi, 'ultimate', `Total Reordering: ${w.owner === pi ? 'your' : "opponent's"} wall couldn't be placed — returned to hand`);
         }
       }
-      addLog(pi,'ultimate','Total Reordering: all walls repositioned');
+      addLog(pi,'ultimate',`Total Reordering: ${placedCount} walls repositioned`);
       showStatus('Total Reordering — entire board reshuffled!','success'); break;
     }
 
