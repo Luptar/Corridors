@@ -2834,7 +2834,7 @@ const CHAMPIONS = {
   // Architects: maze-building, indestructible walls, double-card passive
   magnus: {
     id:'magnus', simplicity:2, name:'Magnus', title:'Stoneweaver', faction:'Architects',
-    wallLimit:10, handSize:6, cardDraw:5, moveSpeed:1, energy:4,
+    wallLimit:10, handSize:10, cardDraw:5, moveSpeed:1, energy:4,
     ultimateCost:5, ultimateName:'Living Blueprint',
     passiveName:'Master Mason',
     passiveDesc:'Wall cards cost 1 less energy (minimum 1).',
@@ -2845,7 +2845,7 @@ const CHAMPIONS = {
   // Pathfinders: speed, mobility, racing
   soren: {
     id:'soren', simplicity:1, name:'Soren', title:'Swiftstride', faction:'Pathfinders',
-    wallLimit:7, handSize:4, cardDraw:3, moveSpeed:1, energy:2,
+    wallLimit:7, handSize:10, cardDraw:3, moveSpeed:1, energy:2,
     ultimateCost:6, ultimateName:'Stormpath',
     passiveName:'Fleetfoot',
     passiveDesc:'You may move twice per turn.',
@@ -2856,7 +2856,7 @@ const CHAMPIONS = {
   // Wardens: disruption, hand control, wall repositioning
   thorne: {
     id:'thorne', simplicity:3, name:'Thorne', title:'the Lockmaster', faction:'Wardens',
-    wallLimit:6, handSize:5, cardDraw:4, moveSpeed:1, energy:3,
+    wallLimit:6, handSize:10, cardDraw:4, moveSpeed:1, energy:3,
     ultimateCost:6, ultimateName:'Total Reordering',
     passiveName:"Warden's Stare",
     passiveDesc:"Opponent's hand is always revealed to you.",
@@ -2867,7 +2867,7 @@ const CHAMPIONS = {
   // Phantoms: illusions, bluffing, misdirection
   nyx: {
     id:'nyx', simplicity:3, name:'Nyx', title:'the Mirage', faction:'Phantoms',
-    wallLimit:7, handSize:5, cardDraw:3, moveSpeed:1, energy:3,
+    wallLimit:7, handSize:10, cardDraw:3, moveSpeed:1, energy:3,
     ultimateCost:3, ultimateName:'Veil of Shadows',
     passiveName:'Illusory Trail',
     passiveDesc:'When you move, a phantom duplicate marker lingers on your previous position for 1 turn.',
@@ -2878,7 +2878,7 @@ const CHAMPIONS = {
   // Pushers: displacement, body-checking, forced movement
   pushaman: {
     id:'pushaman', simplicity:2, name:'Pushaman', title:'the Breacher', faction:'Pushers',
-    wallLimit:6, handSize:5, cardDraw:4, moveSpeed:1, energy:3,
+    wallLimit:6, handSize:10, cardDraw:4, moveSpeed:1, energy:3,
     ultimateCost:6, ultimateName:'Breach',
     passiveName:'Chad Aura',
     passiveDesc:'When you move adjacent to the opponent, push them 1 tile in the exact opposite direction. Walls block the push.',
@@ -2889,7 +2889,7 @@ const CHAMPIONS = {
   // Trappers: invisible traps on tiles, area denial
   shade: {
     id:'shade', simplicity:3, name:'Shade', title:'the Stalker', faction:'Trappers',
-    wallLimit:8, handSize:5, cardDraw:4, moveSpeed:1, energy:3,
+    wallLimit:8, handSize:10, cardDraw:4, moveSpeed:1, energy:3,
     ultimateCost:5, ultimateName:'Killing Field',
     passiveName:'Trapsmith',
     passiveDesc:'Move over your own traps without triggering them.',
@@ -2900,7 +2900,7 @@ const CHAMPIONS = {
   // Chronists: tempo manipulation, replay, delayed effects
   vex: {
     id:'vex', simplicity:4, name:'Vex', title:'the Reweaver', faction:'Chronists',
-    wallLimit:7, handSize:6, cardDraw:3, moveSpeed:1, energy:3,
+    wallLimit:7, handSize:10, cardDraw:3, moveSpeed:1, energy:3,
     ultimateCost:4, ultimateName:'Temporal Fold',
     passiveName:'Echo Chamber',
     passiveDesc:'Once per turn, you may discard one card from your hand to draw a new card from your deck.',
@@ -2931,16 +2931,16 @@ for (const [cid, cdef] of Object.entries(CHAMPIONS)) {
 }
 
 function allocateStats(budget) {
-  // Floors: wallLimit=4, handSize=3, cardDraw=1, ultimateCost=9 (worst)
-  // Costs: wallLimit +1/pt, handSize +2/pt, cardDraw +3/pt, ultimateCost -2/pt to improve (reduce from 9)
-  // Ceilings: wallLimit=12, handSize=7, cardDraw=6, ultimateCost=3 (best)
+  // Floors: wallLimit=4, cardDraw=1, ultimateCost=9 (worst)
+  // handSize is fixed at 10 for all champions (energy system)
+  // Costs: wallLimit +1/pt, cardDraw +3/pt, ultimateCost -2/pt to improve (reduce from 9)
+  // Ceilings: wallLimit=12, cardDraw=6, ultimateCost=3 (best)
   let remaining = budget;
-  const stats = { wallLimit:4, handSize:3, cardDraw:1, ultimateCost:9 };
+  const stats = { wallLimit:4, handSize:10, cardDraw:1, ultimateCost:9 };
   const maxSpend = Math.floor(budget * 0.5); // no stat consumes >50%
 
   const options = [
     { key:'wallLimit',    cost:1, ceil:12, spent:0 },
-    { key:'handSize',     cost:2, ceil:7,  spent:0 },
     { key:'cardDraw',     cost:3, ceil:6,  spent:0 },
     { key:'ultimateCost', cost:2, ceil:3,  spent:0, invert:true }, // lower is better
   ];
@@ -9640,8 +9640,7 @@ function showChampionSelect() {
       <div class="cs-faction" style="color:${col}">${champ.faction}</div>
       <div class="cs-stats">
         <div class="cs-stat"><div class="cs-stat-label">WALLS</div><div class="cs-stat-val">${champ.wallLimit}</div></div>
-        <div class="cs-stat"><div class="cs-stat-label">HAND</div><div class="cs-stat-val">${champ.handSize}</div></div>
-        <div class="cs-stat"><div class="cs-stat-label">OPEN DRAW</div><div class="cs-stat-val">${champ.cardDraw}</div></div>
+        <div class="cs-stat"><div class="cs-stat-label">DRAW</div><div class="cs-stat-val">${champ.cardDraw}</div></div>
         <div class="cs-stat"><div class="cs-stat-label">ENERGY</div><div class="cs-stat-val" style="color:var(--amber)">${champ.energy || 3}</div></div>
         <div class="cs-stat"><div class="cs-stat-label">SPEED</div><div class="cs-stat-val">${champ.moveSpeed}</div></div>
       </div>
@@ -10572,8 +10571,9 @@ function selectCard(cardId, idx) {
 }
 
 function countCardPlayed(pi, _playedCard) {
-  // Use the passed card reference if selectedCard was already cleared
-  const card = _playedCard || selectedCard;
+  // Use the passed card reference, selectedCard, or fall back to last discarded card
+  const card = _playedCard || selectedCard
+    || (gameState.players[pi].discard.length ? gameState.players[pi].discard[gameState.players[pi].discard.length - 1] : null);
   // Skip counting for free/delayed card plays (they don't consume the card budget)
   const isFreePlay = (card && (card._freePlay || card._delayed || card._isDejaVuReplay))
     || gameState._freePlayActive;
