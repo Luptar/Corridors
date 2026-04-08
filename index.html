@@ -896,6 +896,59 @@
     border-color: var(--amber-dim);
     box-shadow: 0 0 6px rgba(212,144,58,0.15);
   }
+  .card.card-no-energy {
+    opacity: 0.45;
+    border-color: var(--border) !important;
+    box-shadow: none !important;
+  }
+  .card { position: relative; }
+  .energy-cost-badge {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: var(--amber);
+    color: var(--bg);
+    font-family: 'Teko', sans-serif;
+    font-size: 14px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 1;
+    z-index: 1;
+  }
+  .energy-cost-badge.energy-cost-dim {
+    background: var(--border-hi);
+    color: var(--text-dim);
+  }
+  .energy-bar {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    margin-top: 4px;
+  }
+  .energy-pip {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    border: 1px solid var(--amber-dim);
+    background: transparent;
+    transition: background 0.2s;
+  }
+  .energy-pip.filled {
+    background: var(--amber);
+    border-color: var(--amber);
+    box-shadow: 0 0 4px rgba(212,144,58,0.4);
+  }
+  .energy-label {
+    font-size: 9px;
+    letter-spacing: 0.1em;
+    color: var(--text-dim);
+    margin-right: 4px;
+  }
 
   /* ── Mode indicator ────────────────────────────────────────────── */
   .mode-indicator {
@@ -1092,6 +1145,17 @@
   @keyframes bindingPulse {
     from { box-shadow: 0 0 4px rgba(90,220,120,0.5); }
     to   { box-shadow: 0 0 10px rgba(90,220,120,0.9), 0 0 18px rgba(90,220,120,0.4); }
+  }
+
+  .wall-segment.wall-suppression {
+    background: #2a3a5a !important;
+    border: 1px solid #5a8ad4 !important;
+    box-shadow: 0 0 5px rgba(90,140,220,0.6), 0 0 10px rgba(90,140,220,0.25) !important;
+    animation: suppressionPulse 1.5s ease-in-out infinite alternate;
+  }
+  @keyframes suppressionPulse {
+    from { box-shadow: 0 0 4px rgba(90,140,220,0.4); }
+    to   { box-shadow: 0 0 10px rgba(90,140,220,0.8), 0 0 18px rgba(90,140,220,0.3); }
   }
 
   .wall-segment.wall-gust {
@@ -2222,6 +2286,7 @@
         </div>
       </div>
       <div class="wall-count" id="p0-wall-pips"></div>
+      <div class="energy-bar" id="p0-energy-bar"></div>
     </div>
     <div class="ultimate-section">
       <div class="ultimate-label">ULTIMATE</div>
@@ -2307,6 +2372,7 @@
         </div>
       </div>
       <div class="wall-count" id="p1-wall-pips"></div>
+      <div class="energy-bar" id="p1-energy-bar"></div>
     </div>
     <div class="ultimate-section">
       <div class="ultimate-label">ULTIMATE</div>
@@ -2347,6 +2413,7 @@
         <div style="font-size:8px;color:var(--text-dim);letter-spacing:.15em;margin-bottom:4px;">WALLS</div>
         <div id="bp-walls" style="font-family:'Teko',sans-serif;font-size:20px;color:var(--amber);line-height:1;">0/5</div>
         <div class="wall-count" id="bp-wall-pips" style="margin-top:4px;"></div>
+        <div class="energy-bar" id="bp-energy-bar" style="margin-top:4px;"></div>
       </div>
       <!-- Ultimate section -->
       <div style="padding:10px 16px;border-right:1px solid var(--border);min-width:180px;display:flex;flex-direction:column;justify-content:center;">
@@ -2767,10 +2834,10 @@ const CHAMPIONS = {
   // Architects: maze-building, indestructible walls, double-card passive
   magnus: {
     id:'magnus', simplicity:2, name:'Magnus', title:'Stoneweaver', faction:'Architects',
-    wallLimit:10, handSize:6, cardDraw:5, moveSpeed:1,
+    wallLimit:10, handSize:6, cardDraw:5, moveSpeed:1, energy:4,
     ultimateCost:5, ultimateName:'Living Blueprint',
     passiveName:'Master Mason',
-    passiveDesc:'Each turn you may play a 2nd Wall card instead of moving.',
+    passiveDesc:'Wall cards cost 1 less energy (minimum 1).',
     ultimateDesc:'Discard your hand and refill to full hand size immediately.',
     passiveId:'magnus', ultimateId:'magnus',
   },
@@ -2778,10 +2845,10 @@ const CHAMPIONS = {
   // Pathfinders: speed, mobility, racing
   soren: {
     id:'soren', simplicity:1, name:'Soren', title:'Swiftstride', faction:'Pathfinders',
-    wallLimit:7, handSize:4, cardDraw:3, moveSpeed:1,
+    wallLimit:7, handSize:4, cardDraw:3, moveSpeed:1, energy:2,
     ultimateCost:6, ultimateName:'Stormpath',
     passiveName:'Fleetfoot',
-    passiveDesc:'Each turn you may take a 2nd move instead of playing a card.',
+    passiveDesc:'You may move twice per turn.',
     ultimateDesc:'Ignore all walls for this entire turn — move freely through them.',
     passiveId:'soren', ultimateId:'soren',
   },
@@ -2789,7 +2856,7 @@ const CHAMPIONS = {
   // Wardens: disruption, hand control, wall repositioning
   thorne: {
     id:'thorne', simplicity:3, name:'Thorne', title:'the Lockmaster', faction:'Wardens',
-    wallLimit:6, handSize:5, cardDraw:4, moveSpeed:1,
+    wallLimit:6, handSize:5, cardDraw:4, moveSpeed:1, energy:3,
     ultimateCost:6, ultimateName:'Total Reordering',
     passiveName:"Warden's Stare",
     passiveDesc:"Opponent's hand is always revealed to you.",
@@ -2800,7 +2867,7 @@ const CHAMPIONS = {
   // Phantoms: illusions, bluffing, misdirection
   nyx: {
     id:'nyx', simplicity:3, name:'Nyx', title:'the Mirage', faction:'Phantoms',
-    wallLimit:7, handSize:5, cardDraw:3, moveSpeed:1,
+    wallLimit:7, handSize:5, cardDraw:3, moveSpeed:1, energy:3,
     ultimateCost:3, ultimateName:'Veil of Shadows',
     passiveName:'Illusory Trail',
     passiveDesc:'When you move, a phantom duplicate marker lingers on your previous position for 1 turn.',
@@ -2811,7 +2878,7 @@ const CHAMPIONS = {
   // Pushers: displacement, body-checking, forced movement
   pushaman: {
     id:'pushaman', simplicity:2, name:'Pushaman', title:'the Breacher', faction:'Pushers',
-    wallLimit:6, handSize:5, cardDraw:4, moveSpeed:1,
+    wallLimit:6, handSize:5, cardDraw:4, moveSpeed:1, energy:3,
     ultimateCost:6, ultimateName:'Breach',
     passiveName:'Chad Aura',
     passiveDesc:'When you move adjacent to the opponent, push them 1 tile in the exact opposite direction. Walls block the push.',
@@ -2822,7 +2889,7 @@ const CHAMPIONS = {
   // Trappers: invisible traps on tiles, area denial
   shade: {
     id:'shade', simplicity:3, name:'Shade', title:'the Stalker', faction:'Trappers',
-    wallLimit:8, handSize:5, cardDraw:4, moveSpeed:1,
+    wallLimit:8, handSize:5, cardDraw:4, moveSpeed:1, energy:3,
     ultimateCost:5, ultimateName:'Killing Field',
     passiveName:'Trapsmith',
     passiveDesc:'Move over your own traps without triggering them.',
@@ -2833,11 +2900,11 @@ const CHAMPIONS = {
   // Chronists: tempo manipulation, replay, delayed effects
   vex: {
     id:'vex', simplicity:4, name:'Vex', title:'the Reweaver', faction:'Chronists',
-    wallLimit:7, handSize:6, cardDraw:3, moveSpeed:1,
+    wallLimit:7, handSize:6, cardDraw:3, moveSpeed:1, energy:3,
     ultimateCost:4, ultimateName:'Temporal Fold',
     passiveName:'Echo Chamber',
     passiveDesc:'Once per turn, you may discard one card from your hand to draw a new card from your deck.',
-    ultimateDesc:'Take an additional action phase: play 1 extra card AND take 1 extra movement this turn.',
+    ultimateDesc:'Gain +3 energy this turn. Take 1 extra movement this turn.',
     passiveId:'vex', ultimateId:'vex',
   },
 
@@ -2965,6 +3032,7 @@ function generateChampion(rarity, preferredFaction) {
     handSize: stats.handSize,
     cardDraw: stats.cardDraw,
     moveSpeed: 1,
+    energy: CHAMPIONS[CHAMPION_BY_FACTION[faction]]?.energy || 3,
     ultimateCost: stats.ultimateCost,
     passiveId: passiveSourceId,
     ultimateId: ultimateSourceId,
@@ -2981,206 +3049,262 @@ const CARDS = {
 
   // ── BASIC CARD POOL (Universal) ──────────────────────────────────────
   BB: { id:'BB', name:'Basic Barrier',    faction:'Basic', rarity:'Common',   type:'Wall',
-        desc:'Place a 2-tile straight wall (H or V). Permanent.', wallLen:2 },
+        desc:'Place a 2-tile straight wall (H or V). Permanent.', wallLen:2, energyCost:1 },
   CB: { id:'CB', name:'Corner Block',     faction:'Basic', rarity:'Common',   type:'Wall',
-        desc:'Place two 2-tile walls in an L-shape: the second wall must be perpendicular and adjacent to the first.', wallLen:2, special:'cornerPiece' },
+        desc:'Place two 2-tile walls in an L-shape: the second wall must be perpendicular and adjacent to the first.', wallLen:2, special:'cornerPiece', energyCost:1 },
   RC: { id:'RC', name:'Reconstruction',   faction:'Basic', rarity:'Common',   type:'Disruption',
-        desc:'Remove one of your own walls anywhere on the board. Draw 1 card.' },
+        desc:'Remove one of your own walls anywhere on the board. Draw 1 card.', energyCost:1 },
   AV: { id:'AV', name:'Advance',          faction:'Basic', rarity:'Common',   type:'Movement',
-        desc:'Move up to 2 spaces this turn. Cannot pass walls.', overrideSpeed:2 },
+        desc:'Move up to 2 spaces this turn. Cannot pass walls.', overrideSpeed:2, energyCost:2 },
   QS: { id:'QS', name:'Quick Step',       faction:'Basic', rarity:'Common', type:'Movement',
-        desc:'Move 1 space diagonally. Blocked by walls.', overrideSpeed:1, diagonal:true },
+        desc:'Move 1 space diagonally. Blocked by walls.', overrideSpeed:1, diagonal:true, energyCost:1 },
   WS: { id:'WS', name:'Wind Sprint',      faction:'Pathfinders', rarity:'Uncommon',     type:'Movement',
-        desc:'Move up to 2 spaces this turn. May pass through your own walls.', overrideSpeed:2, ownWallsPassthrough:true },
+        desc:'Move up to 2 spaces this turn. May pass through your own walls.', overrideSpeed:2, ownWallsPassthrough:true, energyCost:2 },
   B07:{ id:'B07', name:'Undermine',       faction:'Basic', rarity:'Uncommon', type:'Disruption',
-        desc:'Shrink one opponent wall by 1 tile (from either end). If reduced to 0 tiles, the wall is removed entirely.', special:'wallShrink' },
+        desc:'Shrink one opponent wall by 1 tile (from either end). If reduced to 0 tiles, the wall is removed entirely.', special:'wallShrink', energyCost:1 },
   B08:{ id:'B08', name:'Fortify',         faction:'Basic', rarity:'Common',   type:'Disruption',
-        desc:'Extend one of your non-reinforced walls by 1 tile (direction of choice). Cannot exceed 3 tiles total.', special:'wallFortify' },
+        desc:'Extend one of your non-reinforced walls by 1 tile (direction of choice). Cannot exceed 3 tiles total.', special:'wallFortify', energyCost:1 },
   B01:{ id:'B01', name:'Detour',           faction:'Basic', rarity:'Common',   type:'Movement',
-        desc:'Move 1 space in any direction (including diagonal). Walls block movement.', overrideSpeed:1, diagonal:true },
+        desc:'Move 1 space in any direction (including diagonal). Walls block movement.', overrideSpeed:1, diagonal:true, energyCost:1 },
   B04:{ id:'B04', name:'Salvage Parts',    faction:'Basic', rarity:'Common',   type:'Disruption',
-        desc:'Remove one of your own walls. Place a 1-tile wall at any legal location.' },
+        desc:'Remove one of your own walls. Place a 1-tile wall at any legal location.', energyCost:1 },
   B09:{ id:'B09', name:'Brace',            faction:'Basic', rarity:'Rare',     type:'Disruption',
-        desc:'Your walls cannot be moved or destroyed by the opponent until start of your next turn.' },
+        desc:'Your walls cannot be moved or destroyed by the opponent until start of your next turn.', energyCost:1 },
   B10:{ id:'B10', name:'Flanking Path',    faction:'Basic', rarity:'Uncommon', type:'Movement',
-        desc:'Move up to 3 spaces laterally only (left/right). Walls block movement.', overrideSpeed:3, special:'flanking' },
+        desc:'Move up to 3 spaces laterally only (left/right). Walls block movement.', overrideSpeed:3, special:'flanking', energyCost:3 },
   B11:{ id:'B11', name:'Emergency Barrier', faction:'Basic', rarity:'Uncommon', type:'Wall',
-        desc:'Place a 2-tile wall within 3 tiles of your champion. Automatically move behind the barrier.', wallLen:2, special:'emergencyBarrier' },
+        desc:'Place a 2-tile wall within 3 tiles of your champion. Automatically move behind the barrier.', wallLen:2, special:'emergencyBarrier', energyCost:2 },
   B12:{ id:'B12', name:'Scavenge',         faction:'Basic', rarity:'Uncommon', type:'Disruption',
-        desc:'Look at the top 3 cards of your deck. Keep 1, put the other 2 on the bottom.' },
+        desc:'Look at the top 3 cards of your deck. Keep 1, put the other 2 on the bottom.', energyCost:1 },
   B13:{ id:'B13', name:'Desperation Sprint', faction:'Basic', rarity:'Rare',   type:'Movement',
-        desc:'Move up to 3 spaces. Bound next turn — no movement or movement cards allowed (may still play other cards).', overrideSpeed:3, special:'desperation' },
+        desc:'Move up to 3 spaces. Bound next turn — no movement or movement cards allowed (may still play other cards).', overrideSpeed:3, special:'desperation', energyCost:3 },
   B14:{ id:'B14', name:'Deadlock Breaker', faction:'Basic', rarity:'Rare',     type:'Disruption',
-        desc:'Remove any 1 wall from the board (yours or opponent, including reinforced). Cannot target Legendary walls.' },
+        desc:'Remove any 1 wall from the board (yours or opponent, including reinforced). Cannot target Legendary walls.', energyCost:2 },
 
   // ── ARCHITECTS ───────────────────────────────────────────────────────
   AR1: { id:'AR1', name:'Reinforced Slab',  faction:'Architects', rarity:'Common',   type:'Wall',
-         desc:'Place a 2-tile indestructible wall (H or V). Permanent. Cannot be destroyed or moved.', wallLen:2, reinforced:true },
+         desc:'Place a 2-tile indestructible wall (H or V). Permanent. Cannot be destroyed or moved.', wallLen:2, reinforced:true, energyCost:1 },
   AR2: { id:'AR2', name:'Repossess',        faction:'Architects', rarity:'Common',   type:'Disruption',
-         desc:'Take control of any opponent wall. The wall keeps all its properties (binding, phantom, reinforced, etc.).' },
+         desc:'Take control of any opponent wall. The wall keeps all its properties (binding, phantom, reinforced, etc.).', energyCost:2 },
   AR3: { id:'AR3', name:'Blueprint Shift',  faction:'Architects', rarity:'Common', type:'Disruption',
-         desc:'Move one of your non-reinforced walls to any legal location on the board.' },
+         desc:'Move one of your non-reinforced walls to any legal location on the board.', energyCost:2 },
   AR4: { id:'AR4', name:'Grand Bastion',    faction:'Architects', rarity:'Uncommon',     type:'Wall',
-         desc:'Place a 3-tile straight wall. Permanent.', wallLen:3 },
+         desc:'Place a 3-tile straight wall. Permanent.', wallLen:3, energyCost:2 },
   AR5: { id:'AR5', name:'Labyrinth Core',   faction:'Architects', rarity:'Uncommon',type:'Wall',
-         desc:'Place a 4-tile straight wall. All your walls adjacent to it gain Reinforce.', wallLen:4, reinforced:true },
+         desc:'Place a 4-tile straight wall. All your walls adjacent to it gain Reinforce.', wallLen:4, reinforced:true, energyCost:3 },
   AR9: { id:'AR9', name:'Architect\'s Eye', faction:'Architects', rarity:'Common',   type:'Disruption',
-         desc:'Slide one of your walls up to 2 tile-widths in any direction (no orientation change). Retains reinforced status.' },
+         desc:'Slide one of your walls up to 2 tile-widths in any direction (no orientation change). Retains reinforced status.', energyCost:2 },
   AR11:{ id:'AR11',name:'Keystone',        faction:'Architects', rarity:'Rare',      type:'Wall',
-         desc:'Place a 1-tile reinforced permanent wall. All your walls within 2 tiles become reinforced for 3 turns.', wallLen:1, reinforced:true, special:'keystone' },
+         desc:'Place a 1-tile reinforced permanent wall. All your walls within 2 tiles become reinforced for 3 turns.', wallLen:1, reinforced:true, special:'keystone', energyCost:1 },
   AR12:{ id:'AR12',name:'Controlled Collapse', faction:'Architects', rarity:'Uncommon', type:'Disruption',
-         desc:'Demolish one of your own walls. If reinforced: place two 2-tile walls. If not reinforced: place one 2-tile wall.' },
+         desc:'Demolish one of your own walls. If reinforced: place two 2-tile walls. If not reinforced: place one 2-tile wall.', energyCost:1 },
   AR13:{ id:'AR13',name:'Mortar Bond',     faction:'Architects', rarity:'Rare',   type:'Disruption',
-         desc:'Fuse ALL your adjacent same-orientation walls into one. Frees 1 wall slot per fusion.' },
+         desc:'Fuse ALL your adjacent same-orientation walls into one. Frees 1 wall slot per fusion.', energyCost:2 },
   AR15:{ id:'AR15',name:'The Grand Design', faction:'Architects', rarity:'Legendary', type:'Wall',
-         desc:'Place a 3-tile reinforced wall. Up to 2 of your other walls become permanently reinforced and gain +1 tile each.', wallLen:3, reinforced:true, special:'grandDesign' },
+         desc:'Place a 3-tile reinforced wall. Up to 2 of your other walls become permanently reinforced and gain +1 tile each.', wallLen:3, reinforced:true, special:'grandDesign', energyCost:3 },
 
   // ── PATHFINDERS ──────────────────────────────────────────────────────
   PF1: { id:'PF1', name:'Momentum',     faction:'Pathfinders', rarity:'Uncommon',   type:'Movement',
-         desc:'Gain +2 orthogonal moves this turn.', overrideSpeed:3 },
+         desc:'Gain +2 orthogonal moves this turn.', overrideSpeed:3, energyCost:3 },
   PF3: { id:'PF3', name:'Shortcut',     faction:'Pathfinders', rarity:'Uncommon', type:'Movement',
-         desc:'Move 1 space diagonally. May slip through the crack between two adjacent walls.', overrideSpeed:1, special:'shortcut' },
+         desc:'Move 1 space diagonally. May slip through the crack between two adjacent walls.', overrideSpeed:1, special:'shortcut', energyCost:1 },
   PF4: { id:'PF4', name:'Eternal Path', faction:'Pathfinders', rarity:'Rare',     type:'Movement',
-         desc:'Move up to 4 spaces this turn.', overrideSpeed:4 },
+         desc:'Move up to 4 spaces this turn.', overrideSpeed:4, energyCost:4 },
   PF5: { id:'PF5', name:'Wall Vault',   faction:'Pathfinders', rarity:'Rare',     type:'Movement',
-         desc:'Move up to 2 spaces. May pass through one non-reinforced wall.', overrideSpeed:2, tunnelThrough:true, special:'wallVault' },
+         desc:'Move up to 2 spaces. May pass through one non-reinforced wall.', overrideSpeed:2, tunnelThrough:true, special:'wallVault', energyCost:2 },
   PF7: { id:'PF7', name:'Trail Blaze',     faction:'Pathfinders', rarity:'Uncommon',   type:'Movement',
-         desc:'Move up to 2 spaces. If you end further toward goal, draw 1 card.', overrideSpeed:2, special:'trailBlaze' },
+         desc:'Move up to 2 spaces. If you end further toward goal, draw 1 card.', overrideSpeed:2, special:'trailBlaze', energyCost:2 },
   PF8: { id:'PF8', name:'Vaulting Strike', faction:'Pathfinders', rarity:'Uncommon', type:'Movement',
-         desc:'Move 1 space. May pass through non-reinforced walls. If you cross an opponent wall, you may shrink it by 1 tile. Cannot cross reinforced walls.', overrideSpeed:1, tunnelThrough:true, special:'vaultStrike' },
+         desc:'Move 1 space. May pass through non-reinforced walls. If you cross an opponent wall, you may shrink it by 1 tile. Cannot cross reinforced walls.', overrideSpeed:1, tunnelThrough:true, special:'vaultStrike', energyCost:1 },
   PF10:{ id:'PF10',name:'Grapple Hook',   faction:'Pathfinders', rarity:'Rare',     type:'Movement',
-         desc:'Choose a cardinal direction. Fire up to 4 spaces; land beside a perpendicular opponent wall, or one tile before an opponent (Binding them for 1 turn). Consumes your movement for the turn.', special:'grappleHook' },
+         desc:'Choose a cardinal direction. Fire up to 4 spaces; land beside a perpendicular opponent wall, or one tile before an opponent (Binding them for 1 turn). Consumes your movement for the turn.', special:'grappleHook', energyCost:4 },
   PF11:{ id:'PF11',name:'Pathfinder\'s Instinct', faction:'Pathfinders', rarity:'Common', type:'Disruption',
-         desc:'Reveal top 2 cards of your deck. Add all Movement cards to hand; non-Movement cards go to the bottom.' },
+         desc:'Reveal top 2 cards of your deck. Add all Movement cards to hand; non-Movement cards go to the bottom.', energyCost:1 },
   PF12:{ id:'PF12',name:'Slipstream',     faction:'Pathfinders', rarity:'Rare',   type:'Movement',
-         desc:'Move 1 space in any direction (including diagonal). Restores your normal movement if you land adjacent to an opponent wall.', overrideSpeed:1, diagonal:true, special:'slipstream' },
+         desc:'Move 1 space in any direction (including diagonal). Restores your normal movement if you land adjacent to an opponent wall.', overrideSpeed:1, diagonal:true, special:'slipstream', energyCost:1 },
   PF13:{ id:'PF13',name:'Wall Ride',       faction:'Pathfinders', rarity:'Rare',     type:'Movement',
-         desc:'Move up to 2 spaces. If you do not land adjacent to an opponent wall, you are Exhausted — skip your next movement.', overrideSpeed:2, special:'wallRide' },
+         desc:'Move up to 2 spaces. If you do not land adjacent to an opponent wall, you are Exhausted — skip your next movement.', overrideSpeed:2, special:'wallRide', energyCost:2 },
   PF14:{ id:'PF14',name:'Trailblazer\'s Mark', faction:'Pathfinders', rarity:'Uncommon', type:'Disruption', instant:true,
-         desc:'Place a mark on a random tile exactly 2 steps away. If you reach it within 2 turns, gain a bonus move on that turn. Mark is shown on the board.' },
+         desc:'Place a mark on a random tile exactly 2 steps away. If you reach it within 2 turns, gain a bonus move on that turn. Mark is shown on the board.', energyCost:0 },
   PF15:{ id:'PF15',name:'Unstoppable Charge', faction:'Pathfinders', rarity:'Legendary', type:'Movement',
-         desc:'Move up to 3 spaces. Cannot cross reinforced walls. All non-reinforced walls you pass through are destroyed. Destroyed walls return their slot to their owner.', overrideSpeed:3, tunnelThrough:true, special:'unstoppableCharge' },
+         desc:'Move up to 3 spaces. Cannot cross reinforced walls. All non-reinforced walls you pass through are destroyed. Destroyed walls return their slot to their owner.', overrideSpeed:3, tunnelThrough:true, special:'unstoppableCharge', energyCost:3 },
   PF16:{ id:'PF16',name:'Trailguard',       faction:'Pathfinders', rarity:'Common',    type:'Wall',
-         desc:'Place a 1-tile wall. Gain +1 move this turn.', wallLen:1, special:'trailguard' },
+         desc:'Place a 1-tile wall. Gain +1 move this turn.', wallLen:1, special:'trailguard', energyCost:1 },
 
   // ── WARDENS ──────────────────────────────────────────────────────────
   WD1: { id:'WD1', name:'Binding Wall',   faction:'Wardens', rarity:'Uncommon',   type:'Wall',
-         desc:'Place a 1-tile Binding Wall. If the opponent ends their turn adjacent to it, they skip their move action next turn (may still play a card).', wallLen:1, binding:true },
+         desc:'Place a 1-tile Binding Wall. If the opponent ends their turn adjacent to it, they skip their move action next turn (may still play a card).', wallLen:1, binding:true, energyCost:1 },
   WD2: { id:'WD2', name:'Tax Notice',     faction:'Wardens', rarity:'Uncommon',   type:'Disruption',
-         desc:'If the opponent has 2+ walls in play, steal 1 card of your choice from their hand.' },
+         desc:'If the opponent has 2+ walls in play, steal 1 card of your choice from their hand.', energyCost:1 },
   WD3: { id:'WD3', name:'Eviction',       faction:'Wardens', rarity:'Uncommon', type:'Disruption',
-         desc:'Move 1 non-reinforced opponent wall to any legal location on the board. The opponent cannot respond.' },
+         desc:'Move 1 non-reinforced opponent wall to any legal location on the board. The opponent cannot respond.', energyCost:2 },
   WD4: { id:'WD4', name:'Confiscate',          faction:'Wardens', rarity:'Uncommon',     type:'Disruption',
-         desc:"Discard 1 random card from your hand. Force the opponent to discard 2 random cards." },
+         desc:"Discard 1 random card from your hand. Force the opponent to discard 2 random cards.", energyCost:2 },
   WD5: { id:'WD5', name:'Total Seizure',        faction:'Wardens', rarity:'Rare',type:'Disruption',
-         desc:'Move up to 3 opponent non-reinforced walls to any legal locations of your choice.' },
+         desc:'Move up to 3 opponent non-reinforced walls to any legal locations of your choice.', energyCost:4 },
   WD6: { id:'WD6', name:'Condemned Passage',    faction:'Wardens', rarity:'Uncommon',     type:'Wall',
-         desc:'Place a 2-tile Binding Wall. Permanent. The opponent cannot jump over it — jump movement through this wall is blocked entirely.', wallLen:2, binding:true, noJump:true },
+         desc:'Place a 2-tile Binding Wall. Permanent. The opponent cannot jump over it — jump movement through this wall is blocked entirely.', wallLen:2, binding:true, noJump:true, energyCost:1 },
   WD7: { id:'WD7', name:'Subpoena',       faction:'Wardens', rarity:'Rare',     type:'Disruption',
-         desc:'Look at opponent hand. Choose 1 card — placed on bottom of their deck.' },
+         desc:'Look at opponent hand. Choose 1 card — placed on bottom of their deck.', energyCost:2 },
   WD8: { id:'WD8', name:'Embargo',        faction:'Wardens', rarity:'Common',   type:'Disruption',
-         desc:'Name a card type (Wall, Movement, or Disruption). Opponent cannot play that type next turn.' },
+         desc:'Name a card type (Wall, Movement, or Disruption). Opponent cannot play that type next turn.', energyCost:2 },
   // WD10 Asset Freeze: REMOVED
   WD11:{ id:'WD11',name:'Warden\'s Decree', faction:'Wardens', rarity:'Rare',   type:'Disruption',
-         desc:'Opponent skips their card play phase next turn (may still move).' },
+         desc:'Opponent skips their card play phase next turn (may still move).', energyCost:3 },
   WD12:{ id:'WD12',name:'Conscription',   faction:'Wardens', rarity:'Common',   type:'Disruption',
-         desc:'Draw 2 cards (if below hand limit). Opponent draws 1 (if below their limit).', instant: true },
+         desc:'Draw 2 cards (if below hand limit). Opponent draws 1 (if below their limit).', instant: true, energyCost:0 },
   WD14:{ id:'WD14',name:'Evidence Locker', faction:'Wardens', rarity:'Rare',    type:'Disruption',
-         desc:'Exile the top card of opponent discard (removed from game). Draw 1 card.' },
+         desc:'Exile the top card of opponent discard (removed from game). Draw 1 card.', energyCost:2 },
   WD15:{ id:'WD15',name:'Martial Law',    faction:'Wardens', rarity:'Legendary', type:'Disruption',
-         desc:'For 2 turns: opponent hand revealed, no Rare/Legendary plays, movement -1 (min 1).' },
+         desc:'For 2 turns: opponent hand revealed, no Rare/Legendary plays, movement -1 (min 1).', energyCost:4 },
   WD16:{ id:'WD16',name:'Repurposed Barricade', faction:'Wardens', rarity:'Rare', type:'Disruption',
-         desc:'Take control of one opponent non-reinforced wall. It becomes yours with Binding.' },
+         desc:'Take control of one opponent non-reinforced wall. It becomes yours with Binding.', energyCost:2 },
 
   // ── PHANTOMS ─────────────────────────────────────────────────────────
   PH1: { id:'PH1', name:'Phantom Wall',  faction:'Phantoms', rarity:'Common',   type:'Wall',
-         desc:'Place a phantom wall. Appears as a real 2-tile wall to the opponent. Both players can walk through it freely — doing so removes it immediately and frees the wall slot.', wallLen:2, phantom:true },
+         desc:'Place a phantom wall. Appears as a real 2-tile wall to the opponent. Both players can walk through it freely — doing so removes it immediately and frees the wall slot.', wallLen:2, phantom:true, energyCost:1 },
   PH2: { id:'PH2', name:'Compel',        faction:'Phantoms', rarity:'Common', type:'Disruption',
-         desc:'Force the opponent\'s champion to move 1 space in a direction of your choice. This is not voluntary movement — Phantom Walls are not removed by this.' },
+         desc:'Force the opponent\'s champion to move 1 space in a direction of your choice. This is not voluntary movement — Phantom Walls are not removed by this.', energyCost:1 },
   PH3: { id:'PH3', name:'Echo Strike',   faction:'Phantoms', rarity:'Common', type:'Wall',
-         desc:'Place a Phantom Wall on your side of the board and simultaneously place a real mirrored wall on the opponent\'s side at no extra cost.', wallLen:2, phantom:true, special:'echoStrike' },
+         desc:'Place a Phantom Wall on your side of the board and simultaneously place a real mirrored wall on the opponent\'s side at no extra cost.', wallLen:2, phantom:true, special:'echoStrike', energyCost:2 },
   PH4: { id:'PH4', name:'Veil Lattice',  faction:'Phantoms', rarity:'Uncommon',     type:'Wall',
-         desc:'Place 1 Phantom Wall and 1 real wall anywhere on the board. The Phantom Wall does not auto-expire — it persists until walked through.', wallLen:2, phantom:true, special:'veilLattice' },
+         desc:'Place 1 Phantom Wall and 1 real wall anywhere on the board. The Phantom Wall does not auto-expire — it persists until walked through.', wallLen:2, phantom:true, special:'veilLattice', energyCost:2 },
   PH5: { id:'PH5', name:'Compel Storm',  faction:'Phantoms', rarity:'Rare',     type:'Disruption',
-         desc:'Force the opponent\'s champion to move up to 3 spaces in directions of your choice. Real walls block individual steps. Phantom Walls do not trigger removal.' },
+         desc:'Force the opponent\'s champion to move up to 3 spaces in directions of your choice. Real walls block individual steps. Phantom Walls do not trigger removal.', energyCost:3 },
   PH8: { id:'PH8', name:'Phase Walk',     faction:'Phantoms', rarity:'Uncommon', type:'Movement',
-         desc:'Move up to 2 spaces. Phantom walls don\'t block you and aren\'t removed.', overrideSpeed:2, special:'phaseWalk' },
+         desc:'Move up to 2 spaces. Phantom walls don\'t block you and aren\'t removed.', overrideSpeed:2, special:'phaseWalk', energyCost:2 },
   PH9: { id:'PH9', name:'Haunting Presence', faction:'Phantoms', rarity:'Uncommon', type:'Disruption', instant:true,
-         desc:'(Instant) Place invisible haunt on a random tile adjacent to the opponent. Stepping on it stops movement. Lasts 2 turns.' },
+         desc:'(Instant) Place invisible haunt on a random tile adjacent to the opponent. Stepping on it stops movement. Lasts 2 turns.', energyCost:0 },
   PH10:{ id:'PH10',name:'Doppelganger Wall', faction:'Phantoms', rarity:'Common',   type:'Wall',
-         desc:'Place 2 phantom walls. One costs a slot, one is free. Both appear real.', wallLen:2, phantom:true, special:'doppelganger' },
+         desc:'Place 2 phantom walls. One costs a slot, one is free. Both appear real.', wallLen:2, phantom:true, special:'doppelganger', energyCost:2 },
   PH12:{ id:'PH12',name:'Nightmare Maze', faction:'Phantoms', rarity:'Rare',     type:'Wall',
-         desc:'Place 1 phantom wall. All existing phantom walls become real permanent walls.', wallLen:2, phantom:true, special:'nightmareMaze' },
+         desc:'Place 1 phantom wall. All existing phantom walls become real permanent walls.', wallLen:2, phantom:true, special:'nightmareMaze', energyCost:2 },
   PH13:{ id:'PH13',name:'Mind Fog',       faction:'Phantoms', rarity:'Rare',     type:'Disruption',
-         desc:'For 2 turns, opponent can only see walls in their direct line of sight. Board dimmed.' },
+         desc:'For 2 turns, opponent can only see walls in their direct line of sight. Board dimmed.', energyCost:2 },
   PH15:{ id:'PH15',name:'Ethereal Plane', faction:'Phantoms', rarity:'Legendary', type:'Movement',
-         desc:'Teleport to random tile within 3-tile radius ignoring walls. Landing hidden until opponent turn.', special:'etherealPlane' },
+         desc:'Teleport to random tile within 3-tile radius ignoring walls. Landing hidden until opponent turn.', special:'etherealPlane', energyCost:3 },
   PH16:{ id:'PH16',name:'False Trail',    faction:'Phantoms', rarity:'Common',   type:'Disruption',
-         desc:'After moving, place phantom trail on previous position. Opponent sees it as you for 1 turn.' },
+         desc:'After moving, place phantom trail on previous position. Opponent sees it as you for 1 turn.', energyCost:1 },
 
   // ── PUSHERS ──────────────────────────────────────────────────────────
   PU2: { id:'PU2', name:'Shoulder Check', faction:'Pushers', rarity:'Uncommon', type:'Movement',
-         desc:'Choose a cardinal direction. Move up to 2 spaces in a straight line. If adjacent to opponent after, push them 1 away. If NOT adjacent, exhausted (skip move next turn).', overrideSpeed:2, special:'shoulderCheck' },
+         desc:'Choose a cardinal direction. Move up to 2 spaces in a straight line. If adjacent to opponent after, push them 1 away. If NOT adjacent, exhausted (skip move next turn).', overrideSpeed:2, special:'shoulderCheck', energyCost:2 },
   PU3: { id:'PU3', name:'Battering Ram',  faction:'Pushers', rarity:'Uncommon', type:'Movement',
-         desc:'Move 1 space toward opponent. If adjacent, push them 2 spaces in that direction. Walls stop.', overrideSpeed:1, special:'batteringRam' },
+         desc:'Move 1 space toward opponent. If adjacent, push them 2 spaces in that direction. Walls stop.', overrideSpeed:1, special:'batteringRam', energyCost:1 },
   PU4: { id:'PU4', name:'Gust Wall',      faction:'Pushers', rarity:'Common',   type:'Wall',
-         desc:'Place a 2-tile wall. If opponent adjacent to placement, push them 1 space away from wall.', wallLen:2, special:'gustWall' },
+         desc:'Place a 2-tile wall. If opponent adjacent to placement, push them 1 space away from wall.', wallLen:2, special:'gustWall', energyCost:1 },
   PU7: { id:'PU7', name:'Body Block',     faction:'Pushers', rarity:'Uncommon', type:'Wall',
-         desc:'Place a 1-tile wall, then move up to 2 spaces. If opponent pinned between you and wall, they can\'t move away next turn.', wallLen:1, special:'bodyBlock' },
+         desc:'Place a 1-tile wall, then move up to 2 spaces. If opponent pinned between you and wall, they can\'t move away next turn.', wallLen:1, special:'bodyBlock', energyCost:2 },
   PU8: { id:'PU8', name:'Bulldoze',       faction:'Pushers', rarity:'Rare',     type:'Movement',
-         desc:'Move up to 3 spaces in a straight line. Push any champion in your path ahead. Walls stop both.', overrideSpeed:3, special:'bulldoze' },
+         desc:'Move up to 3 spaces in a straight line. Push any champion in your path ahead. Walls stop both.', overrideSpeed:3, special:'bulldoze', energyCost:3 },
   PU9: { id:'PU9', name:'Displacement Wall', faction:'Pushers', rarity:'Uncommon', type:'Wall',
-         desc:'Place a 2-tile wall. Push opponent 1 space toward their starting row. Walls block.', wallLen:2, special:'displacementWall' },
+         desc:'Place a 2-tile wall. Push opponent 1 space toward their starting row. Walls block.', wallLen:2, special:'displacementWall', energyCost:1 },
   PU11:{ id:'PU11',name:'Wrecking Ball',  faction:'Pushers', rarity:'Rare',     type:'Movement',
-         desc:'Choose a cardinal direction. Move up to 3 spaces in a straight line. If you hit the opponent, push them 3 spaces. Pushed into wall = wall shrunk by 1.', overrideSpeed:3, special:'wreckingBall' },
+         desc:'Choose a cardinal direction. Move up to 3 spaces in a straight line. If you hit the opponent, push them 3 spaces. Pushed into wall = wall shrunk by 1.', overrideSpeed:3, special:'wreckingBall', energyCost:3 },
   PU12:{ id:'PU12',name:'Seismic Slam',   faction:'Pushers', rarity:'Legendary', type:'Disruption',
-         desc:'Push opponent 4 spaces in chosen direction. Place 1-tile wall behind them in each vacated tile. Walls stop push.' },
+         desc:'Push opponent 4 spaces in chosen direction. Place 1-tile wall behind them in each vacated tile. Walls stop push.', energyCost:4 },
 
   // ── TRAPPERS ─────────────────────────────────────────────────────────
   TR1: { id:'TR1', name:'Root Trap',       faction:'Trappers', rarity:'Common',   type:'Disruption',
-         desc:'Place invisible root trap within 6 spaces. Opponent stepping on it: skips movement next turn. Lasts 3 turns.' },
+         desc:'Place invisible root trap within 6 spaces. Opponent stepping on it: skips movement next turn. Lasts 3 turns.', energyCost:1 },
   TR2: { id:'TR2', name:'Tripwire',        faction:'Trappers', rarity:'Common',   type:'Wall',
-         desc:'Place 1-tile wall + tripwire trap adjacent. Triggered: opponent pushed 1 space away from wall.', wallLen:1, special:'tripwire' },
+         desc:'Place 1-tile wall + tripwire trap adjacent. Triggered: opponent pushed 1 space away from wall.', wallLen:1, special:'tripwire', energyCost:1 },
   TR3: { id:'TR3', name:'Pit Trap',        faction:'Trappers', rarity:'Common',   type:'Disruption',
-         desc:'Place invisible pit trap. Opponent steps on it: loses card play that turn. Lasts 2 turns.' },
+         desc:'Place invisible pit trap. Opponent steps on it: loses card play that turn. Lasts 2 turns.', energyCost:1 },
   TR4: { id:'TR4', name:'Proximity Mine',  faction:'Trappers', rarity:'Common',   type:'Disruption',
-         desc:'Place trap adjacent to any wall. Triggered: wall shrunk by 1 tile. Lasts 3 turns.' },
+         desc:'Place trap adjacent to any wall. Triggered: wall shrunk by 1 tile. Lasts 3 turns.', energyCost:1 },
   TR5: { id:'TR5', name:'Trapper\'s Stride', faction:'Trappers', rarity:'Common', type:'Movement',
-         desc:'Move 2 spaces (own traps safe). Place 1 root trap on a tile you moved through.', overrideSpeed:2, special:'trapperStride' },
+         desc:'Move 2 spaces (own traps safe). Place 1 root trap on a tile you moved through.', overrideSpeed:2, special:'trapperStride', energyCost:2 },
   TR6: { id:'TR6', name:'Spring Trap',     faction:'Trappers', rarity:'Uncommon', type:'Disruption',
-         desc:'Place invisible trap. Triggered: opponent launched 2 spaces random non-forward direction. Lasts 3 turns.' },
+         desc:'Place invisible trap. Triggered: opponent launched 2 spaces random non-forward direction. Lasts 3 turns.', energyCost:1 },
   TR7: { id:'TR7', name:'Tangleroot',      faction:'Trappers', rarity:'Uncommon', type:'Disruption',
-         desc:'Place root traps on up to 2 tiles within 6 spaces. Triggered: opponent skips movement next turn. Lasts 2 turns.' },
+         desc:'Place root traps on up to 2 tiles within 6 spaces. Triggered: opponent skips movement next turn. Lasts 2 turns.', energyCost:2 },
   TR8: { id:'TR8', name:'Trapper\'s Barricade', faction:'Trappers', rarity:'Uncommon', type:'Wall',
-         desc:'Place 2-tile wall + root traps on tiles adjacent to each end (up to 4). Lasts 2 turns.', wallLen:2, special:'trapperBarricade' },
+         desc:'Place 2-tile wall + root traps on tiles adjacent to each end (up to 4). Lasts 2 turns.', wallLen:2, special:'trapperBarricade', energyCost:2 },
   TR10:{ id:'TR10',name:'Minefield',       faction:'Trappers', rarity:'Rare',     type:'Disruption',
-         desc:'Place root traps on up to 4 tiles anywhere. Opponent skips movement next turn. Lasts 3 turns.' },
+         desc:'Place root traps on up to 4 tiles anywhere. Opponent skips movement next turn. Lasts 3 turns.', energyCost:3 },
   TR11:{ id:'TR11',name:'Dead End',        faction:'Trappers', rarity:'Rare',     type:'Wall',
-         desc:'Place 2-tile wall + traps on adjacent tiles. Triggered trap places 1-tile wall at nearest legal position.', wallLen:2, special:'deadEnd' },
+         desc:'Place 2-tile wall + traps on adjacent tiles. Triggered trap places 1-tile wall at nearest legal position.', wallLen:2, special:'deadEnd', energyCost:2 },
   TR12:{ id:'TR12',name:'Web of Deceit',   faction:'Trappers', rarity:'Legendary', type:'Disruption',
-         desc:'Place traps on up to 6 tiles. Choose effect per trap: Root/Spring/Mine. Lasts 4 turns.' },
+         desc:'Place traps on up to 6 tiles. Choose effect per trap: Root/Spring/Mine. Lasts 4 turns.', energyCost:4 },
 
   // ── CHRONISTS ────────────────────────────────────────────────────────
   CH1: { id:'CH1', name:'Delay',           faction:'Chronists', rarity:'Common',   type:'Disruption',
-         desc:'Choose a card in hand. It activates free at start of next turn (before normal actions).' },
+         desc:'Choose a card in hand. It activates free at start of next turn (before normal actions).', energyCost:1 },
   CH2: { id:'CH2', name:'Rewind Wall',     faction:'Chronists', rarity:'Common',   type:'Disruption',
-         desc:'(Instant) Return one of your walls to hand as Basic Barrier. Wall removed from board.', instant:true },
+         desc:'(Instant) Return one of your walls to hand as Basic Barrier. Wall removed from board.', instant:true, energyCost:0 },
   CH3: { id:'CH3', name:'Temporal Wall',   faction:'Chronists', rarity:'Common',   type:'Wall',
-         desc:'Place 2-tile wall. Exists 2 turns then vanishes. Does NOT count toward wall limit.', wallLen:2, special:'temporalWall' },
+         desc:'Place 2-tile wall. Exists 2 turns then vanishes. Does NOT count toward wall limit.', wallLen:2, special:'temporalWall', energyCost:1 },
   CH6: { id:'CH6', name:'Time Loop',       faction:'Chronists', rarity:'Uncommon', type:'Disruption',
-         desc:'Return the last card you played (previous turn) from discard to hand.' },
+         desc:'Return the last card you played (previous turn) from discard to hand.', energyCost:1 },
   CH8: { id:'CH8', name:'Paradox Wall',    faction:'Chronists', rarity:'Rare', type:'Wall',
-         desc:'Place 2-tile wall. Spins around its center axis each turn if the rotation is legal.', wallLen:2, special:'paradoxWall' },
+         desc:'Place 2-tile wall. Spins around its center axis each turn if the rotation is legal.', wallLen:2, special:'paradoxWall', energyCost:1 },
   CH9: { id:'CH9', name:'Recall',          faction:'Chronists', rarity:'Rare',     type:'Disruption',
-         desc:'Return any discard pile card to hand. Play it immediately for free.' },
+         desc:'Return any discard pile card to hand. Play it immediately for free.', energyCost:2 },
   CH10:{ id:'CH10',name:'Temporal Maze',   faction:'Chronists', rarity:'Rare',     type:'Wall',
-         desc:'Place 2-tile wall. For 3 turns, place free 1-tile wall at turn start. Bonus walls vanish after 2 turns.', wallLen:2, special:'temporalMaze' },
+         desc:'Place 2-tile wall. For 3 turns, place free 1-tile wall at turn start. Bonus walls vanish after 2 turns.', wallLen:2, special:'temporalMaze', energyCost:2 },
   CH11:{ id:'CH11',name:'Infinite Recursion', faction:'Chronists', rarity:'Legendary', type:'Disruption',
-         desc:'All cards in your hand become Instants until end of turn — each may be played once without using your card play.' },
+         desc:'All cards in your hand become Instants until end of turn — each may be played once without using energy.', energyCost:4 },
   CH12:{ id:'CH12',name:'Déjà Vu',        faction:'Chronists', rarity:'Common',   type:'Disruption',
-         desc:'Next turn, you may play one extra card.' },
+         desc:'Gain +2 energy next turn.', energyCost:1 },
   CH13:{ id:'CH13',name:'Revert',          faction:'Chronists', rarity:'Uncommon', type:'Disruption',
-         desc:'Return the last wall placed (by either player) to its owner\'s hand as a Basic Barrier card.' },
+         desc:'Return the last wall placed (by either player) to its owner\'s hand as a Basic Barrier card.', energyCost:1 },
+
+  // ── ENERGY-MANIPULATION CARDS ────────────────────────────────────────
+
+  // Basic energy cards
+  B15:{ id:'B15', name:'Power Surge',      faction:'Basic', rarity:'Common',   type:'Disruption',
+        desc:'Skip your move action this turn. Gain +2 energy.', energyCost:0 },
+  B16:{ id:'B16', name:'Efficient Planning', faction:'Basic', rarity:'Common', type:'Disruption',
+        desc:'Gain +1 energy next turn (stacks). Draw 1 card.', energyCost:0 },
+
+  // Architects energy cards
+  AR16:{ id:'AR16',name:'Foundation Tap',   faction:'Architects', rarity:'Common', type:'Disruption',
+         desc:'Gain +1 energy for every 3 walls you currently have in play (rounded down).', energyCost:1 },
+  AR17:{ id:'AR17',name:'Demolish for Parts', faction:'Architects', rarity:'Uncommon', type:'Disruption',
+         desc:'Remove one of your own walls. Gain +1 energy this turn.', energyCost:0 },
+
+  // Pathfinders energy cards
+  PF17:{ id:'PF17',name:'Runner\'s High',  faction:'Pathfinders', rarity:'Common', type:'Movement',
+         desc:'Move 1 space. Gain +2 energy this turn.', overrideSpeed:1, energyCost:1 },
+  PF18:{ id:'PF18',name:'Adrenaline Rush', faction:'Pathfinders', rarity:'Common', type:'Disruption',
+         desc:'Gain +1 energy this turn. Draw 1 card. This card is exiled (removed from game after use).', energyCost:0, exile:true },
+  PF19:{ id:'PF19',name:'Trail Tax',       faction:'Pathfinders', rarity:'Uncommon', type:'Disruption',
+         desc:'Gain +1 energy for each space you\'ve moved this turn (base moves + movement cards).', energyCost:3 },
+
+  // Wardens energy cards
+  WD17:{ id:'WD17',name:'Energy Tax',      faction:'Wardens', rarity:'Uncommon', type:'Disruption',
+         desc:'The opponent loses 2 energy at the start of their next turn.', energyCost:2 },
+  WD18:{ id:'WD18',name:'Suppression Field', faction:'Wardens', rarity:'Uncommon', type:'Wall',
+         desc:'Place a 1-tile wall. If the opponent ends their turn adjacent to this wall, they lose 1 energy at the start of their next turn.', wallLen:1, special:'suppressionField', energyCost:1 },
+
+  // Phantoms energy cards
+  PH17:{ id:'PH17',name:'Phantom Siphon',  faction:'Phantoms', rarity:'Common', type:'Disruption',
+         desc:'Place an invisible energy trap on any tile within 6 spaces. When the opponent steps on it, you gain +2 energy at the start of your next turn. Lasts 3 turns.', energyCost:1 },
+  PH18:{ id:'PH18',name:'Mirage Charge',   faction:'Phantoms', rarity:'Uncommon', type:'Disruption',
+         desc:'Gain +1 energy for each phantom wall you currently have in play.', energyCost:1 },
+
+  // Pushers energy cards
+  PU13:{ id:'PU13',name:'Impact Transfer', faction:'Pushers', rarity:'Uncommon', type:'Disruption',
+         desc:'If the opponent is within 2 spaces of you, gain +2 energy this turn.', energyCost:1 },
+
+  // Trappers energy cards
+  TR13:{ id:'TR13',name:'Siphon Snare',    faction:'Trappers', rarity:'Common', type:'Disruption',
+         desc:'Place an invisible trap within 6 spaces. When triggered: opponent loses 1 energy next turn and you gain +1 energy next turn. Lasts 3 turns.', energyCost:1 },
+  TR14:{ id:'TR14',name:'Trap Harvest',    faction:'Trappers', rarity:'Uncommon', type:'Disruption',
+         desc:'Remove ALL your active traps from the board. Gain +1 energy for each trap removed.', energyCost:1 },
+
+  // Chronists energy cards
+  CH14:{ id:'CH14',name:'Temporal Battery', faction:'Chronists', rarity:'Common', type:'Disruption',
+         desc:'Carry all unspent energy over to your next turn. This card is exiled after use.', energyCost:0, exile:true },
+  CH15:{ id:'CH15',name:'Time Dilation',   faction:'Chronists', rarity:'Uncommon', type:'Disruption',
+         desc:'Gain +3 energy this turn. Lose ALL energy next turn.', energyCost:1 },
+
+  // Adepts energy cards
+  AD6:{ id:'AD6', name:'Equilibrium Charge', faction:'Adepts', rarity:'Common', type:'Disruption',
+        desc:'Gain +1 energy for each different card category you\'ve played this turn (Wall/Movement/Disruption).', energyCost:0 },
+  AD7:{ id:'AD7', name:'Energy Weave',     faction:'Adepts', rarity:'Uncommon', type:'Disruption',
+        desc:'Choose: gain +2 energy this turn, OR gain +1 energy this turn and +1 energy next turn.', energyCost:1 },
 };
 
 function getCardWallLength(cardId) {
@@ -3200,13 +3324,13 @@ function shuffle(arr) {
 function buildStarterDeck(faction) {
   // Small 10-card common-only starter decks — approachable for new players
   const deckDefs = {
-    Architects:  ['BB','BB','BB','AR1','AR2','AR3','RC','CB','AV','B01'],
-    Pathfinders: ['BB','PF16','RC','AV','AV','QS','B01','CB','PF11','B04'],
-    Wardens:     ['BB','BB','BB','RC','AV','CB','WD8','WD12','B01','B04'],
-    Phantoms:    ['BB','PH1','PH1','PH2','PH3','RC','AV','CB','QS','B01'],
-    Pushers:     ['BB','BB','BB','PU4','RC','AV','AV','CB','B01','B04'],
-    Trappers:    ['BB','BB','TR1','TR2','TR3','TR5','RC','AV','CB','B01'],
-    Chronists:   ['BB','BB','CH1','CH3','CH12','RC','AV','AV','CB','B01'],
+    Architects:  ['BB','BB','BB','AR1','AR2','AR3','RC','CB','AV','AR16'],
+    Pathfinders: ['BB','PF16','RC','AV','QS','B01','CB','PF11','PF17','PF18'],
+    Wardens:     ['BB','BB','BB','RC','AV','CB','WD8','WD12','WD17','B04'],
+    Phantoms:    ['BB','PH1','PH1','PH2','PH3','RC','AV','CB','QS','PH17'],
+    Pushers:     ['BB','BB','BB','PU4','RC','AV','AV','CB','PU13','B04'],
+    Trappers:    ['BB','BB','TR1','TR2','TR3','TR5','RC','AV','CB','TR14'],
+    Chronists:   ['BB','BB','CH1','CH3','CH12','RC','AV','AV','CB','CH14'],
   };
   const ids = deckDefs[faction] || deckDefs['Architects'];
   const base = ids.map(id => ({...CARDS[id]}));
@@ -3533,6 +3657,13 @@ function createPlayer(index, championIdOrObj, faction, deckCards, overridePos) {
     ultimateUsed: false,
     statusEffects: [],
     positionHidden: false,
+    energyPerTurn: def.energy || 3,
+    energyCurrent: def.energy || 3,
+    energyNextTurnBonus: 0,
+    energyDebt: 0,
+    energyCarryOver: 0,
+    exile: [],
+    spacesMoved: 0,
   };
 }
 
@@ -4334,6 +4465,9 @@ function executeMove(to) {
     if (isTurnDone()) gameState.phase = 'end_turn';
     renderAll(); showStatus('Shortcut: moved!', 'success'); return;
   }
+  // Track spaces moved for Trail Tax (PF19)
+  const stepsMoved = Math.abs(to.row - from.row) + Math.abs(to.col - from.col);
+  gameState.players[pi].spacesMoved = (gameState.players[pi].spacesMoved || 0) + stepsMoved;
   if (getPassiveId(pi) !== 'nyx') addLog(pi, 'move', `Moved (${from.row},${from.col}) → (${to.row},${to.col})`);
   // If a movement card was pending, resolve it now (discard + count)
   if (selectedCard && selectedCard._pendingMove) {
@@ -4811,6 +4945,7 @@ function executePlaceWall(anchor, orientation, length, isPhantom=false, isDurabl
     noJump: isNoJump,
     gust: (fromCardId === 'PU4'),
     displacement: (fromCardId === 'PU9'),
+    suppressionField: (fromCardId === 'WD18'),
     temporary: false, turnsRemaining: null,
     placedOnTurn: gameState.turnNumber,
   };
@@ -6540,9 +6675,11 @@ async function runAI() {
   // Early-game wall bonus: On Hard, turns 1-3, prioritize wall placement to
   // build defensive infrastructure before speed factions can rush the goal.
   const _earlyWallBonus = (aiDifficulty === 'hard' && gameState.turnNumber <= 3) ? 15 : 0;
+  const _aiEnergy = gameState.players[pi].energyCurrent;
   if (st.aiWalls < st.aiLimit && !_aiCardPhaseBlocked && _aiEmbargoType !== 'Wall') {
     const wallCards = st.aiHand.filter(c =>
       c.type === 'Wall' && !c.phantom && !c.special
+      && getEffectiveEnergyCost(c, pi) <= _aiEnergy
     );
     for (const card of wallCards) {
       const len = getCardWallLength(card.id);
@@ -6563,7 +6700,8 @@ async function runAI() {
 
   // ── B: Phantom wall cards (Phantoms faction) ────────────────────────
   if (aiFaction === 'Phantoms' && st.aiWalls < st.aiLimit && !_aiCardPhaseBlocked && _aiEmbargoType !== 'Wall') {
-    const phantomCards = st.aiHand.filter(c => c.type === 'Wall' && c.phantom && !c.special);
+    const phantomCards = st.aiHand.filter(c => c.type === 'Wall' && c.phantom && !c.special
+      && getEffectiveEnergyCost(c, pi) <= _aiEnergy);
     for (const card of phantomCards) {
       const len = 2;
       const cands = generateWallCandidates(st.oppPos, len);
@@ -6584,7 +6722,8 @@ async function runAI() {
 
   // ── C: Special wall cards (Double Bluff, Corner Piece, Nightmare Maze, etc.) ──
   if (st.aiWalls < st.aiLimit && !_aiCardPhaseBlocked && _aiEmbargoType !== 'Wall') {
-    const specialCards = st.aiHand.filter(c => c.type === 'Wall' && c.special);
+    const specialCards = st.aiHand.filter(c => c.type === 'Wall' && c.special
+      && getEffectiveEnergyCost(c, pi) <= _aiEnergy);
     for (const card of specialCards) {
       // Treat as a standard wall of the base length for scoring
       const len = getCardWallLength(card.id);
@@ -6625,7 +6764,8 @@ async function runAI() {
   // can reach. If the AI is blocked (dist=Infinity) or the card unlocks cells the
   // base move cannot reach (tunnel/extra speed), treat that as a large bonus.
   if (!_aiCardPhaseBlocked && _aiEmbargoType !== 'Movement') {
-    const moveCards = st.aiHand.filter(c => c.type === 'Movement');
+    const moveCards = st.aiHand.filter(c => c.type === 'Movement'
+      && getEffectiveEnergyCost(c, pi) <= _aiEnergy);
     // Compute base legal moves so we can detect what the card uniquely unlocks
     const baseMoves = getLegalMoves({...gameState, walls: st.walls}, pi);
     const baseMoveKeys = new Set(baseMoves.map(m => `${m.row},${m.col}`));
@@ -6672,7 +6812,8 @@ async function runAI() {
 
   // ── D: Disruption cards ───────────────────────────────────────────
   const dispCards = (!_aiCardPhaseBlocked && _aiEmbargoType !== 'Disruption')
-    ? st.aiHand.filter(c => c.type === 'Disruption') : [];
+    ? st.aiHand.filter(c => c.type === 'Disruption'
+      && getEffectiveEnergyCost(c, pi) <= _aiEnergy) : [];
   for (const card of dispCards) {
 
     // RC Reconstruction / A3 Reclaim: removes oldest own wall, draws 1.
@@ -9373,6 +9514,7 @@ function showChampionSelect() {
         <div class="cs-stat"><div class="cs-stat-label">WALLS</div><div class="cs-stat-val">${champ.wallLimit}</div></div>
         <div class="cs-stat"><div class="cs-stat-label">HAND</div><div class="cs-stat-val">${champ.handSize}</div></div>
         <div class="cs-stat"><div class="cs-stat-label">OPEN DRAW</div><div class="cs-stat-val">${champ.cardDraw}</div></div>
+        <div class="cs-stat"><div class="cs-stat-label">ENERGY</div><div class="cs-stat-val" style="color:var(--amber)">${champ.energy || 3}</div></div>
         <div class="cs-stat"><div class="cs-stat-label">SPEED</div><div class="cs-stat-val">${champ.moveSpeed}</div></div>
       </div>
       <div class="cs-passive">
@@ -9612,13 +9754,9 @@ function enterMoveMode() {
     showStatus('Rooted! No movement allowed this turn', 'error');
     return;
   }
-  // Magnus (Master Mason): cannot move if already played 2 cards this turn
-  if (champId === 'magnus' && cardsPlayedThisTurn >= 2) {
-    showStatus('Already played 2 cards — cannot also move this turn', 'error');
-    return;
-  }
-  // Soren (Fleetfoot): can take a 2nd move INSTEAD of playing a card (if no card played yet)
-  const sorenSecondMovePending = hasMoved && champId === 'soren' && cardsPlayedThisTurn === 0 && !gameState._sorenSecondMove;
+  // Magnus (Master Mason): energy system — no move restriction from card plays
+  // Soren (Fleetfoot): may move twice per turn (energy system — no card restriction)
+  const sorenSecondMovePending = hasMoved && champId === 'soren' && !gameState._sorenSecondMove;
   if (sorenSecondMovePending) {
     // Grant Soren a second move
     gameState._sorenSecondMove = true;
@@ -9912,6 +10050,39 @@ function getFactionRule(pi) {
   return FACTION_RULES[faction];
 }
 
+// ── Energy cost helper ──────────────────────────────────────────────
+function getEffectiveEnergyCost(card, pi) {
+  if (!card) return 0;
+  const cardDef = CARDS[card.id] || card;
+  // Instant cards are always free
+  if (card.instant || cardDef.instant || card._instantOnce) return 0;
+  // Guard: no gameState yet (champion select screen)
+  if (!gameState) return cardDef.energyCost ?? 1;
+  // Infinite Recursion: all cards free
+  if (gameState._infiniteRecursionActive === pi) return 0;
+  // Free-play (Delay, Recall, etc.)
+  if (gameState._freePlayActive) return 0;
+  const baseCost = cardDef.energyCost ?? 1;
+  // Magnus passive: Wall cards cost 1 less (min 1)
+  const champId = getPassiveId(pi);
+  if (champId === 'magnus' && cardDef.type === 'Wall') {
+    return Math.max(1, baseCost - 1);
+  }
+  return baseCost;
+}
+
+// Returns the cheapest energy cost among playable cards in hand
+function cheapestPlayableEnergy(pi) {
+  const p = gameState.players[pi];
+  if (!p || p.hand.length === 0) return Infinity;
+  let min = Infinity;
+  for (const card of p.hand) {
+    const cost = getEffectiveEnergyCost(card, pi);
+    if (cost < min) min = cost;
+  }
+  return min;
+}
+
 function isTurnDone() {
   const pi = gameState.activePlayer;
   const p  = gameState.players[pi];
@@ -9921,17 +10092,7 @@ function isTurnDone() {
   // Bonus move: don't end turn while a grantBonusMove() bonus is pending
   if (gameState._bonusMoveActive && gameState._bonusMovePi === pi) return false;
 
-  // Binding Wall: if player is bound (skip_move), they can't move — turn done after 1 card (or immediately)
-  const isBound = (p.statusEffects || []).some(e => e.type === 'skip_move' && e.turnsRemaining > 0);
-  if (isBound) {
-    if (cardsPlayedThisTurn >= 1) return true;  // played their card, done
-    if (p.hand.length === 0) return true;        // no cards to play, just end
-    return false;
-  }
-
   // ALL champions: if ultimate is charged and unused, don't auto-end the turn
-  // so the player has a chance to activate it before ending.
-  // Exception: Vex has special handling via _vexTemporalFold flag
   if (p.ultimateReady && !p.ultimateUsed) {
     if (ultId === 'vex' && gameState._vexTemporalFold) {
       // Vex already used temporal fold — allow turn to end
@@ -9940,45 +10101,37 @@ function isTurnDone() {
     }
   }
 
-  // Magnus (Master Mason): play 2 cards (any type, incl. wall) OR move + play 1 card
-  if (champId === 'magnus') {
-    if (cardsPlayedThisTurn >= 2) return true;                           // played 2 cards
-    if (hasMoved && cardsPlayedThisTurn >= 1) return true;               // moved + played 1
-    if (p.hand.length === 0 && hasMoved) return true;                    // hand empty, moved
-    if (p.hand.length === 0 && cardsPlayedThisTurn >= 1) return true;    // hand empty, played 1
-    return false;
-  }
-
-  // Soren (Fleetfoot): move twice (no card) OR move + play 1 card
-  if (champId === 'soren') {
-    if (gameState._sorenSecondMove && hasMoved) return true;             // moved twice
-    if (hasMoved && cardsPlayedThisTurn >= 1) return true;               // moved + played card
-    // Hand empty and already used second move → done
-    if (p.hand.length === 0 && gameState._sorenSecondMove && hasMoved) return true;
-    // Hand empty but haven't used second move yet → NOT done (Soren can still move again)
-    if (p.hand.length === 0 && hasMoved && !gameState._sorenSecondMove) return false;
-    if (p.hand.length === 0 && hasMoved) return true;                    // fallback
-    return false;
-  }
-
-  // All other champions: move + play 1 card (or just move if hand empty)
-  if (ultId === 'vex') {
-    console.log('[VEX isTurnDone] cardsPlayed=', cardsPlayedThisTurn, 'hasMoved=', hasMoved,
-      'hand=', p.hand.length, 'ult ready=', p.ultimateReady, 'ult used=', p.ultimateUsed,
-      'temporalFold=', gameState._vexTemporalFold);
-  }
-  // Infinite Recursion: don't end turn while _instantOnce cards remain in hand
+  // Infinite Recursion: don't end turn while _instantOnce cards remain
   if (gameState._infiniteRecursionActive === pi && p.hand.some(c => c._instantOnce)) {
     return false;
   }
-  // Don't auto-end turn if player has native instant cards in hand (e.g. Rewind Wall, Haunting Presence)
-  // These can be played at any time during the action phase without consuming card budget.
-  if (p.hand.some(c => c.instant || (CARDS[c.id] && CARDS[c.id].instant))) {
+
+  // Don't auto-end if player has native instant cards (cost 0) still in hand
+  if (p.hand.some(c => (c.instant || (CARDS[c.id] && CARDS[c.id].instant)) && !c._instantOnceUsed)) {
     return false;
   }
-  const _dvT=(p.statusEffects||[]).some(e=>e.type==='deja_vu'&&e.turnsRemaining>0);
+
+  const isBound = (p.statusEffects || []).some(e => e.type === 'skip_move' && e.turnsRemaining > 0);
+  const cheapest = cheapestPlayableEnergy(pi);
+  const canPlayCard = p.hand.length > 0 && p.energyCurrent >= cheapest;
+
+  // Bound: can't move, turn done when can't play any more cards
+  if (isBound) {
+    return !canPlayCard;
+  }
+
+  // Soren (Fleetfoot): may move twice per turn
+  if (champId === 'soren') {
+    const moveDone = gameState._sorenSecondMove && hasMoved;
+    if (!moveDone && !canPlayCard) return hasMoved; // can still move again
+    if (moveDone && !canPlayCard) return true;
+    if (!hasMoved) return false; // hasn't moved at all yet
+    return false; // still has energy for cards or moves remaining
+  }
+
+  // All champions (including Magnus): move + play cards until energy runs out
   if (p.hand.length === 0) return hasMoved;
-  return hasMoved && cardsPlayedThisTurn >= (_dvT?2:1);
+  return hasMoved && !canPlayCard;
 }
 
 function resetTurnState() {
@@ -10028,6 +10181,21 @@ function resetTurnState() {
     // _lastCardPlayed persists across turns (Faction Mirror needs it)
     // but initialize if not set
     if (!gameState._lastCardPlayed) gameState._lastCardPlayed = [null, null];
+
+    // ── Energy reset ──
+    const pi = gameState.activePlayer;
+    const p  = gameState.players[pi];
+    if (p) {
+      const base = p.energyPerTurn;
+      const bonus = p.energyNextTurnBonus || 0;
+      const debt  = p.energyDebt || 0;
+      const carry = p.energyCarryOver || 0;
+      p.energyCurrent = Math.max(0, base + bonus + carry - debt);
+      p.energyNextTurnBonus = 0;
+      p.energyDebt = 0;
+      p.energyCarryOver = 0;
+      p.spacesMoved = 0;
+    }
   }
 }
 
@@ -10215,19 +10383,12 @@ function selectCard(cardId, idx) {
   if (rule.cardOrMove && hasMoved) {
     showStatus('Already moved — this faction plays cards OR moves, not both', 'error'); return;
   }
-  // Magnus (Master Mason): can play 2 cards OR 1 card + 1 move (NOT 2 cards + 1 move)
-  const _dvB=(gameState.players[pi].statusEffects||[]).some(e=>e.type==='deja_vu'&&e.turnsRemaining>0)?1:0;
-  const magnusMax = hasMoved ? 1 : 2; // if already moved, only 1 card allowed
-  const maxCards=((champId==='magnus')?magnusMax:rule.cardPlays)+_dvB;
-  // Instant cards bypass the card-budget check — they are always free to play
-  // Also includes _instantOnce from Infinite Recursion (CH11)
+  // ── Energy-based card budget check ──
+  const energyCost = getEffectiveEnergyCost(card, pi);
+  // Instant cards (cost 0) always bypass energy check
   const isInstantCard = !!(card && (card.instant || card._instantOnce));
-  if (!isInstantCard && cardsPlayedThisTurn >= maxCards) {
-    showStatus('Card budget for this turn used up', 'error'); return;
-  }
-  // Soren (Fleetfoot): if already moved twice, no card allowed this turn
-  if (champId === 'soren' && hasMoved && cardsPlayedThisTurn === 0 && gameState._sorenSecondMove) {
-    showStatus('Already used both moves — no card this turn', 'error'); return;
+  if (!isInstantCard && energyCost > gameState.players[pi].energyCurrent) {
+    showStatus(`Not enough energy (need ${energyCost}, have ${gameState.players[pi].energyCurrent})`, 'error'); return;
   }
 
   selectedCard = { id: cardId, idx };
@@ -10302,6 +10463,9 @@ function countCardPlayed(pi, _playedCard) {
   } else {
     cardsPlayedThisTurn++;
     hasPlayedCard = true;
+    // ── Deduct energy ──
+    const energyCost = getEffectiveEnergyCost(card, pi);
+    gameState.players[pi].energyCurrent = Math.max(0, gameState.players[pi].energyCurrent - energyCost);
   }
   // Track card history for Infinite Recursion
   if (card && card.id && card.id !== '__breach__') {
@@ -11112,6 +11276,22 @@ function applyMovementCard(pi, card, idx) {
   // If no overrideSpeed is set, default to 1 (one step).
   let speed = card.overrideSpeed !== undefined ? card.overrideSpeed : 1;
 
+
+  // PF17 Runner's High: move 1 + gain +2 energy
+  if (card.id === 'PF17') {
+    // Treat as a normal movement card with speed 1, but also grant +2 energy when move completes
+    // The energy gain happens after the card is counted
+    selectedCard = { id: card.id, idx, overrideSpeed: 1, _pendingMove: true, _runnersHigh: true };
+    cardsPlayedThisTurn++;
+    hasPlayedCard = true;
+    const energyCost = getEffectiveEnergyCost(card, pi);
+    gameState.players[pi].energyCurrent = Math.max(0, gameState.players[pi].energyCurrent - energyCost);
+    gameState.players[pi].energyCurrent += 2; // +2 energy gain
+    uiMode = 'move';
+    renderAll();
+    showStatus("Runner's High — move 1 space (+2 energy gained!)", 'active');
+    return;
+  }
 
   // PF3 Shortcut: diagonal step through wall gaps
   if (card.special === 'shortcut') {
@@ -12701,11 +12881,11 @@ async function applyDisruptionCard(pi, card, idx) {
 
   // ── CH12: Déjà Vu — next card resolves twice ──
   if (card.id === 'CH12') {
-    addStatusEffect(pi, 'deja_vu', 2);
-    addLog(pi, 'card', 'Déjà Vu: extra card play next turn!');
+    gameState.players[pi].energyNextTurnBonus = (gameState.players[pi].energyNextTurnBonus || 0) + 2;
+    addLog(pi, 'card', 'Déjà Vu: +2 energy next turn!');
     discardCard(pi, idx); selectedCard = null; countCardPlayed(pi);
     if (isTurnDone()) gameState.phase = 'end_turn';
-    renderAll(); showStatus('Déjà Vu active — next card resolves twice!', 'success'); return;
+    renderAll(); showStatus('Déjà Vu: +2 energy next turn!', 'success'); return;
   }
 
   // ── CH13: Revert — return the LAST wall placed (by anyone) to its owner's hand ──
@@ -12747,6 +12927,219 @@ async function applyDisruptionCard(pi, card, idx) {
     renderAll(); showStatus(`Revert: ${whose} wall undone!`, 'success'); return;
   }
 
+
+  // ══════════════════════════════════════════════════════════════════════
+  // ── ENERGY-MANIPULATION CARDS ─────────────────────────────────────────
+  // ══════════════════════════════════════════════════════════════════════
+
+  // B15: Power Surge — skip move, gain +2 energy
+  if (card.id === 'B15') {
+    hasMoved = true; // block movement
+    gameState.players[pi].energyCurrent += 2;
+    discardCard(pi, idx); countCardPlayed(pi); selectedCard = null;
+    addLog(pi, 'card', 'Power Surge: +2 energy, forfeited movement');
+    if (isTurnDone()) gameState.phase = 'end_turn';
+    renderAll(); showStatus('Power Surge: +2 energy!', 'success'); return;
+  }
+
+  // B16: Efficient Planning — +1 energy next turn, draw 1
+  if (card.id === 'B16') {
+    gameState.players[pi].energyNextTurnBonus = (gameState.players[pi].energyNextTurnBonus || 0) + 1;
+    drawCards(pi, 1);
+    discardCard(pi, idx); countCardPlayed(pi); selectedCard = null;
+    addLog(pi, 'card', 'Efficient Planning: +1 energy next turn, drew 1');
+    if (isTurnDone()) gameState.phase = 'end_turn';
+    renderAll(); showStatus('Efficient Planning: +1 energy banked!', 'success'); return;
+  }
+
+  // AR16: Foundation Tap — +1 energy per 3 walls in play
+  if (card.id === 'AR16') {
+    const wallCount = gameState.players[pi].wallsInPlay;
+    const gain = Math.floor(wallCount / 3);
+    gameState.players[pi].energyCurrent += gain;
+    discardCard(pi, idx); countCardPlayed(pi); selectedCard = null;
+    addLog(pi, 'card', `Foundation Tap: +${gain} energy (${wallCount} walls in play)`);
+    if (isTurnDone()) gameState.phase = 'end_turn';
+    renderAll(); showStatus(`Foundation Tap: +${gain} energy!`, 'success'); return;
+  }
+
+  // AR17: Demolish for Parts — remove own wall, +1 energy
+  if (card.id === 'AR17') {
+    const myWalls = gameState.walls.filter(w => w.owner === pi && !w.isPhantom);
+    if (!myWalls.length) { showStatus('No walls to demolish', 'error'); return; }
+    gameState._demolishForPartsIdx = idx;
+    uiMode = 'wallPick';
+    selectedCard = { id: 'AR17', idx, _demolishForParts: true };
+    renderAll();
+    showStatus('Demolish for Parts — click one of your walls to remove for +1 energy', 'active'); return;
+  }
+
+  // PF18: Adrenaline Rush — +1 energy, draw 1, exile card
+  if (card.id === 'PF18') {
+    gameState.players[pi].energyCurrent += 1;
+    drawCards(pi, 1);
+    // Exile instead of discard
+    const removed = gameState.players[pi].hand.splice(idx, 1)[0];
+    if (!gameState.players[pi].exile) gameState.players[pi].exile = [];
+    gameState.players[pi].exile.push(removed);
+    countCardPlayed(pi); selectedCard = null;
+    addLog(pi, 'card', 'Adrenaline Rush: +1 energy, drew 1, card exiled');
+    if (isTurnDone()) gameState.phase = 'end_turn';
+    renderAll(); showStatus('Adrenaline Rush: +1 energy! Card exiled.', 'success'); return;
+  }
+
+  // PF19: Trail Tax — +1 energy per space moved this turn
+  if (card.id === 'PF19') {
+    const moved = gameState.players[pi].spacesMoved || 0;
+    gameState.players[pi].energyCurrent += moved;
+    discardCard(pi, idx); countCardPlayed(pi); selectedCard = null;
+    addLog(pi, 'card', `Trail Tax: +${moved} energy (${moved} spaces moved)`);
+    if (isTurnDone()) gameState.phase = 'end_turn';
+    renderAll(); showStatus(`Trail Tax: +${moved} energy!`, 'success'); return;
+  }
+
+  // WD17: Energy Tax — opponent loses 2 energy next turn
+  if (card.id === 'WD17') {
+    gameState.players[opp].energyDebt = (gameState.players[opp].energyDebt || 0) + 2;
+    discardCard(pi, idx); countCardPlayed(pi); selectedCard = null;
+    addLog(pi, 'card', 'Energy Tax: opponent loses 2 energy next turn');
+    if (isTurnDone()) gameState.phase = 'end_turn';
+    renderAll(); showStatus('Energy Tax applied!', 'success'); return;
+  }
+
+  // PH17: Phantom Siphon — place invisible energy trap within 6 spaces
+  if (card.id === 'PH17') {
+    // For now: simplified — place trap at random tile near opponent
+    const oppPos = gameState.players[opp].position;
+    const tiles = [];
+    for (let r = Math.max(0, oppPos.row-3); r <= Math.min(BOARD_ROWS-1, oppPos.row+3); r++) {
+      for (let c = Math.max(0, oppPos.col-3); c <= Math.min(BOARD_COLS-1, oppPos.col+3); c++) {
+        const dist = Math.abs(r - gameState.players[pi].position.row) + Math.abs(c - gameState.players[pi].position.col);
+        if (dist <= 6) tiles.push({row:r, col:c});
+      }
+    }
+    if (tiles.length) {
+      const target = tiles[Math.floor(Math.random() * tiles.length)];
+      if (!gameState._traps) gameState._traps = [];
+      gameState._traps.push({
+        type: 'energy_siphon', owner: pi, row: target.row, col: target.col,
+        turnsRemaining: 3, energyGain: 2
+      });
+    }
+    discardCard(pi, idx); countCardPlayed(pi); selectedCard = null;
+    addLog(pi, 'card', 'Phantom Siphon: energy trap placed');
+    if (isTurnDone()) gameState.phase = 'end_turn';
+    renderAll(); showStatus('Phantom Siphon: energy trap set!', 'success'); return;
+  }
+
+  // PH18: Mirage Charge — +1 energy per phantom wall in play
+  if (card.id === 'PH18') {
+    const phantomCount = gameState.walls.filter(w => w.isPhantom && w.owner === pi).length;
+    gameState.players[pi].energyCurrent += phantomCount;
+    discardCard(pi, idx); countCardPlayed(pi); selectedCard = null;
+    addLog(pi, 'card', `Mirage Charge: +${phantomCount} energy (${phantomCount} phantom walls)`);
+    if (isTurnDone()) gameState.phase = 'end_turn';
+    renderAll(); showStatus(`Mirage Charge: +${phantomCount} energy!`, 'success'); return;
+  }
+
+  // PU13: Impact Transfer — +2 energy if opponent within 2 spaces
+  if (card.id === 'PU13') {
+    const myPos = gameState.players[pi].position;
+    const oppPos = gameState.players[opp].position;
+    const dist = Math.abs(myPos.row - oppPos.row) + Math.abs(myPos.col - oppPos.col);
+    const gain = dist <= 2 ? 2 : 0;
+    gameState.players[pi].energyCurrent += gain;
+    discardCard(pi, idx); countCardPlayed(pi); selectedCard = null;
+    addLog(pi, 'card', `Impact Transfer: ${gain > 0 ? '+2 energy (opponent in range)' : 'no gain (opponent too far)'}`);
+    if (isTurnDone()) gameState.phase = 'end_turn';
+    renderAll(); showStatus(gain > 0 ? 'Impact Transfer: +2 energy!' : 'Impact Transfer: opponent out of range', gain > 0 ? 'success' : 'error'); return;
+  }
+
+  // TR13: Siphon Snare — place energy drain trap
+  if (card.id === 'TR13') {
+    const myPos = gameState.players[pi].position;
+    const tiles = [];
+    for (let r = 0; r < BOARD_ROWS; r++) {
+      for (let c = 0; c < BOARD_COLS; c++) {
+        const dist = Math.abs(r - myPos.row) + Math.abs(c - myPos.col);
+        if (dist <= 6 && dist > 0) tiles.push({row:r, col:c});
+      }
+    }
+    if (tiles.length) {
+      const target = tiles[Math.floor(Math.random() * tiles.length)];
+      if (!gameState._traps) gameState._traps = [];
+      gameState._traps.push({
+        type: 'siphon_snare', owner: pi, row: target.row, col: target.col,
+        turnsRemaining: 3, energyDrain: 1, energyGain: 1
+      });
+    }
+    discardCard(pi, idx); countCardPlayed(pi); selectedCard = null;
+    addLog(pi, 'card', 'Siphon Snare: energy drain trap placed');
+    if (isTurnDone()) gameState.phase = 'end_turn';
+    renderAll(); showStatus('Siphon Snare set!', 'success'); return;
+  }
+
+  // TR14: Trap Harvest — remove all traps, +1 energy each
+  if (card.id === 'TR14') {
+    const myTraps = (gameState._traps || []).filter(t => t.owner === pi);
+    const count = myTraps.length;
+    gameState._traps = (gameState._traps || []).filter(t => t.owner !== pi);
+    gameState.players[pi].energyCurrent += count;
+    discardCard(pi, idx); countCardPlayed(pi); selectedCard = null;
+    addLog(pi, 'card', `Trap Harvest: removed ${count} traps, +${count} energy`);
+    if (isTurnDone()) gameState.phase = 'end_turn';
+    renderAll(); showStatus(`Trap Harvest: +${count} energy!`, 'success'); return;
+  }
+
+  // CH14: Temporal Battery — carry unspent energy to next turn, exile
+  if (card.id === 'CH14') {
+    gameState.players[pi].energyCarryOver = gameState.players[pi].energyCurrent;
+    // Exile instead of discard
+    const removed = gameState.players[pi].hand.splice(idx, 1)[0];
+    if (!gameState.players[pi].exile) gameState.players[pi].exile = [];
+    gameState.players[pi].exile.push(removed);
+    countCardPlayed(pi); selectedCard = null;
+    addLog(pi, 'card', 'Temporal Battery: energy will carry over to next turn. Card exiled.');
+    if (isTurnDone()) gameState.phase = 'end_turn';
+    renderAll(); showStatus('Temporal Battery: energy banked!', 'success'); return;
+  }
+
+  // CH15: Time Dilation — +3 energy now, lose all next turn
+  if (card.id === 'CH15') {
+    gameState.players[pi].energyCurrent += 3;
+    gameState.players[pi].energyDebt = 999; // lose ALL energy next turn
+    discardCard(pi, idx); countCardPlayed(pi); selectedCard = null;
+    addLog(pi, 'card', 'Time Dilation: +3 energy now, lose all energy next turn');
+    if (isTurnDone()) gameState.phase = 'end_turn';
+    renderAll(); showStatus('Time Dilation: +3 energy! (0 next turn)', 'success'); return;
+  }
+
+  // AD6: Equilibrium Charge — +1 per category played this turn
+  if (card.id === 'AD6') {
+    const cats = [gameState._turnCategoryWall, gameState._turnCategoryMovement, gameState._turnCategoryDisruption].filter(Boolean).length;
+    gameState.players[pi].energyCurrent += cats;
+    discardCard(pi, idx); countCardPlayed(pi); selectedCard = null;
+    addLog(pi, 'card', `Equilibrium Charge: +${cats} energy (${cats} categories played)`);
+    if (isTurnDone()) gameState.phase = 'end_turn';
+    renderAll(); showStatus(`Equilibrium Charge: +${cats} energy!`, 'success'); return;
+  }
+
+  // AD7: Energy Weave — choose +2 now or +1 now/+1 next
+  if (card.id === 'AD7') {
+    // AI and simple mode: always pick +2 now. Human gets a choice prompt.
+    if (!isHumanSeat(pi)) {
+      gameState.players[pi].energyCurrent += 2;
+      discardCard(pi, idx); countCardPlayed(pi); selectedCard = null;
+      addLog(pi, 'card', 'Energy Weave: +2 energy this turn');
+    } else {
+      // Simple: +2 now (can add modal later for choice)
+      gameState.players[pi].energyCurrent += 2;
+      discardCard(pi, idx); countCardPlayed(pi); selectedCard = null;
+      addLog(pi, 'card', 'Energy Weave: +2 energy this turn');
+    }
+    if (isTurnDone()) gameState.phase = 'end_turn';
+    renderAll(); showStatus('Energy Weave: +2 energy!', 'success'); return;
+  }
 
   // ── A3: Reclaim — pick up oldest own wall, shuffle a Standard Wall into deck ──
   // The reclaimed card enters the deck (available next turn), not the hand,
@@ -13326,16 +13719,14 @@ function applyUltimate(pi, champId) {
     }
 
     case 'vex': {
-      // Temporal Fold: extra action phase — allow 1 more card play + 1 more movement
-      console.log('[VEX ULT] Before: cardsPlayedThisTurn=', cardsPlayedThisTurn, 'hasMoved=', hasMoved, 'hasPlayedCard=', hasPlayedCard);
-      hasPlayedCard = false;
+      // Temporal Fold: +3 energy + extra movement
+      console.log('[VEX ULT] Before: energy=', gameState.players[pi].energyCurrent, 'hasMoved=', hasMoved);
       hasMoved = false;
-      // Reset card count to 0 so the player gets a full fresh card play
-      cardsPlayedThisTurn = 0;
+      gameState.players[pi].energyCurrent += 3;
       gameState._vexTemporalFold = true;
-      console.log('[VEX ULT] After: cardsPlayedThisTurn=', cardsPlayedThisTurn, 'hasMoved=', hasMoved, 'hasPlayedCard=', hasPlayedCard);
-      addLog(pi, 'ultimate', 'Temporal Fold: extra action phase — play another card and move again!');
-      showStatus('Temporal Fold — you get an extra card play and an extra movement!', 'success');
+      console.log('[VEX ULT] After: energy=', gameState.players[pi].energyCurrent, 'hasMoved=', hasMoved);
+      addLog(pi, 'ultimate', 'Temporal Fold: +3 energy and an extra movement!');
+      showStatus('Temporal Fold — +3 energy and move again!', 'success');
       renderAll(); return; // Don't fall through to countCardPlayed
     }
 
@@ -13447,6 +13838,19 @@ function maybeAIUltimate(pi) {
     }
   }
 
+  // ── Suppression Field: if adjacent to opponent's suppression wall, lose 1 energy next turn ──
+  const oppSuppressionWalls = gameState.walls.filter(w => w.suppressionField && w.owner === opp && !w.isPhantom);
+  const adjSuppression = oppSuppressionWalls.some(w =>
+    wallEdges(w).some(e =>
+      (e.a.row === pos.row && e.a.col === pos.col) ||
+      (e.b.row === pos.row && e.b.col === pos.col)
+    )
+  );
+  if (adjSuppression) {
+    gameState.players[pi].energyDebt = (gameState.players[pi].energyDebt || 0) + 1;
+    addLog(pi, 'system', 'Suppression Field: lose 1 energy next turn');
+  }
+
   // Nyx trail: decrement for the OPPONENT's seat when their turn ends.
   // The trail is set when Nyx moves, survives through Nyx's own end-turn push,
   // and expires after the opponent has had their full turn to see the ghost.
@@ -13521,8 +13925,8 @@ function updateActionBar() {
   if (btnMove) {
     const pi = gameState.activePlayer;
     const champId = isHuman && gameState.players[pi] ? getPassiveId(pi) : null;
-    // Soren can take a second move if no card played yet and hasn't used second move
-    const sorenCanMoveAgain = champId === 'soren' && hasMoved && cardsPlayedThisTurn === 0 && !gameState._sorenSecondMove;
+    // Soren can take a second move (energy system — no card restriction)
+    const sorenCanMoveAgain = champId === 'soren' && hasMoved && !gameState._sorenSecondMove;
     const isBound = isHuman && (gameState.players[pi]?.statusEffects || []).some(e => (e.type === 'skip_move' || e.type === 'bound') && e.turnsRemaining > 0);
     btnMove.disabled = !isAction || (hasMoved && !sorenCanMoveAgain) || isBound || (gameMode === 'mp' ? gameState.activePlayer !== mp_localSeat : (!isHuman || aiThinking));
     const moveAvailable = !btnMove.disabled && uiMode !== 'move';
@@ -13636,6 +14040,7 @@ function renderBottomPanel() {
 
   renderChargeBar('bp-charge-bar', p.ultimateCharge, c.ultimateCost, p.ultimateReady);
   renderWallPips('bp-wall-pips', p.wallsInPlay, p.wallLimitCurrent);
+  renderEnergyBar('bp-energy-bar', p.energyCurrent, p.energyPerTurn);
 
   // Ultimate button
   const ultBtn = document.getElementById('bp-ult-btn');
@@ -13912,6 +14317,7 @@ function renderPanels() {
 
     renderChargeBar(`${prefix}-charge-bar`, p.ultimateCharge, def.ultimateCost, p.ultimateReady);
     renderWallPips(`${prefix}-wall-pips`, p.wallsInPlay, p.wallLimitCurrent);
+    renderEnergyBar(`${prefix}-energy-bar`, p.energyCurrent, p.energyPerTurn);
 
     // Status chips
     const statusEl = document.getElementById(`${prefix}-status`);
@@ -13970,10 +14376,15 @@ function renderCard(card, idx, pi, interactive, canPlayNonInstant) {
   const isEchoPick = gameState._vexEchoPending && pi === gameState.activePlayer && interactive;
   const isInstantOnce = !!card._instantOnce;
   const isInstant = !!(card.instant || card._instantOnce);
-  const isPlayable = interactive && (isInstant || canPlayNonInstant);
-  const cls = `card${isSel?' selected':''}${!interactive?' card-disabled':''}${isPlayable && !isSel?' card-playable':''}${isEchoPick?' echo-pick':''}${isInstantOnce?' card-instant-once':''}`;
+  const energyCost = getEffectiveEnergyCost(card, pi);
+  const canAfford = isInstant || gameState.players[pi].energyCurrent >= energyCost;
+  const isPlayable = interactive && (isInstant || canPlayNonInstant) && canAfford;
+  const noEnergy = interactive && !isInstant && !canAfford;
+  const cls = `card${isSel?' selected':''}${!interactive?' card-disabled':''}${isPlayable && !isSel?' card-playable':''}${isEchoPick?' echo-pick':''}${isInstantOnce?' card-instant-once':''}${noEnergy?' card-no-energy':''}`;
   const instantBadge = isInstantOnce ? '<span class="instant-badge">⚡ INSTANT</span>' : '';
+  const costBadge = `<span class="energy-cost-badge${noEnergy?' energy-cost-dim':''}">${energyCost}</span>`;
   return `<div class="${cls}" onclick="${interactive?`selectCard('${card.id}',${idx})`:''}">
+    ${costBadge}
     <div class="card-name"><span class="rarity-dot rarity-${card.rarity}"></span>${card.name}</div>
     <div style="margin-bottom:3px;"><span class="card-type-badge type-${card.type}">${card.type}</span>${instantBadge}</div>
     <div class="card-desc">${card.desc}</div>
@@ -13994,6 +14405,15 @@ function renderWallPips(id, inPlay, limit) {
   if (!el) return;
   el.innerHTML = Array.from({length:limit},(_,i)=>
     `<div class="wall-pip${i<inPlay?' filled':''}"></div>`).join('');
+}
+
+function renderEnergyBar(id, current, max) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.innerHTML = `<span class="energy-label">ENERGY</span>` +
+    Array.from({length: Math.max(max, current)}, (_, i) =>
+      `<div class="energy-pip${i < current ? ' filled' : ''}"></div>`
+    ).join('');
 }
 
 function renderBoard() {
@@ -14290,6 +14710,7 @@ function renderWalls() {
     if (wall.immune || wall.permanent || wall.reinforced) cls += ' wall-immune';
     if (wall.reinforced) cls += ' wall-reinforced';
     if (wall.binding) cls += ' wall-binding';
+    if (wall.suppressionField) cls += ' wall-suppression';
     if (wall.gust) cls += ' wall-gust';
     if (wall.displacement) cls += ' wall-displacement';
     if (wall._paradox && wall.owner === localPlayer) cls += ' wall-paradox';
@@ -14416,8 +14837,46 @@ function renderWalls() {
       continue;
     }
 
+    // ── Wall hover tooltip (only when not in a card-placement mode) ──
+    if (uiMode === 'idle' || uiMode === 'move') {
+      el.addEventListener('mouseenter', (e) => showWallTooltip(e, wall));
+      el.addEventListener('mouseleave', hideWallTooltip);
+    }
+
     layer.appendChild(el);
   }
+}
+
+function showWallTooltip(e, wall) {
+  hideWallTooltip();
+  const props = [];
+  const ownerLabel = wall.owner === -1 ? 'Boss' : `Player ${wall.owner + 1}`;
+  props.push(ownerLabel + ' wall');
+  props.push(wall.length + '-tile ' + wall.orientation);
+  if (wall.reinforced) props.push('Reinforced — indestructible');
+  if (wall.binding) props.push('Binding — adjacent opponent skips move');
+  if (wall.isPhantom) props.push('Phantom — can be walked through');
+  if (wall.temporary) props.push('Temporal — vanishes in ' + (wall._turnsLeft || '?') + ' turns');
+  if (wall._paradox) props.push('Paradox — rotates each turn');
+  if (wall.special === 'suppressionField') props.push('Suppression — adjacent opponent loses 1 energy');
+  if (wall.gust) props.push('Gust — pushes adjacent opponent');
+  if (wall.displacement) props.push('Displacement — pushes toward start');
+  if (wall.noJump) props.push('No-jump — blocks jump movement');
+
+  const tip = document.createElement('div');
+  tip.id = 'wall-tooltip';
+  tip.style.cssText = `position:fixed;z-index:9999;background:var(--surface2);border:1px solid var(--border-hi);
+    color:var(--text);font-size:10px;padding:6px 10px;border-radius:4px;pointer-events:none;
+    max-width:220px;line-height:1.5;font-family:'JetBrains Mono',monospace;box-shadow:0 4px 12px rgba(0,0,0,0.4);`;
+  tip.innerHTML = props.join('<br>');
+  document.body.appendChild(tip);
+  tip.style.left = Math.min(e.clientX + 12, window.innerWidth - tip.offsetWidth - 8) + 'px';
+  tip.style.top = Math.min(e.clientY + 12, window.innerHeight - tip.offsetHeight - 8) + 'px';
+}
+
+function hideWallTooltip() {
+  const tip = document.getElementById('wall-tooltip');
+  if (tip) tip.remove();
 }
 
 function pickWallForRedeploy(wall) {
