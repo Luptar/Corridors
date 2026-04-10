@@ -128,15 +128,17 @@
     min-width: 0;
     min-height: 0;
   }
-  /* Bottom panel cards: grid layout, auto-fill to fit */
+  /* Bottom panel cards: horizontal row */
   #bp-hand, #bp-revealed-cards {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+    display: flex;
+    flex-direction: row;
     gap: 4px;
+    overflow-x: auto;
   }
   #bp-hand .card, #bp-revealed-cards .card {
-    width: auto;
-    min-width: 0;
+    flex: 1 1 0;
+    min-width: 100px;
+    max-width: 180px;
     padding: 4px 6px;
   }
   #bp-hand .card-name, #bp-revealed-cards .card-name { font-size: 12px; }
@@ -172,11 +174,11 @@
   #opponent-left-panel {
     background: var(--surface);
     border-right: 1px solid var(--border);
-    padding: 8px;
+    padding: 10px;
     display: flex;
     flex-direction: column;
-    gap: 6px;
-    width: 180px;
+    gap: 8px;
+    width: 210px;
     flex-shrink: 0;
     overflow-y: auto;
     max-height: 100vh;
@@ -184,24 +186,24 @@
   #opponent-left-panel .opp-card {
     background: rgba(255,255,255,0.02);
     border: 1px solid var(--border);
-    padding: 6px 8px;
-    font-size: 9px;
+    padding: 8px 10px;
+    font-size: 11px;
   }
   #opponent-left-panel .opp-card.opp-active {
     border-color: var(--amber);
     box-shadow: 0 0 6px rgba(212,144,58,0.3);
   }
   #opponent-left-panel .opp-last-turn {
-    margin-top: 4px;
-    padding-top: 4px;
+    margin-top: 5px;
+    padding-top: 5px;
     border-top: 1px solid var(--border);
   }
   #opponent-left-panel .opp-last-card {
     background: rgba(255,255,255,0.03);
     border: 1px solid var(--border);
-    padding: 2px 4px;
-    margin-top: 2px;
-    font-size: 8px;
+    padding: 3px 6px;
+    margin-top: 3px;
+    font-size: 10px;
     color: #aaa;
   }
   .card-history-label {
@@ -3389,7 +3391,7 @@ const CARDS = {
 
   // ── CHRONISTS ────────────────────────────────────────────────────────
   CH1: { id:'CH1', name:'Delay',           faction:'Chronists', rarity:'Common',   type:'Disruption',
-         desc:'Choose a card in hand. It activates at start of next turn (costs energy normally).', energyCost:0 },
+         desc:'Choose a card in hand. Pay its energy cost now — it activates free at start of next turn.', energyCost:0 },
   CH2: { id:'CH2', name:'Rewind Wall',     faction:'Chronists', rarity:'Common',   type:'Disruption',
          desc:'(Instant) Return one of your walls to hand as Basic Barrier. Wall removed from board.', instant:true, energyCost:0 },
   CH3: { id:'CH3', name:'Temporal Wall',   faction:'Chronists', rarity:'Common',   type:'Wall',
@@ -3405,7 +3407,7 @@ const CARDS = {
   CH11:{ id:'CH11',name:'Infinite Recursion', faction:'Chronists', rarity:'Legendary', type:'Disruption',
          desc:'All cards in your hand become Instants until end of turn — each may be played once without using energy.', energyCost:4 },
   CH12:{ id:'CH12',name:'Déjà Vu',        faction:'Chronists', rarity:'Common',   type:'Disruption',
-         desc:'Gain +1 energy next turn.', energyCost:1 },
+         desc:'Gain +1 energy next turn. Exiled after use.', energyCost:1, exile:true },
   CH13:{ id:'CH13',name:'Revert',          faction:'Chronists', rarity:'Uncommon', type:'Disruption',
          desc:'Return the last wall placed (by either player) to its owner\'s hand as a Basic Barrier card.', energyCost:1 },
 
@@ -3413,9 +3415,9 @@ const CARDS = {
 
   // Basic energy cards
   B15:{ id:'B15', name:'Power Surge',      faction:'Basic', rarity:'Common',   type:'Disruption',
-        desc:'Skip your move action this turn. Gain +2 energy.', energyCost:0 },
+        desc:'Skip your move action this turn. Gain +2 energy. Exiled after use.', energyCost:0, exile:true },
   B16:{ id:'B16', name:'Efficient Planning', faction:'Basic', rarity:'Common', type:'Disruption',
-        desc:'Gain +1 energy next turn (stacks). Draw 1 card.', energyCost:0 },
+        desc:'Gain +1 energy next turn (stacks). Draw 1 card. Exiled after use.', energyCost:0, exile:true },
 
   // Architects energy cards
   AR16:{ id:'AR16',name:'Foundation Tap',   faction:'Architects', rarity:'Common', type:'Disruption',
@@ -3481,15 +3483,15 @@ function shuffle(arr) {
 
 // GDD-accurate starter decks per faction
 function buildStarterDeck(faction) {
-  // Small 10-card common-only starter decks — approachable for new players
+  // 20-card starter decks — doubled from original 10-card decks with same ratio
   const deckDefs = {
-    Architects:  ['BB','BB','BB','AR1','AR2','AR3','RC','CB','AV','AR16'],
-    Pathfinders: ['BB','PF16','RC','AV','QS','B01','CB','PF11','PF17','PF18'],
-    Wardens:     ['BB','BB','BB','RC','AV','CB','WD8','WD12','WD17','B04'],
-    Phantoms:    ['BB','PH1','PH1','PH2','PH3','RC','AV','CB','QS','PH17'],
-    Pushers:     ['BB','BB','BB','PU4','RC','AV','AV','CB','PU13','B04'],
-    Trappers:    ['BB','BB','TR1','TR2','TR3','TR5','RC','AV','CB','TR14'],
-    Chronists:   ['BB','BB','CH1','CH3','CH12','RC','AV','AV','CB','CH14'],
+    Architects:  ['BB','BB','BB','AR1','AR2','AR3','RC','CB','AV','AR16','BB','BB','BB','AR1','AR2','AR3','RC','CB','AV','AR16'],
+    Pathfinders: ['BB','PF16','RC','AV','QS','B01','CB','PF11','PF17','PF18','BB','PF16','RC','AV','QS','B01','CB','PF11','PF17','PF18'],
+    Wardens:     ['BB','BB','BB','RC','AV','CB','WD8','WD12','WD17','B04','BB','BB','BB','RC','AV','CB','WD8','WD12','WD17','B04'],
+    Phantoms:    ['BB','PH1','PH1','PH2','PH3','RC','AV','CB','QS','PH17','BB','PH1','PH1','PH2','PH3','RC','AV','CB','QS','PH17'],
+    Pushers:     ['BB','BB','BB','PU4','RC','AV','AV','CB','PU13','B04','BB','BB','BB','PU4','RC','AV','AV','CB','PU13','B04'],
+    Trappers:    ['BB','BB','TR1','TR2','TR3','TR5','RC','AV','CB','TR14','BB','BB','TR1','TR2','TR3','TR5','RC','AV','CB','TR14'],
+    Chronists:   ['BB','BB','CH1','CH3','CH12','RC','AV','AV','CB','CH14','BB','BB','CH1','CH3','CH12','RC','AV','AV','CB','CH14'],
   };
   const ids = deckDefs[faction] || deckDefs['Architects'];
   const base = ids.map(id => ({...CARDS[id]}));
@@ -5766,14 +5768,8 @@ function resolveDelayedCards(pi) {
   gameState._delayedCards[pi] = [];
 
   for (const card of delayed) {
-    // Delayed cards cost energy when they activate (Delay itself costs 0)
-    const delayCost = getEffectiveEnergyCost(card, pi);
-    if (delayCost > gameState.players[pi].energyCurrent) {
-      addLog(pi, 'card', `Delayed ${card.name}: not enough energy (need ${delayCost}, have ${gameState.players[pi].energyCurrent}) — card lost`);
-      continue;
-    }
-    gameState.players[pi].energyCurrent -= delayCost;
-    addLog(pi, 'card', `Delayed ${card.name} activates! (${delayCost} energy)`);
+    // Delayed cards play for free — energy was already paid when Delay was used
+    addLog(pi, 'card', `Delayed ${card.name} activates! (free — energy pre-paid)`);
     // Resolve the card as if played — route through type handlers
     if (card.type === 'Wall') {
       if (!isHumanSeat(pi)) {
@@ -5794,11 +5790,7 @@ function resolveDelayedCards(pi) {
             break;
           }
         }
-        if (!placed) {
-          addLog(pi, 'card', `Delayed ${card.name}: no legal placement found, card lost`);
-          // Refund energy since placement failed
-          gameState.players[pi].energyCurrent += delayCost;
-        }
+        if (!placed) addLog(pi, 'card', `Delayed ${card.name}: no legal placement found, card lost`);
         continue; // process remaining delayed cards
       }
       // Human: Enter wall placement mode with the delayed card
@@ -5828,7 +5820,7 @@ function resolveDelayedCards(pi) {
         tunnelThrough: !!card.tunnelThrough, diagonal: !!card.diagonal,
         ownWallsPassthrough: !!card.ownWallsPassthrough,
         lateralOnly: !!(card.special === 'flanking'),
-        _pendingMove: true, _delayed: true };
+        _pendingMove: true, _delayed: true, _freePlay: true };
       // Flanking Path delayed: restrict to lateral only
       if (card.special === 'flanking') selectedCard.lateralOnly = true;
       uiMode = 'move';
@@ -5838,13 +5830,14 @@ function resolveDelayedCards(pi) {
     } else if (card.type === 'Disruption') {
       // Resolve delayed disruption card through the proper handler
       addLog(pi, 'card', `Delayed ${card.name} activates!`);
+      gameState._freePlayActive = true;
       if (!isHumanSeat(pi)) {
-        selectedCard = { id: card.id, idx: -99, _delayed: true };
+        selectedCard = { id: card.id, idx: -99, _delayed: true, _freePlay: true };
         applyDisruptionCard(pi, card, -99);
-        selectedCard = null;
+        selectedCard = null; gameState._freePlayActive = false;
         continue;
       } else {
-        selectedCard = { id: card.id, idx: -99, _delayed: true };
+        selectedCard = { id: card.id, idx: -99, _delayed: true, _freePlay: true };
         applyDisruptionCard(pi, card, -99);
         // If the disruption needs UI interaction (e.g. card picker), it will return
         // and the remaining delayed cards will be processed next turn
@@ -8963,6 +8956,8 @@ function showGauntletShop() {
   const weights = GAUNTLET_CARD_WEIGHTS[stage] || GAUNTLET_CARD_WEIGHTS[1];
   const allCards = Object.values(CARDS);
   const gold = _gauntletRun.gold || 0;
+  let shopRemovedCard = false;   // track if card removal was used this visit
+  let shopUpgradedStat = false;  // track if stat upgrade was used this visit
 
   // Generate 5 random cards from any faction
   const shopCards = [];
@@ -9003,8 +8998,8 @@ function showGauntletShop() {
       </div>`;
     }).join('');
 
-    const canRemove = curGold >= GAUNTLET_SHOP_PRICES.cardRemoval && _gauntletRun.deck.length > 5;
-    const canUpgrade = curGold >= GAUNTLET_SHOP_PRICES.statUpgrade;
+    const canRemove = curGold >= GAUNTLET_SHOP_PRICES.cardRemoval && _gauntletRun.deck.length > 5 && !shopRemovedCard;
+    const canUpgrade = curGold >= GAUNTLET_SHOP_PRICES.statUpgrade && !shopUpgradedStat;
 
     overlay.innerHTML = `
       <div style="font-size:32px;margin-bottom:4px;">🏪</div>
@@ -9014,10 +9009,10 @@ function showGauntletShop() {
       <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin-bottom:20px;">${cardsHtml}</div>
       <div style="display:flex;gap:12px;margin-bottom:20px;">
         <button ${canRemove ? 'onclick="gauntletShopRemoveCard()"' : 'disabled'} class="action-btn" style="font-size:10px;padding:6px 14px;${canRemove?'':'opacity:0.4;'}">
-          REMOVE A CARD · 🪙 ${GAUNTLET_SHOP_PRICES.cardRemoval}
+          ${shopRemovedCard ? 'CARD REMOVED (1/visit)' : `REMOVE A CARD · 🪙 ${GAUNTLET_SHOP_PRICES.cardRemoval}`}
         </button>
         <button ${canUpgrade ? 'onclick="gauntletShopStatUpgrade()"' : 'disabled'} class="action-btn" style="font-size:10px;padding:6px 14px;${canUpgrade?'':'opacity:0.4;'}">
-          STAT UPGRADE · 🪙 ${GAUNTLET_SHOP_PRICES.statUpgrade}
+          ${shopUpgradedStat ? 'STAT UPGRADED (1/visit)' : `STAT UPGRADE · 🪙 ${GAUNTLET_SHOP_PRICES.statUpgrade}`}
         </button>
       </div>
       <button onclick="gauntletShopLeave()" class="landing-btn amber" style="width:180px;">LEAVE SHOP</button>
@@ -9026,6 +9021,10 @@ function showGauntletShop() {
 
   overlay._shopCards = shopCards;
   overlay._renderShop = renderShop;
+  overlay._shopRemovedCard = () => shopRemovedCard;
+  overlay._shopUpgradedStat = () => shopUpgradedStat;
+  overlay._setShopRemovedCard = () => { shopRemovedCard = true; };
+  overlay._setShopUpgradedStat = () => { shopUpgradedStat = true; };
   document.body.appendChild(overlay);
   renderShop();
 }
@@ -9070,19 +9069,24 @@ function gauntletShopRemoveCard() {
 }
 
 async function gauntletShopDoRemove(idx) {
+  const overlay = document.getElementById('gauntlet-event-overlay');
+  if (overlay?._shopRemovedCard?.()) return; // already used this visit
   const price = GAUNTLET_SHOP_PRICES.cardRemoval;
   if ((_gauntletRun.gold || 0) < price) return;
   _gauntletRun.gold -= price;
   _gauntletRun.deck.splice(idx, 1);
+  if (overlay?._setShopRemovedCard) overlay._setShopRemovedCard();
   if (_userProfile) await saveUserProfile({ gauntlet_run: _gauntletRun });
-  const overlay = document.getElementById('gauntlet-event-overlay');
   if (overlay?._renderShop) overlay._renderShop();
 }
 
 async function gauntletShopStatUpgrade() {
+  const overlay = document.getElementById('gauntlet-event-overlay');
+  if (overlay?._shopUpgradedStat?.()) return; // already used this visit
   const price = GAUNTLET_SHOP_PRICES.statUpgrade;
   if ((_gauntletRun.gold || 0) < price) return;
   _gauntletRun.gold -= price;
+  if (overlay?._setShopUpgradedStat) overlay._setShopUpgradedStat();
   // Energy is rare (10% chance), otherwise wall limit or card draw
   const roll = Math.random();
   const stat = roll < 0.1 ? 'energy' : (roll < 0.55 ? 'wallLimit' : 'cardDraw');
@@ -9090,7 +9094,6 @@ async function gauntletShopStatUpgrade() {
   _gauntletRun.champion[stat] = (_gauntletRun.champion[stat] || 3) + 1;
   if (_userProfile) await saveUserProfile({ gauntlet_run: _gauntletRun });
   showOverlayFeedback(`+1 ${labels[stat]}!`, 'success');
-  const overlay = document.getElementById('gauntlet-event-overlay');
   if (overlay?._renderShop) overlay._renderShop();
 }
 
@@ -9357,7 +9360,8 @@ function showGauntletCardReward(shardsEarned, goldEarned) {
       <div style="font-size:13px;color:#fbbf24;margin-bottom:20px;">+${goldEarned} 🪙 GOLD <span style="font-size:10px;color:#888;">(${_gauntletRun.gold} total)</span></div>
       ${!cardPicked ? `
         <div style="font-size:12px;color:var(--text-dim);margin-bottom:12px;">Pick a card to add to your deck${isElite ? ' (elite rewards)' : ''}</div>
-        <div style="display:flex;gap:12px;margin-bottom:24px;flex-wrap:wrap;justify-content:center;">${cardHtml}</div>
+        <div style="display:flex;gap:12px;margin-bottom:16px;flex-wrap:wrap;justify-content:center;">${cardHtml}</div>
+        <button class="landing-btn muted" style="width:160px;font-size:11px;margin-bottom:8px;" onclick="gauntletSkipCardReward();">SKIP REWARD</button>
       ` : `
         <div style="font-size:12px;color:#4ade80;margin-bottom:8px;">Card added to deck!</div>
         ${eliteStatHtml}
@@ -9377,6 +9381,18 @@ function showGauntletCardReward(shardsEarned, goldEarned) {
 
   document.body.appendChild(overlay);
   render();
+}
+
+function gauntletSkipCardReward() {
+  const overlay = document.getElementById('gauntlet-reward-overlay');
+  if (!overlay || overlay._cardPicked()) return;
+  overlay._setCardPicked();
+  // Elite: still offer stat choice even when skipping card
+  if (overlay._isElite) {
+    showEliteStatChoice();
+    return;
+  }
+  overlay._render();
 }
 
 async function gauntletPickCard(idx) {
@@ -13130,16 +13146,26 @@ async function applyDisruptionCard(pi, card, idx) {
     if (isHumanSeat(pi) && idx !== -99) {
       // Human: show card picker to choose which card to delay
       gameState._delayPending = { pi, delayCardIdx: idx, dejaVuQueued: selectedCard?._dejaVuQueued };
-      showCardPicker(pi, hand, 'Choose a card to delay until next turn', (pickedCard) => {
+      showCardPicker(pi, hand, 'Choose a card to delay until next turn (energy cost paid now)', (pickedCard) => {
         const pending = gameState._delayPending;
         if (!pending) return;
         const pState = gameState.players[pending.pi];
         const targetIdx = pState.hand.findIndex(c => c === pickedCard || (c.id === pickedCard.id && c.name === pickedCard.name));
         if (targetIdx >= 0) {
           const delayed = pState.hand[targetIdx];
-          gameState.players[pending.pi] = {...pState,
-            hand: pState.hand.filter((_, i) => i !== targetIdx)};
+          // Deduct the delayed card's energy cost now (card plays free next turn)
+          const delayCost = getEffectiveEnergyCost(delayed, pending.pi);
+          if (delayCost > gameState.players[pending.pi].energyCurrent) {
+            showStatus(`Not enough energy to delay ${delayed.name} (need ${delayCost})`, 'error');
+            gameState._delayPending = null;
+            selectedCard = null; uiMode = 'idle'; renderAll();
+            return;
+          }
+          gameState.players[pending.pi].energyCurrent -= delayCost;
+          gameState.players[pending.pi] = {...gameState.players[pending.pi],
+            hand: gameState.players[pending.pi].hand.filter((_, i) => i !== targetIdx)};
           delayCard(pending.pi, delayed);
+          addLog(pending.pi, 'card', `Delay: paid ${delayCost} energy for ${delayed.name} — plays free next turn`);
         }
         // Discard the Delay card itself (adjust index if target was before it)
         const adjIdx = pending.delayCardIdx > targetIdx ? pending.delayCardIdx - 1 : pending.delayCardIdx;
@@ -13150,24 +13176,29 @@ async function applyDisruptionCard(pi, card, idx) {
         uiMode = 'idle';
         countCardPlayed(pending.pi);
         gameState._delayPending = null;
-        // Delay does NOT consume movement — explicitly ensure hasMoved is false
-        hasMoved = false;
+        // Delay does NOT consume movement — but do NOT reset hasMoved if player already moved
         if (isTurnDone()) gameState.phase = 'end_turn';
         renderAll();
         updateActionBar();
-        showStatus('Card delayed for next turn — you may still move!', 'success');
+        showStatus('Card delayed — energy paid now, plays free next turn!', 'success');
       });
       return;
     }
 
-    // AI: delay the highest-value card
-    const aiTarget = hand.reduce((a, b) =>
+    // AI: delay the highest-value affordable card
+    // Filter to cards the AI can afford to pay for now
+    const affordableHand = hand.filter(c => getEffectiveEnergyCost(c, pi) <= gameState.players[pi].energyCurrent);
+    const delayPool = affordableHand.length ? affordableHand : hand;
+    const aiTarget = delayPool.reduce((a, b) =>
       ((b.overrideSpeed||0) + (b.wallLen||0)*2 + (b.rarity==='Rare'?3:0) + (b.rarity==='Legendary'?5:0)) >
       ((a.overrideSpeed||0) + (a.wallLen||0)*2 + (a.rarity==='Rare'?3:0) + (a.rarity==='Legendary'?5:0)) ? b : a
     );
     const targetIdx = gameState.players[pi].hand.indexOf(aiTarget);
     if (targetIdx >= 0) {
       const delayed = gameState.players[pi].hand[targetIdx];
+      // Deduct energy for delayed card now
+      const delayCost = getEffectiveEnergyCost(delayed, pi);
+      gameState.players[pi].energyCurrent = Math.max(0, gameState.players[pi].energyCurrent - delayCost);
       gameState.players[pi] = {...gameState.players[pi],
         hand: gameState.players[pi].hand.filter((_, i) => i !== targetIdx)};
       delayCard(pi, delayed);
@@ -13276,13 +13307,13 @@ async function applyDisruptionCard(pi, card, idx) {
     return;
   }
 
-  // ── CH12: Déjà Vu — +1 energy next turn ──
+  // ── CH12: Déjà Vu — +1 energy next turn (exiled) ──
   if (card.id === 'CH12') {
     gameState.players[pi].energyNextTurnBonus = (gameState.players[pi].energyNextTurnBonus || 0) + 1;
-    addLog(pi, 'card', 'Déjà Vu: +1 energy next turn!');
-    discardCard(pi, idx); selectedCard = null; countCardPlayed(pi);
+    addLog(pi, 'card', 'Déjà Vu: +1 energy next turn! (exiled)');
+    exileCard(pi, idx); selectedCard = null; countCardPlayed(pi);
     if (isTurnDone()) gameState.phase = 'end_turn';
-    renderAll(); showStatus('Déjà Vu: +1 energy next turn!', 'success'); return;
+    renderAll(); showStatus('Déjà Vu: +1 energy next turn! (exiled)', 'success'); return;
   }
 
   // ── CH13: Revert — return the LAST wall placed (by anyone) to its owner's hand ──
@@ -13337,20 +13368,20 @@ async function applyDisruptionCard(pi, card, idx) {
     }
     hasMoved = true; // block movement
     gameState.players[pi].energyCurrent += 2;
-    discardCard(pi, idx); countCardPlayed(pi); selectedCard = null;
-    addLog(pi, 'card', 'Power Surge: +2 energy, forfeited movement');
+    exileCard(pi, idx); countCardPlayed(pi); selectedCard = null;
+    addLog(pi, 'card', 'Power Surge: +2 energy, forfeited movement (exiled)');
     if (isTurnDone()) gameState.phase = 'end_turn';
-    renderAll(); showStatus('Power Surge: +2 energy!', 'success'); return;
+    renderAll(); showStatus('Power Surge: +2 energy! (exiled)', 'success'); return;
   }
 
-  // B16: Efficient Planning — +1 energy next turn, draw 1
+  // B16: Efficient Planning — +1 energy next turn, draw 1 (exiled)
   if (card.id === 'B16') {
     gameState.players[pi].energyNextTurnBonus = (gameState.players[pi].energyNextTurnBonus || 0) + 1;
     drawCards(pi, 1);
-    discardCard(pi, idx); countCardPlayed(pi); selectedCard = null;
-    addLog(pi, 'card', 'Efficient Planning: +1 energy next turn, drew 1');
+    exileCard(pi, idx); countCardPlayed(pi); selectedCard = null;
+    addLog(pi, 'card', 'Efficient Planning: +1 energy next turn, drew 1 (exiled)');
     if (isTurnDone()) gameState.phase = 'end_turn';
-    renderAll(); showStatus('Efficient Planning: +1 energy banked!', 'success'); return;
+    renderAll(); showStatus('Efficient Planning: +1 energy banked! (exiled)', 'success'); return;
   }
 
   // AR16: Foundation Tap — +1 energy per 3 walls in play
@@ -14607,7 +14638,6 @@ function renderAIStatusStrip() {
     if (!gameState.players[pi]) continue;
     if (!isMP && isHumanSeat(pi)) continue; // skip human in SP
     if (isMP && pi === mp_localSeat) continue; // skip local seat in MP
-    if (isMP && gameState.players.length <= 2 && pi !== mp_localSeat) continue; // 1v1 MP uses panel-p1
     aiSeats.push(pi);
   }
 
@@ -14620,7 +14650,7 @@ function renderAIStatusStrip() {
   const panel = document.createElement('div');
   panel.id = 'opponent-left-panel';
 
-  let panelHtml = `<div style="font-size:8px;color:#555;letter-spacing:.1em;margin-bottom:2px;">OPPONENTS</div>`;
+  let panelHtml = `<div style="font-size:10px;color:#666;letter-spacing:.1em;margin-bottom:4px;">OPPONENTS</div>`;
 
   for (const pi of aiSeats) {
     const p = gameState.players[pi];
@@ -14640,7 +14670,7 @@ function renderAIStatusStrip() {
     let lastTurnHtml = '';
     if (lastTurnCards.length > 0) {
       lastTurnHtml = `<div class="opp-last-turn">
-        <div style="font-size:7px;color:#555;letter-spacing:.08em;">LAST TURN</div>
+        <div style="font-size:9px;color:#666;letter-spacing:.08em;">LAST TURN</div>
         ${lastTurnCards.map(e => {
           const def = CARDS[e.cardId];
           if (!def) return '';
@@ -14649,25 +14679,25 @@ function renderAIStatusStrip() {
         }).join('')}
       </div>`;
     } else {
-      lastTurnHtml = `<div class="opp-last-turn"><div style="font-size:7px;color:#333;">No cards last turn</div></div>`;
+      lastTurnHtml = `<div class="opp-last-turn"><div style="font-size:9px;color:#444;">No cards last turn</div></div>`;
     }
 
     panelHtml += `
       <div class="opp-card${activeClass}" style="border-color:${isActive ? color : ''};${isFinished ? 'opacity:0.6;' : ''}">
         <div style="display:flex;justify-content:space-between;align-items:center;">
-          <span style="font-family:'Teko',sans-serif;font-size:14px;color:${color};">${c.name}</span>
-          ${isFinished && finishPlace ? `<span style="font-size:9px;color:${placeColors[finishPlace.place-1]||'#888'};">${placeIcons[finishPlace.place-1]||''}</span>` : ''}
-          ${teamLabel ? `<span style="font-size:7px;color:#888;">${teamLabel}</span>` : ''}
-          ${isActive && !isFinished ? '<span style="color:var(--amber);font-size:7px;">● TURN</span>' : ''}
+          <span style="font-family:'Teko',sans-serif;font-size:18px;color:${color};">${c.name}</span>
+          ${isFinished && finishPlace ? `<span style="font-size:11px;color:${placeColors[finishPlace.place-1]||'#888'};">${placeIcons[finishPlace.place-1]||''}</span>` : ''}
+          ${teamLabel ? `<span style="font-size:9px;color:#888;">${teamLabel}</span>` : ''}
+          ${isActive && !isFinished ? '<span style="color:var(--amber);font-size:9px;">● TURN</span>' : ''}
         </div>
-        ${isFinished ? `<div style="color:${placeColors[finishPlace?.place-1]||'#888'};font-size:8px;">FINISHED</div>` : `
-        <div style="color:#666;font-size:8px;letter-spacing:.05em;">${c.faction} · ${c.passiveName}</div>
-        <div style="display:flex;gap:6px;color:#888;font-size:8px;margin-top:2px;">
+        ${isFinished ? `<div style="color:${placeColors[finishPlace?.place-1]||'#888'};font-size:10px;">FINISHED</div>` : `
+        <div style="color:#777;font-size:10px;letter-spacing:.05em;">${c.faction} · ${c.passiveName}</div>
+        <div style="display:flex;gap:8px;color:#999;font-size:10px;margin-top:3px;">
           <span>W:${p.wallsInPlay}/${p.wallLimitCurrent}</span>
           <span>E:${p.energyCurrent}/${p.energyPerTurn}</span>
           <span>U:${p.ultimateCharge}/${c.ultimateCost}${p.ultimateReady ? ' ⚡' : ''}</span>
         </div>
-        ${isBound ? '<div style="font-size:7px;color:#e05050;margin-top:2px;">BOUND</div>' : ''}
+        ${isBound ? '<div style="font-size:9px;color:#e05050;margin-top:3px;">BOUND</div>' : ''}
         ${lastTurnHtml}`}
       </div>`;
   }
