@@ -108,21 +108,39 @@
   main.layout-bottom {
     grid-template-columns: 1fr;
     grid-template-rows: 1fr auto;
+    max-height: calc(100vh - 70px);
+    overflow: hidden;
   }
   main.layout-bottom .panel { display: none; }
   main.layout-bottom .panel.right { display: none; }
-  main.layout-bottom .board-area { grid-column: 1; }
-  main.layout-bottom #player-bottom-panel { display: flex; }
-  /* Bottom panel cards: grid layout, 5 per row */
+  main.layout-bottom .board-area { grid-column: 1; padding: 4px 6px; gap: 4px; overflow-y: auto; }
+  main.layout-bottom #player-bottom-panel { display: flex; flex-shrink: 0; }
+  /* Game layout wrapper: opponent panel + board side by side */
+  #game-layout-wrapper {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
+    grid-column: 1;
+    min-height: 0;
+  }
+  #game-layout-wrapper .board-area {
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
+  }
+  /* Bottom panel cards: grid layout, auto-fill to fit */
   #bp-hand, #bp-revealed-cards {
     display: grid;
-    grid-template-columns: repeat(5, 1fr);
-    gap: 6px;
+    grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+    gap: 4px;
   }
   #bp-hand .card, #bp-revealed-cards .card {
     width: auto;
     min-width: 0;
+    padding: 4px 6px;
   }
+  #bp-hand .card-name, #bp-revealed-cards .card-name { font-size: 12px; }
+  #bp-hand .card-desc, #bp-revealed-cards .card-desc { font-size: 8px; line-height: 1.2; }
 
   /* ── Side panels ───────────────────────────────────────────────── */
   .panel {
@@ -149,6 +167,43 @@
     overflow-y: auto;
   }
   main.layout-bottom .card-history-panel { display: none; }
+
+  /* ── Opponent Left Panel (replaces AI status strip) ──────────────── */
+  #opponent-left-panel {
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+    padding: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    width: 180px;
+    flex-shrink: 0;
+    overflow-y: auto;
+    max-height: 100vh;
+  }
+  #opponent-left-panel .opp-card {
+    background: rgba(255,255,255,0.02);
+    border: 1px solid var(--border);
+    padding: 6px 8px;
+    font-size: 9px;
+  }
+  #opponent-left-panel .opp-card.opp-active {
+    border-color: var(--amber);
+    box-shadow: 0 0 6px rgba(212,144,58,0.3);
+  }
+  #opponent-left-panel .opp-last-turn {
+    margin-top: 4px;
+    padding-top: 4px;
+    border-top: 1px solid var(--border);
+  }
+  #opponent-left-panel .opp-last-card {
+    background: rgba(255,255,255,0.03);
+    border: 1px solid var(--border);
+    padding: 2px 4px;
+    margin-top: 2px;
+    font-size: 8px;
+    color: #aaa;
+  }
   .card-history-label {
     font-family: 'Teko', sans-serif;
     font-size: 14px;
@@ -456,11 +511,11 @@
   /* ── Turn banner ───────────────────────────────────────────────── */
   .turn-banner {
     font-family: 'Teko', sans-serif;
-    font-size: 15px;
+    font-size: 13px;
     font-weight: 500;
     letter-spacing: 0.3em;
     text-transform: uppercase;
-    padding: 8px 20px;
+    padding: 4px 16px;
     border: 1px solid var(--border);
     background: var(--surface);
     color: var(--text-bright);
@@ -2448,56 +2503,45 @@
   </div>
 
   <!-- Bottom Player Panel (used in layout-bottom mode) -->
-  <div id="player-bottom-panel" style="display:none;background:var(--surface);border-top:2px solid var(--border);">
-    <!-- Top row: Champion info bar -->
+  <div id="player-bottom-panel" style="display:none;background:var(--surface);border-top:1px solid var(--border);">
+    <!-- Top row: Champion info bar (compact) -->
     <div style="display:flex;align-items:stretch;max-width:1400px;margin:0 auto;border-bottom:1px solid var(--border);">
       <!-- Champion identity -->
-      <div style="padding:10px 16px;border-right:1px solid var(--border);min-width:150px;">
-        <div id="bp-name" style="font-family:'Teko',sans-serif;font-size:24px;color:var(--p0);letter-spacing:.06em;line-height:1;">—</div>
-        <div id="bp-title" style="font-size:9px;color:#666;letter-spacing:.08em;margin-top:2px;">—</div>
-        <div style="margin-top:4px;">
-          <span style="font-size:9px;color:var(--amber);letter-spacing:.06em;" id="bp-passive-name">—</span>
+      <div style="padding:4px 10px;border-right:1px solid var(--border);min-width:130px;">
+        <div style="display:flex;align-items:baseline;gap:6px;">
+          <div id="bp-name" style="font-family:'Teko',sans-serif;font-size:18px;color:var(--p0);letter-spacing:.06em;line-height:1;">—</div>
+          <div id="bp-title" style="font-size:8px;color:#666;letter-spacing:.06em;">—</div>
         </div>
-        <div style="font-size:8px;color:#555;line-height:1.3;margin-top:1px;max-width:180px;" id="bp-passive-desc">—</div>
+        <div style="font-size:8px;color:var(--amber);letter-spacing:.06em;" id="bp-passive-name">—</div>
+        <div style="font-size:7px;color:#555;line-height:1.2;max-width:160px;" id="bp-passive-desc">—</div>
       </div>
-      <!-- Walls section -->
-      <div style="padding:10px 16px;border-right:1px solid var(--border);min-width:120px;display:flex;flex-direction:column;justify-content:center;">
-        <div style="font-size:8px;color:var(--text-dim);letter-spacing:.15em;margin-bottom:4px;">WALLS</div>
-        <div id="bp-walls" style="font-family:'Teko',sans-serif;font-size:20px;color:var(--amber);line-height:1;">0/5</div>
-        <div class="wall-count" id="bp-wall-pips" style="margin-top:4px;"></div>
-        <div class="energy-bar" id="bp-energy-bar" style="margin-top:4px;"></div>
+      <!-- Walls + Energy -->
+      <div style="padding:4px 10px;border-right:1px solid var(--border);display:flex;flex-direction:column;justify-content:center;">
+        <div style="display:flex;gap:10px;align-items:center;">
+          <div><div style="font-size:7px;color:var(--text-dim);letter-spacing:.12em;">WALLS</div><div id="bp-walls" style="font-family:'Teko',sans-serif;font-size:16px;color:var(--amber);line-height:1;">0/5</div></div>
+          <div><div style="font-size:7px;color:var(--text-dim);letter-spacing:.12em;">ENERGY</div><div id="bp-energy-count" style="font-family:'Teko',sans-serif;font-size:16px;color:var(--amber);line-height:1;">3/3</div></div>
+          <div><div style="font-size:7px;color:var(--text-dim);letter-spacing:.12em;">SPD</div><div id="bp-speed" style="font-family:'Teko',sans-serif;font-size:16px;color:#ccc;line-height:1;">1</div></div>
+          <div><div style="font-size:7px;color:var(--text-dim);letter-spacing:.12em;">DECK</div><div id="bp-deck-count" style="font-family:'Teko',sans-serif;font-size:16px;color:#555;line-height:1;">0</div></div>
+        </div>
+        <div class="wall-count" id="bp-wall-pips" style="margin-top:2px;"></div>
+        <div class="energy-bar" id="bp-energy-bar" style="margin-top:2px;"></div>
       </div>
       <!-- Ultimate section -->
-      <div style="padding:10px 16px;border-right:1px solid var(--border);min-width:180px;display:flex;flex-direction:column;justify-content:center;">
-        <div style="display:flex;align-items:baseline;gap:6px;margin-bottom:4px;">
-          <span style="font-size:8px;color:var(--text-dim);letter-spacing:.15em;">ULTIMATE</span>
-          <span id="bp-charge-text" style="font-size:10px;color:var(--amber);font-family:'Teko',sans-serif;">0 / 5</span>
+      <div style="padding:4px 10px;border-right:1px solid var(--border);min-width:140px;display:flex;flex-direction:column;justify-content:center;">
+        <div style="display:flex;align-items:baseline;gap:4px;">
+          <span style="font-size:7px;color:var(--text-dim);letter-spacing:.12em;">ULT</span>
+          <span id="bp-charge-text" style="font-size:9px;color:var(--amber);font-family:'Teko',sans-serif;">0 / 5</span>
+          <span style="font-size:9px;color:#f59e0b;" id="bp-ult-name">—</span>
         </div>
-        <div style="font-size:10px;color:#f59e0b;letter-spacing:.05em;margin-bottom:4px;" id="bp-ult-name">—</div>
-        <div class="charge-bar" id="bp-charge-bar" style="height:7px;"></div>
+        <div class="charge-bar" id="bp-charge-bar" style="height:5px;margin-top:2px;"></div>
         <button class="action-btn" id="bp-ult-btn" onclick="activateUltimate(0)"
-          style="margin-top:6px;font-size:9px;padding:4px 14px;opacity:0.3;pointer-events:none;width:100%;letter-spacing:.1em;" disabled>⚡ ACTIVATE</button>
-      </div>
-      <!-- Stats -->
-      <div style="padding:10px 16px;border-right:1px solid var(--border);display:flex;gap:16px;align-items:center;">
-        <div style="text-align:center;">
-          <div style="font-size:8px;color:var(--text-dim);letter-spacing:.12em;">ENERGY</div>
-          <div id="bp-energy-count" style="font-family:'Teko',sans-serif;font-size:18px;color:var(--amber);line-height:1;">3/3</div>
-        </div>
-        <div style="text-align:center;">
-          <div style="font-size:8px;color:var(--text-dim);letter-spacing:.12em;">SPEED</div>
-          <div id="bp-speed" style="font-family:'Teko',sans-serif;font-size:18px;color:#ccc;line-height:1;">1</div>
-        </div>
-        <div style="text-align:center;">
-          <div style="font-size:8px;color:var(--text-dim);letter-spacing:.12em;">DECK</div>
-          <div id="bp-deck-count" style="font-family:'Teko',sans-serif;font-size:18px;color:#555;line-height:1;">0</div>
-        </div>
+          style="margin-top:3px;font-size:8px;padding:2px 10px;opacity:0.3;pointer-events:none;width:100%;letter-spacing:.1em;" disabled>⚡ ACTIVATE</button>
       </div>
       <!-- Status effects -->
-      <div id="bp-status" style="padding:10px 16px;flex:1;display:flex;align-items:center;flex-wrap:wrap;gap:4px;"></div>
+      <div id="bp-status" style="padding:4px 10px;flex:1;display:flex;align-items:center;flex-wrap:wrap;gap:3px;"></div>
     </div>
     <!-- Bottom row: Cards -->
-    <div style="padding:8px 16px;max-width:1400px;margin:0 auto;">
+    <div style="padding:4px 10px;max-width:1400px;margin:0 auto;">
       <div id="bp-hand"></div>
     </div>
   </div>
@@ -3277,13 +3321,13 @@ const CARDS = {
 
   // ── PHANTOMS ─────────────────────────────────────────────────────────
   PH1: { id:'PH1', name:'Phantom Wall',  faction:'Phantoms', rarity:'Common',   type:'Wall',
-         desc:'Place a phantom wall. Appears as a real 2-tile wall to the opponent. Both players can walk through it freely — doing so removes it immediately and frees the wall slot.', wallLen:2, phantom:true, energyCost:1 },
+         desc:'Place a phantom wall. Appears as a real 2-tile wall to the opponent. Both players can walk through it freely — doing so removes it immediately and frees the wall slot.', wallLen:2, phantom:true, energyCost:0 },
   PH2: { id:'PH2', name:'Compel',        faction:'Phantoms', rarity:'Common', type:'Disruption',
          desc:'Force the opponent\'s champion to move 1 space in a direction of your choice. This is not voluntary movement — Phantom Walls are not removed by this.', energyCost:1 },
   PH3: { id:'PH3', name:'Echo Strike',   faction:'Phantoms', rarity:'Common', type:'Wall',
-         desc:'Place a Phantom Wall on your side of the board and simultaneously place a real mirrored wall on the opponent\'s side at no extra cost.', wallLen:2, phantom:true, special:'echoStrike', energyCost:2 },
+         desc:'Place a Phantom Wall on your side of the board and simultaneously place a real mirrored wall on the opponent\'s side at no extra cost.', wallLen:2, phantom:true, special:'echoStrike', energyCost:0 },
   PH4: { id:'PH4', name:'Veil Lattice',  faction:'Phantoms', rarity:'Uncommon',     type:'Wall',
-         desc:'Place 1 Phantom Wall and 1 real wall anywhere on the board. The Phantom Wall does not auto-expire — it persists until walked through.', wallLen:2, phantom:true, special:'veilLattice', energyCost:2 },
+         desc:'Place 1 Phantom Wall and 1 real wall anywhere on the board. The Phantom Wall does not auto-expire — it persists until walked through.', wallLen:2, phantom:true, special:'veilLattice', energyCost:0 },
   PH5: { id:'PH5', name:'Compel Storm',  faction:'Phantoms', rarity:'Rare',     type:'Disruption',
          desc:'Force the opponent\'s champion to move up to 3 spaces in directions of your choice. Real walls block individual steps. Phantom Walls do not trigger removal.', energyCost:3 },
   PH8: { id:'PH8', name:'Phase Walk',     faction:'Phantoms', rarity:'Uncommon', type:'Movement',
@@ -3291,9 +3335,9 @@ const CARDS = {
   PH9: { id:'PH9', name:'Haunting Presence', faction:'Phantoms', rarity:'Uncommon', type:'Disruption', instant:true,
          desc:'(Instant) Place invisible haunt on a random tile adjacent to the opponent. Stepping on it stops movement. Lasts 2 turns.', energyCost:0 },
   PH10:{ id:'PH10',name:'Doppelganger Wall', faction:'Phantoms', rarity:'Common',   type:'Wall',
-         desc:'Place 2 phantom walls. One costs a slot, one is free. Both appear real.', wallLen:2, phantom:true, special:'doppelganger', energyCost:2 },
+         desc:'Place 2 phantom walls. One costs a slot, one is free. Both appear real.', wallLen:2, phantom:true, special:'doppelganger', energyCost:0 },
   PH12:{ id:'PH12',name:'Nightmare Maze', faction:'Phantoms', rarity:'Rare',     type:'Wall',
-         desc:'Place 1 phantom wall. All existing phantom walls become real permanent walls.', wallLen:2, phantom:true, special:'nightmareMaze', energyCost:2 },
+         desc:'Place 1 phantom wall. All existing phantom walls become real permanent walls.', wallLen:2, phantom:true, special:'nightmareMaze', energyCost:0 },
   PH13:{ id:'PH13',name:'Mind Fog',       faction:'Phantoms', rarity:'Rare',     type:'Disruption',
          desc:'For 2 turns, opponent can only see walls in their direct line of sight. Board dimmed.', energyCost:2 },
   PH15:{ id:'PH15',name:'Ethereal Plane', faction:'Phantoms', rarity:'Legendary', type:'Movement',
@@ -3345,11 +3389,11 @@ const CARDS = {
 
   // ── CHRONISTS ────────────────────────────────────────────────────────
   CH1: { id:'CH1', name:'Delay',           faction:'Chronists', rarity:'Common',   type:'Disruption',
-         desc:'Choose a card in hand. It activates free at start of next turn (before normal actions).', energyCost:1 },
+         desc:'Choose a card in hand. It activates at start of next turn (costs energy normally).', energyCost:0 },
   CH2: { id:'CH2', name:'Rewind Wall',     faction:'Chronists', rarity:'Common',   type:'Disruption',
          desc:'(Instant) Return one of your walls to hand as Basic Barrier. Wall removed from board.', instant:true, energyCost:0 },
   CH3: { id:'CH3', name:'Temporal Wall',   faction:'Chronists', rarity:'Common',   type:'Wall',
-         desc:'Place 2-tile wall. Exists 2 turns then vanishes. Does NOT count toward wall limit.', wallLen:2, special:'temporalWall', energyCost:1 },
+         desc:'Place 2-tile wall. Exists 2 turns then vanishes. Does NOT count toward wall limit.', wallLen:2, special:'temporalWall', energyCost:0 },
   CH6: { id:'CH6', name:'Time Loop',       faction:'Chronists', rarity:'Uncommon', type:'Disruption',
          desc:'Return the last card you played (previous turn) from discard to hand.', energyCost:1 },
   CH8: { id:'CH8', name:'Paradox Wall',    faction:'Chronists', rarity:'Rare', type:'Wall',
@@ -3361,7 +3405,7 @@ const CARDS = {
   CH11:{ id:'CH11',name:'Infinite Recursion', faction:'Chronists', rarity:'Legendary', type:'Disruption',
          desc:'All cards in your hand become Instants until end of turn — each may be played once without using energy.', energyCost:4 },
   CH12:{ id:'CH12',name:'Déjà Vu',        faction:'Chronists', rarity:'Common',   type:'Disruption',
-         desc:'Gain +2 energy next turn.', energyCost:1 },
+         desc:'Gain +1 energy next turn.', energyCost:1 },
   CH13:{ id:'CH13',name:'Revert',          faction:'Chronists', rarity:'Uncommon', type:'Disruption',
          desc:'Return the last wall placed (by either player) to its owner\'s hand as a Basic Barrier card.', energyCost:1 },
 
@@ -5722,7 +5766,14 @@ function resolveDelayedCards(pi) {
   gameState._delayedCards[pi] = [];
 
   for (const card of delayed) {
-    addLog(pi, 'card', `Delayed ${card.name} activates!`);
+    // Delayed cards cost energy when they activate (Delay itself costs 0)
+    const delayCost = getEffectiveEnergyCost(card, pi);
+    if (delayCost > gameState.players[pi].energyCurrent) {
+      addLog(pi, 'card', `Delayed ${card.name}: not enough energy (need ${delayCost}, have ${gameState.players[pi].energyCurrent}) — card lost`);
+      continue;
+    }
+    gameState.players[pi].energyCurrent -= delayCost;
+    addLog(pi, 'card', `Delayed ${card.name} activates! (${delayCost} energy)`);
     // Resolve the card as if played — route through type handlers
     if (card.type === 'Wall') {
       if (!isHumanSeat(pi)) {
@@ -5743,7 +5794,11 @@ function resolveDelayedCards(pi) {
             break;
           }
         }
-        if (!placed) addLog(pi, 'card', `Delayed ${card.name}: no legal placement found, card lost`);
+        if (!placed) {
+          addLog(pi, 'card', `Delayed ${card.name}: no legal placement found, card lost`);
+          // Refund energy since placement failed
+          gameState.players[pi].energyCurrent += delayCost;
+        }
         continue; // process remaining delayed cards
       }
       // Human: Enter wall placement mode with the delayed card
@@ -5773,8 +5828,7 @@ function resolveDelayedCards(pi) {
         tunnelThrough: !!card.tunnelThrough, diagonal: !!card.diagonal,
         ownWallsPassthrough: !!card.ownWallsPassthrough,
         lateralOnly: !!(card.special === 'flanking'),
-        _pendingMove: true, _delayed: true,
-        _freePlay: true };
+        _pendingMove: true, _delayed: true };
       // Flanking Path delayed: restrict to lateral only
       if (card.special === 'flanking') selectedCard.lateralOnly = true;
       uiMode = 'move';
@@ -5784,14 +5838,13 @@ function resolveDelayedCards(pi) {
     } else if (card.type === 'Disruption') {
       // Resolve delayed disruption card through the proper handler
       addLog(pi, 'card', `Delayed ${card.name} activates!`);
-      gameState._freePlayActive = true;
       if (!isHumanSeat(pi)) {
-        selectedCard = { id: card.id, idx: -99, _delayed: true, _freePlay: true };
+        selectedCard = { id: card.id, idx: -99, _delayed: true };
         applyDisruptionCard(pi, card, -99);
-        selectedCard = null; gameState._freePlayActive = false;
+        selectedCard = null;
         continue;
       } else {
-        selectedCard = { id: card.id, idx: -99, _delayed: true, _freePlay: true };
+        selectedCard = { id: card.id, idx: -99, _delayed: true };
         applyDisruptionCard(pi, card, -99);
         // If the disruption needs UI interaction (e.g. card picker), it will return
         // and the remaining delayed cards will be processed next turn
@@ -8004,10 +8057,8 @@ function showLandingScreen() {
               class="landing-btn" style="background:rgba(224,80,80,0.15);color:#e05050;border:1px solid rgba(224,80,80,0.3);">
         ☠ GAUNTLET${(_gauntletRun || _userProfile?.gauntlet_run) ? ' <span style="font-size:9px;color:#fbbf24;">(IN PROGRESS)</span>' : ''}
       </button>
-      <button onclick="document.getElementById('landing-overlay').remove();showChampionSelect();"
-              class="landing-btn amber">
-        ⚔ EXHIBITION
-      </button>
+      <!-- Exhibition mode hidden from landing page -->
+
       <button onclick="document.getElementById('landing-overlay').remove();showMultiplayerLobby();"
               class="landing-btn blue">
         ⚡ MULTIPLAYER
@@ -8504,12 +8555,28 @@ function startGauntletNode(nodeId) {
     const deckDist = GAUNTLET_AI_DECK_DIST[deckStage] || GAUNTLET_AI_DECK_DIST[1];
     const deckStr = Object.entries(deckDist).filter(([r,n])=>n>0).map(([r,n])=>`${n} ${r}`).join(', ');
     const rc = aiRarity==='Common'?'#aaa':aiRarity==='Uncommon'?'#4ade80':aiRarity==='Rare'?'#60a5fa':aiRarity==='Epic'?'#c084fc':'#fbbf24';
-    previewBody = `
-      <div style="font-size:24px;margin-bottom:4px;">${nodeType.icon}</div>
-      <div style="font-family:'Teko',sans-serif;font-size:26px;color:${nodeType.color};margin-bottom:8px;">${nodeType.label.toUpperCase()} BATTLE</div>
-      <div style="font-size:12px;color:#ccc;margin-bottom:4px;">Enemy: <span style="color:${rc}">${aiRarity}</span> champion</div>
-      <div style="font-size:11px;color:#888;margin-bottom:4px;">Deck: ${deckStr}</div>
-    `;
+    // For elite battles, pre-generate the opponent so we can show their faction
+    if (node.type === 'elite') {
+      const previewChamp = generateChampion(aiRarity);
+      node._preGeneratedChamp = previewChamp;
+      const factionColors = {Architects:'var(--wall-arch)',Pathfinders:'var(--wall-path)',Wardens:'var(--wall-ward)',Phantoms:'var(--wall-phan)',Pushers:'var(--wall-push)',Trappers:'var(--wall-trap)',Chronists:'var(--wall-chro)'};
+      const fCol = factionColors[previewChamp.faction] || '#ccc';
+      previewBody = `
+        <div style="font-size:24px;margin-bottom:4px;">${nodeType.icon}</div>
+        <div style="font-family:'Teko',sans-serif;font-size:26px;color:${nodeType.color};margin-bottom:8px;">${nodeType.label.toUpperCase()} BATTLE</div>
+        <div style="font-size:12px;color:#ccc;margin-bottom:4px;">Enemy: <span style="color:${rc}">${aiRarity}</span> champion</div>
+        <div style="font-size:14px;color:${fCol};margin-bottom:4px;font-family:'Teko',sans-serif;letter-spacing:.08em;">${previewChamp.faction.toUpperCase()}</div>
+        <div style="font-size:10px;color:#aaa;margin-bottom:4px;">Card rewards will drop from their deck</div>
+        <div style="font-size:11px;color:#888;margin-bottom:4px;">Deck: ${deckStr}</div>
+      `;
+    } else {
+      previewBody = `
+        <div style="font-size:24px;margin-bottom:4px;">${nodeType.icon}</div>
+        <div style="font-family:'Teko',sans-serif;font-size:26px;color:${nodeType.color};margin-bottom:8px;">${nodeType.label.toUpperCase()} BATTLE</div>
+        <div style="font-size:12px;color:#ccc;margin-bottom:4px;">Enemy: <span style="color:${rc}">${aiRarity}</span> champion</div>
+        <div style="font-size:11px;color:#888;margin-bottom:4px;">Deck: ${deckStr}</div>
+      `;
+    }
   }
 
   // Show preview modal over the map
@@ -8578,8 +8645,11 @@ function startGauntletCombat(node) {
   const deckStage = node.type === 'elite' ? Math.min(stage + 2, GAUNTLET_STAGES) : stage;
   const aiRarity = node.type === 'elite' ? (GAUNTLET_AI_RARITY[Math.min(stage + 2, GAUNTLET_STAGES)] || 'Uncommon')
                  : (GAUNTLET_AI_RARITY[stage] || 'Common');
-  const aiChamp = generateChampion(aiRarity);
+  // Reuse pre-generated champion for elites (shown in preview), generate fresh for regular battles
+  const aiChamp = (node.type === 'elite' && node._preGeneratedChamp) ? node._preGeneratedChamp : generateChampion(aiRarity);
   const aiDeck = buildGauntletAIDeck(deckStage, aiChamp.faction);
+  // Store opponent info for elite card rewards
+  _gauntletRun._lastOpponent = { champion: aiChamp, deckIds: aiDeck.map(c => c.id) };
   initGauntletGame(_gauntletRun.champion, aiChamp, _gauntletRun.deck, aiDeck);
 }
 
@@ -9214,13 +9284,41 @@ function generateGauntletCardRewards(stage, faction) {
   return rewards;
 }
 
+function generateEliteCardRewards() {
+  // Pick 3 unique cards from the elite opponent's deck, weighted by rarity
+  const opp = _gauntletRun._lastOpponent;
+  if (!opp || !opp.deckIds || !opp.deckIds.length) return generateGauntletCardRewards(_gauntletRun.stage, _gauntletRun.champion.faction);
+  const rarityWeights = { Common: 1, Uncommon: 2, Rare: 4, Legendary: 8 };
+  // Get unique cards from the opponent's deck
+  const uniqueIds = [...new Set(opp.deckIds)];
+  const pool = uniqueIds.map(id => CARDS[id]).filter(Boolean);
+  if (pool.length === 0) return generateGauntletCardRewards(_gauntletRun.stage, _gauntletRun.champion.faction);
+  const rewards = [];
+  const usedIds = new Set();
+  for (let i = 0; i < 3; i++) {
+    const available = pool.filter(c => !usedIds.has(c.id));
+    if (!available.length) break;
+    // Weighted random selection based on rarity
+    const totalWeight = available.reduce((sum, c) => sum + (rarityWeights[c.rarity] || 1), 0);
+    let roll = Math.random() * totalWeight;
+    let pick = available[0];
+    for (const c of available) {
+      roll -= (rarityWeights[c.rarity] || 1);
+      if (roll <= 0) { pick = c; break; }
+    }
+    rewards.push(pick);
+    usedIds.add(pick.id);
+  }
+  return rewards;
+}
+
 function showGauntletCardReward(shardsEarned, goldEarned) {
   goldEarned = goldEarned || 0;
   const stage = _gauntletRun.stage;
   const faction = _gauntletRun.champion.faction;
   const currentNode = _gauntletRun.currentNodeId ? gauntletGetNode(_gauntletRun.currentNodeId) : null;
   const isElite = currentNode && currentNode.type === 'elite';
-  const cards = isElite ? generateGauntletCardRewards(Math.min(stage + 2, GAUNTLET_STAGES), faction) : generateGauntletCardRewards(stage, faction);
+  const cards = isElite ? generateEliteCardRewards() : generateGauntletCardRewards(stage, faction);
   let cardPicked = false;
 
   const overlay = document.createElement('div');
@@ -13178,13 +13276,13 @@ async function applyDisruptionCard(pi, card, idx) {
     return;
   }
 
-  // ── CH12: Déjà Vu — next card resolves twice ──
+  // ── CH12: Déjà Vu — +1 energy next turn ──
   if (card.id === 'CH12') {
-    gameState.players[pi].energyNextTurnBonus = (gameState.players[pi].energyNextTurnBonus || 0) + 2;
-    addLog(pi, 'card', 'Déjà Vu: +2 energy next turn!');
+    gameState.players[pi].energyNextTurnBonus = (gameState.players[pi].energyNextTurnBonus || 0) + 1;
+    addLog(pi, 'card', 'Déjà Vu: +1 energy next turn!');
     discardCard(pi, idx); selectedCard = null; countCardPlayed(pi);
     if (isTurnDone()) gameState.phase = 'end_turn';
-    renderAll(); showStatus('Déjà Vu: +2 energy next turn!', 'success'); return;
+    renderAll(); showStatus('Déjà Vu: +1 energy next turn!', 'success'); return;
   }
 
   // ── CH13: Revert — return the LAST wall placed (by anyone) to its owner's hand ──
@@ -13231,8 +13329,12 @@ async function applyDisruptionCard(pi, card, idx) {
   // ── ENERGY-MANIPULATION CARDS ─────────────────────────────────────────
   // ══════════════════════════════════════════════════════════════════════
 
-  // B15: Power Surge — skip move, gain +2 energy
+  // B15: Power Surge — skip move, gain +2 energy (cannot be used if already moved)
   if (card.id === 'B15') {
+    if (hasMoved) {
+      showStatus('Power Surge cannot be played after moving', 'error');
+      selectedCard = null; return;
+    }
     hasMoved = true; // block movement
     gameState.players[pi].energyCurrent += 2;
     discardCard(pi, idx); countCardPlayed(pi); selectedCard = null;
@@ -14493,6 +14595,8 @@ function renderWardenReveal(localSeat) {
 function renderAIStatusStrip() {
   const existing = document.getElementById('ai-status-strip');
   if (existing) existing.remove();
+  const existingPanel = document.getElementById('opponent-left-panel');
+  if (existingPanel) existingPanel.remove();
 
   if (!gameState?.players) return;
   const isMP = gameMode === 'mp';
@@ -14509,9 +14613,14 @@ function renderAIStatusStrip() {
 
   if (aiSeats.length === 0) return;
 
-  const strip = document.createElement('div');
-  strip.id = 'ai-status-strip';
-  strip.style.cssText = 'display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin-bottom:8px;';
+  // Get last turn's cards from play history
+  const currentTurn = gameState.turnNumber || 1;
+  const history = gameState._playHistory || [];
+
+  const panel = document.createElement('div');
+  panel.id = 'opponent-left-panel';
+
+  let panelHtml = `<div style="font-size:8px;color:#555;letter-spacing:.1em;margin-bottom:2px;">OPPONENTS</div>`;
 
   for (const pi of aiSeats) {
     const p = gameState.players[pi];
@@ -14524,37 +14633,65 @@ function renderAIStatusStrip() {
     const teamLabel = gameConfig.mode === '2v2' ? (getTeam(pi) === getTeam(0) ? 'ALLY' : 'ENEMY') : '';
     const placeColors = ['#fbbf24','#c0c0c0','#cd7f32','#888'];
     const placeIcons = ['👑','🥈','🥉',''];
-    const activeGlow = isActive && !isFinished ? 'box-shadow:0 0 8px ' + color + '60;' : '';
-    const finishedStyle = isFinished ? 'opacity:0.6;' : '';
+    const activeClass = isActive && !isFinished ? ' opp-active' : '';
 
-    strip.innerHTML += `
-      <div style="background:var(--surface);border:1px solid ${isFinished ? (placeColors[finishPlace?.place-1]||'#555') : isActive ? color : 'var(--border)'};
-        padding:6px 12px;min-width:140px;font-size:10px;${activeGlow}${finishedStyle}">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px;">
-          <span style="font-family:'Teko',sans-serif;font-size:15px;color:${color};">${c.name}</span>
-          ${isFinished && finishPlace ? `<span style="font-size:10px;color:${placeColors[finishPlace.place-1]||'#888'};">${placeIcons[finishPlace.place-1]||''} ${placeLabel(finishPlace.place)}</span>` : ''}
-          ${teamLabel ? `<span style="font-size:8px;color:#888;letter-spacing:.08em;">${teamLabel}</span>` : ''}
-          ${isActive && !isFinished ? '<span style="font-size:8px;color:var(--amber);">●</span>' : ''}
+    // Cards played last turn by this opponent
+    const lastTurnCards = history.filter(e => e.player === pi && e.turn === currentTurn - 1);
+    let lastTurnHtml = '';
+    if (lastTurnCards.length > 0) {
+      lastTurnHtml = `<div class="opp-last-turn">
+        <div style="font-size:7px;color:#555;letter-spacing:.08em;">LAST TURN</div>
+        ${lastTurnCards.map(e => {
+          const def = CARDS[e.cardId];
+          if (!def) return '';
+          const typeColor = def.type === 'Wall' ? 'var(--wall-default)' : def.type === 'Movement' ? 'var(--wall-path)' : 'var(--danger)';
+          return `<div class="opp-last-card"><span style="color:${typeColor};">${def.name}</span></div>`;
+        }).join('')}
+      </div>`;
+    } else {
+      lastTurnHtml = `<div class="opp-last-turn"><div style="font-size:7px;color:#333;">No cards last turn</div></div>`;
+    }
+
+    panelHtml += `
+      <div class="opp-card${activeClass}" style="border-color:${isActive ? color : ''};${isFinished ? 'opacity:0.6;' : ''}">
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <span style="font-family:'Teko',sans-serif;font-size:14px;color:${color};">${c.name}</span>
+          ${isFinished && finishPlace ? `<span style="font-size:9px;color:${placeColors[finishPlace.place-1]||'#888'};">${placeIcons[finishPlace.place-1]||''}</span>` : ''}
+          ${teamLabel ? `<span style="font-size:7px;color:#888;">${teamLabel}</span>` : ''}
+          ${isActive && !isFinished ? '<span style="color:var(--amber);font-size:7px;">● TURN</span>' : ''}
         </div>
-        ${isFinished ? `<div style="color:${placeColors[finishPlace?.place-1]||'#888'};font-size:9px;letter-spacing:.08em;">FINISHED</div>` : `
-        <div style="color:#888;font-size:9px;letter-spacing:.08em;margin-bottom:3px;">${c.faction} · ${c.passiveName}</div>
-        <div style="display:flex;gap:8px;color:#aaa;font-size:9px;">
+        ${isFinished ? `<div style="color:${placeColors[finishPlace?.place-1]||'#888'};font-size:8px;">FINISHED</div>` : `
+        <div style="color:#666;font-size:8px;letter-spacing:.05em;">${c.faction} · ${c.passiveName}</div>
+        <div style="display:flex;gap:6px;color:#888;font-size:8px;margin-top:2px;">
           <span>W:${p.wallsInPlay}/${p.wallLimitCurrent}</span>
           <span>E:${p.energyCurrent}/${p.energyPerTurn}</span>
           <span>U:${p.ultimateCharge}/${c.ultimateCost}${p.ultimateReady ? ' ⚡' : ''}</span>
         </div>
-        ${isBound ? '<div style="font-size:8px;color:#e05050;margin-top:2px;">BOUND</div>' : ''}`}
+        ${isBound ? '<div style="font-size:7px;color:#e05050;margin-top:2px;">BOUND</div>' : ''}
+        ${lastTurnHtml}`}
       </div>`;
   }
 
-  // Insert above the board (board-container is inside board-with-stare wrapper)
+  panel.innerHTML = panelHtml;
+
+  // Insert as left sibling of board-area using flexbox wrapper
   const boardArea = document.getElementById('board-area');
-  const boardWrapper = document.getElementById('board-with-stare') || document.getElementById('board-container');
-  if (boardArea && boardWrapper && boardWrapper.parentNode === boardArea) {
-    boardArea.insertBefore(strip, boardWrapper);
-  } else if (boardArea) {
-    // Fallback: just prepend to board area
-    boardArea.insertBefore(strip, boardArea.children[2] || null);
+  if (boardArea && boardArea.parentNode) {
+    // Wrap board-area and opponent panel in a flex container if not already
+    let wrapper = document.getElementById('game-layout-wrapper');
+    if (!wrapper) {
+      wrapper = document.createElement('div');
+      wrapper.id = 'game-layout-wrapper';
+      wrapper.style.cssText = 'display:flex;flex:1;overflow:hidden;';
+      boardArea.parentNode.insertBefore(wrapper, boardArea);
+      wrapper.appendChild(panel);
+      wrapper.appendChild(boardArea);
+    } else {
+      // Wrapper exists, just replace/insert the panel
+      const existingOpp = wrapper.querySelector('#opponent-left-panel');
+      if (existingOpp) existingOpp.remove();
+      wrapper.insertBefore(panel, wrapper.firstChild);
+    }
   }
 }
 
@@ -14705,7 +14842,7 @@ function renderCard(card, idx, pi, interactive, canPlayNonInstant) {
   const energyCost = getEffectiveEnergyCost(card, pi);
   const canAfford = isInstant || gameState.players[pi].energyCurrent >= energyCost;
   const isPlayable = interactive && (isInstant || canPlayNonInstant) && canAfford;
-  const noEnergy = interactive && !isInstant && !canAfford;
+  const noEnergy = interactive && !isInstant && !canAfford && !isEchoPick;
   const cls = `card${isSel?' selected':''}${!interactive?' card-disabled':''}${isPlayable && !isSel?' card-playable':''}${isEchoPick?' echo-pick':''}${isInstantOnce?' card-instant-once':''}${noEnergy?' card-no-energy':''}`;
   const instantBadge = isInstantOnce ? '<span class="instant-badge">⚡ INSTANT</span>' : '';
   const costBadge = `<span class="energy-cost-badge${noEnergy?' energy-cost-dim':''}">${energyCost}</span>`;
