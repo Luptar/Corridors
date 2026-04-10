@@ -3197,7 +3197,7 @@ const CARDS = {
         desc:'Place two 2-tile walls in an L-shape: the second wall must be perpendicular and adjacent to the first.', wallLen:2, special:'cornerPiece', energyCost:1 },
   RC: { id:'RC', name:'Reconstruction',   faction:'Basic', rarity:'Common',   type:'Disruption',
         desc:'Remove one of your own walls anywhere on the board. Draw 1 card.', energyCost:1 },
-  AV: { id:'AV', name:'Advance',          faction:'Basic', rarity:'Common',   type:'Movement',
+  AV: { id:'AV', name:'Advance',          faction:'Basic', rarity:'Uncommon', type:'Movement',
         desc:'Move up to 2 spaces this turn. Cannot pass walls.', overrideSpeed:2, energyCost:2 },
   QS: { id:'QS', name:'Quick Step',       faction:'Basic', rarity:'Common', type:'Movement',
         desc:'Move 1 space diagonally. Blocked by walls.', overrideSpeed:1, diagonal:true, energyCost:1 },
@@ -3465,15 +3465,15 @@ function shuffle(arr) {
 
 // GDD-accurate starter decks per faction
 function buildStarterDeck(faction) {
-  // 20-card starter decks — doubled from original 10-card decks with same ratio
+  // 20-card starter decks — Advance (AV) capped at 3 copies max (Uncommon)
   const deckDefs = {
     Architects:  ['BB','BB','BB','AR1','AR2','AR3','RC','CB','AV','AR16','BB','BB','BB','AR1','AR2','AR3','RC','CB','AV','AR16'],
     Pathfinders: ['BB','PF16','RC','AV','QS','B01','CB','PF11','PF17','PF18','BB','PF16','RC','AV','QS','B01','CB','PF11','PF17','PF18'],
     Wardens:     ['BB','BB','BB','RC','AV','CB','WD8','WD12','WD17','B04','BB','BB','BB','RC','AV','CB','WD8','WD12','WD17','B04'],
     Phantoms:    ['BB','PH1','PH1','PH2','PH3','RC','AV','CB','QS','PH17','BB','PH1','PH1','PH2','PH3','RC','AV','CB','QS','PH17'],
-    Pushers:     ['BB','BB','BB','PU4','RC','AV','AV','CB','PU13','B04','BB','BB','BB','PU4','RC','AV','AV','CB','PU13','B04'],
+    Pushers:     ['BB','BB','BB','PU4','RC','AV','AV','CB','PU13','B04','BB','BB','BB','PU4','RC','AV','BB','CB','PU13','B04'],
     Trappers:    ['BB','BB','TR1','TR2','TR3','TR5','RC','AV','CB','TR14','BB','BB','TR1','TR2','TR3','TR5','RC','AV','CB','TR14'],
-    Chronists:   ['BB','BB','CH1','CH3','CH12','RC','AV','AV','CB','CH14','BB','BB','CH1','CH3','CH12','RC','AV','AV','CB','CH14'],
+    Chronists:   ['BB','BB','CH1','CH3','CH12','RC','AV','AV','CB','CH14','BB','BB','CH1','CH3','CH12','RC','AV','BB','CB','CH14'],
   };
   const ids = deckDefs[faction] || deckDefs['Architects'];
   const base = ids.map(id => ({...CARDS[id]}));
