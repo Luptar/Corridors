@@ -484,15 +484,14 @@
   /* ── Turn banner ───────────────────────────────────────────────── */
   .turn-banner {
     font-family: 'Teko', sans-serif;
-    font-size: 13px;
+    font-size: 11px;
     font-weight: 500;
-    letter-spacing: 0.3em;
+    letter-spacing: 0.15em;
     text-transform: uppercase;
-    padding: 4px 16px;
+    padding: 4px 6px;
     border: 1px solid var(--border);
     background: var(--surface);
     color: var(--text-bright);
-    width: 100%;
     text-align: center;
   }
   .turn-banner.p0 { border-color: var(--p0-dim); color: var(--p0); }
@@ -900,12 +899,12 @@
   /* ── Action bar ────────────────────────────────────────────────── */
   .action-bar {
     display: flex;
-    gap: 8px;
+    gap: 6px;
     width: 100%;
   }
   .action-btn {
     flex: 1;
-    padding: 10px 8px;
+    padding: 8px 6px;
     background: var(--surface);
     border: 1px solid var(--border);
     color: var(--text);
@@ -2342,57 +2341,65 @@
 <main>
   <!-- Player 0 Panel -->
   <div class="panel" id="panel-p0">
-    <div class="panel-label">PLAYER 0</div>
-    <div class="champion-card">
+    <!-- Champion Name -->
+    <div class="champion-card" style="padding-bottom:0;">
       <div class="champion-name" id="p0-name" style="color:var(--p0)">—</div>
       <div class="champion-title" id="p0-title">Select Champion</div>
-      <div class="faction-badge faction-Architects" id="p0-faction">Architects</div>
-      <div class="stats-grid">
-        <div class="stat">
-          <div class="stat-label">WALLS</div>
-          <div class="stat-value" id="p0-walls">0/5</div>
-        </div>
-        <div class="stat">
-          <div class="stat-label">ENERGY</div>
-          <div class="stat-value" id="p0-energy-stat" style="color:var(--amber)">3</div>
-        </div>
-        <div class="stat">
-          <div class="stat-label">SPEED</div>
-          <div class="stat-value" id="p0-speed">1</div>
-        </div>
-        <div class="stat">
-          <div class="stat-label">DRAW</div>
-          <div class="stat-value" id="p0-draw">2</div>
-        </div>
-      </div>
-      <div class="wall-count" id="p0-wall-pips"></div>
-      <div class="energy-bar" id="p0-energy-bar"></div>
     </div>
-    <div class="ultimate-section">
+    <!-- Faction -->
+    <div class="faction-badge faction-Architects" id="p0-faction">Architects</div>
+    <!-- Passive -->
+    <div class="passive-section" style="margin:0;">
+      <div class="passive-name" id="p0-passive-name">Fortified Ground</div>
+      <div class="passive-desc" id="p0-passive-desc">Vael's walls require 2 Demolish effects to destroy.</div>
+    </div>
+    <!-- Champion Stats -->
+    <div class="stats-grid">
+      <div class="stat">
+        <div class="stat-label">SPEED</div>
+        <div class="stat-value" id="p0-speed">1</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">DRAW</div>
+        <div class="stat-value" id="p0-draw">2</div>
+      </div>
+    </div>
+    <div id="p0-status" class="status-effects"></div>
+    <!-- Ultimate -->
+    <div class="ultimate-section" style="margin:0;">
       <div class="ultimate-label">ULTIMATE</div>
       <div class="ultimate-name" id="p0-ult-name">The Grand Design</div>
       <div class="passive-desc" id="p0-ult-desc" style="margin-bottom:4px"></div>
       <div class="charge-bar" id="p0-charge-bar"></div>
       <div class="charge-text" id="p0-charge-text">0 / 5 charges</div>
       <button class="action-btn" id="p0-ult-btn" onclick="activateUltimate(0)"
-        style="width:100%;margin-top:6px;opacity:0.3;pointer-events:none;font-size:10px;padding:5px 8px"
+        style="width:100%;margin-top:4px;opacity:0.3;pointer-events:none;font-size:9px;padding:4px 6px"
         disabled>⚡ ULTIMATE READY</button>
     </div>
-    <div class="passive-section">
-      <div class="passive-name" id="p0-passive-name">Fortified Ground</div>
-      <div class="passive-desc" id="p0-passive-desc">Vael's walls require 2 Demolish effects to destroy.</div>
+    <!-- Walls -->
+    <div style="display:flex;align-items:center;gap:8px;">
+      <div style="font-size:8px;color:var(--text-dim);letter-spacing:.12em;">WALLS</div>
+      <div id="p0-walls" style="font-family:'Teko',sans-serif;font-size:18px;color:var(--text-bright);line-height:1;">0/5</div>
+      <div class="wall-count" id="p0-wall-pips" style="flex:1;"></div>
     </div>
-    <div id="p0-status" class="status-effects"></div>
-    <div class="hand-section">
-      <div class="hand-label">HAND <span id="p0-deck-count" style="color:var(--text-dim)">(deck: 15)</span></div>
-      <div class="hand-cards" id="p0-hand"></div>
+    <!-- Energy -->
+    <div style="display:flex;align-items:center;gap:8px;">
+      <div style="font-size:8px;color:var(--text-dim);letter-spacing:.12em;">ENERGY</div>
+      <div id="p0-energy-stat" style="font-family:'Teko',sans-serif;font-size:18px;color:var(--amber);line-height:1;">3</div>
+      <div class="energy-bar" id="p0-energy-bar" style="flex:1;"></div>
+    </div>
+    <!-- Hand -->
+    <div class="hand-section" style="flex:1;min-height:0;display:flex;flex-direction:column;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;">
+        <div class="hand-label" style="margin-bottom:0;">HAND <span id="p0-deck-count" style="color:var(--text-dim)">(deck: 15)</span></div>
+        <div id="p0-hand-energy" style="font-family:'Teko',sans-serif;font-size:16px;color:var(--amber);letter-spacing:.05em;">⚡ 3/3</div>
+      </div>
+      <div class="hand-cards" id="p0-hand" style="overflow-y:auto;flex:1;"></div>
     </div>
   </div>
 
   <!-- Board Area -->
   <div class="board-area" id="board-area">
-    <div class="turn-banner p0" id="turn-banner">PLAYER 0 — DRAW PHASE</div>
-
     <!-- Draw screen overlay (shown between turns) -->
     <div class="draw-screen" id="draw-screen" style="display:none">
       <div class="draw-screen-subtitle">HAND OFF DEVICE TO</div>
@@ -2401,25 +2408,29 @@
       <button class="draw-screen-btn" id="draw-screen-btn">DRAW HAND →</button>
     </div>
 
-    <div id="board-with-stare" style="display:flex;align-items:flex-start;gap:8px;justify-content:center;">
-      <!-- Warden's Stare: left side opponent hands -->
-      <div id="warden-stare-left" style="display:none;width:140px;flex-shrink:0;overflow-y:auto;max-height:500px;"></div>
-      <div id="board-container" style="position:relative;">
-        <!-- Board grid + wall layers built by JS -->
+    <!-- Controls left + Board right -->
+    <div id="board-controls-row" style="display:flex;align-items:flex-start;gap:6px;justify-content:center;flex:1;min-height:0;">
+      <!-- Left controls column -->
+      <div id="controls-column" style="display:flex;flex-direction:column;gap:6px;width:90px;flex-shrink:0;padding-top:4px;">
+        <div class="turn-banner p0" id="turn-banner" style="width:auto;font-size:11px;padding:4px 6px;writing-mode:horizontal-tb;">P0 — DRAW</div>
+        <div class="action-bar" id="action-bar" style="flex-direction:column;width:auto;">
+          <button class="action-btn primary" id="btn-move" onclick="enterMoveMode()" style="flex:none;padding:8px 6px;">MOVE</button>
+          <button class="action-btn danger" id="btn-end" onclick="endTurnHuman()" style="flex:none;padding:8px 6px;">END TURN</button>
+        </div>
+        <div class="mode-indicator" id="mode-indicator" style="font-size:8px;text-align:center;">Select action</div>
       </div>
-      <!-- Warden's Stare: right side opponent hands -->
-      <div id="warden-stare-right" style="display:none;width:140px;flex-shrink:0;overflow-y:auto;max-height:500px;"></div>
+
+      <!-- Board -->
+      <div id="board-with-stare" style="display:flex;align-items:flex-start;gap:8px;justify-content:center;flex:1;min-width:0;">
+        <div id="warden-stare-left" style="display:none;width:140px;flex-shrink:0;overflow-y:auto;max-height:500px;"></div>
+        <div id="board-container" style="position:relative;">
+          <!-- Board grid + wall layers built by JS -->
+        </div>
+        <div id="warden-stare-right" style="display:none;width:140px;flex-shrink:0;overflow-y:auto;max-height:500px;"></div>
+      </div>
     </div>
 
-    <div class="action-bar" id="action-bar">
-      <button class="action-btn primary" id="btn-move" onclick="enterMoveMode()">MOVE</button>
-
-      <button class="action-btn danger" id="btn-end" onclick="endTurnHuman()">END TURN</button>
-    </div>
-
-    <div class="mode-indicator" id="mode-indicator">Select an action above</div>
-
-    <!-- Log -->
+    <!-- Log (hidden in layout-bottom) -->
     <div class="log-section" style="width:100%">
       <div class="panel-label" style="margin-bottom:8px">GAME LOG</div>
       <div class="log-scroll" id="game-log"></div>
@@ -10506,9 +10517,9 @@ function isTurnDone() {
   // Soren (Fleetfoot): may move twice per turn
   if (champId === 'soren') {
     const moveDone = gameState._sorenSecondMove && hasMoved;
-    if (!moveDone && !canPlayCard) return hasMoved; // can still move again
-    if (moveDone && !canPlayCard) return true;
+    if (moveDone && !canPlayCard) return true; // both moves done, no cards left
     if (!hasMoved) return false; // hasn't moved at all yet
+    if (hasMoved && !gameState._sorenSecondMove) return false; // first move done, second move still available
     return false; // still has energy for cards or moves remaining
   }
 
@@ -14765,6 +14776,9 @@ function renderPanels() {
     setText(`${prefix}-faction`, def.faction);
     setText(`${prefix}-walls`, `${p.wallsInPlay}/${p.wallLimitCurrent}`);
     setText(`${prefix}-energy-stat`, `${p.energyCurrent}/${p.energyPerTurn}`);
+    // Update hand-adjacent energy display
+    const handEnergy = document.getElementById(`${prefix}-hand-energy`);
+    if (handEnergy) handEnergy.textContent = `⚡ ${p.energyCurrent}/${p.energyPerTurn}`;
     setText(`${prefix}-speed`, def.moveSpeed);
     setText(`${prefix}-draw`, def.cardDraw);
     const deckCount = (gameMode === 'mp' && p.deck.length === 0 && gameState._deckCounts)
