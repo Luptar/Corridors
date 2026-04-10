@@ -118,9 +118,9 @@
   main.layout-bottom #player-bottom-panel { display: none; }
   main.layout-bottom .card-history-panel { display: none; }
   main.layout-bottom #p0-hand-section { display: none; } /* hand moves to hand-row */
-  /* Hand row below the board, spanning full width */
+  /* Hand row below the board, spanning center column only */
   #hand-row {
-    grid-column: 1 / 4;
+    grid-column: 2;
     grid-row: 2;
     background: var(--surface);
     border-top: 1px solid var(--border);
@@ -510,15 +510,16 @@
   /* ── Turn banner ───────────────────────────────────────────────── */
   .turn-banner {
     font-family: 'Teko', sans-serif;
-    font-size: 11px;
+    font-size: 14px;
     font-weight: 500;
-    letter-spacing: 0.15em;
+    letter-spacing: 0.2em;
     text-transform: uppercase;
-    padding: 4px 6px;
+    padding: 5px 16px;
     border: 1px solid var(--border);
     background: var(--surface);
     color: var(--text-bright);
     text-align: center;
+    width: 100%;
   }
   .turn-banner.p0 { border-color: var(--p0-dim); color: var(--p0); }
   .turn-banner.p1 { border-color: var(--p1-dim); color: var(--p1); }
@@ -925,12 +926,14 @@
   /* ── Action bar ────────────────────────────────────────────────── */
   .action-bar {
     display: flex;
-    gap: 6px;
+    gap: 8px;
     width: 100%;
+    justify-content: center;
   }
   .action-btn {
     flex: 1;
-    padding: 8px 6px;
+    max-width: 200px;
+    padding: 10px 16px;
     background: var(--surface);
     border: 1px solid var(--border);
     color: var(--text);
@@ -2434,28 +2437,24 @@
       <button class="draw-screen-btn" id="draw-screen-btn">DRAW HAND →</button>
     </div>
 
-    <!-- Controls left + Board right -->
-    <div id="board-controls-row" style="display:flex;align-items:flex-start;gap:8px;justify-content:center;flex:1;min-height:0;">
-      <!-- Left controls column -->
-      <div id="controls-column" style="display:flex;flex-direction:column;gap:10px;width:100px;flex-shrink:0;padding-top:4px;">
-        <div class="turn-banner p0" id="turn-banner" style="width:auto;font-size:11px;padding:6px 8px;">P0 — DRAW</div>
-        <div style="border-top:1px solid var(--border);"></div>
-        <div class="action-bar" id="action-bar" style="flex-direction:column;width:auto;gap:8px;">
-          <button class="action-btn primary" id="btn-move" onclick="enterMoveMode()" style="flex:none;padding:10px 8px;font-size:11px;">MOVE</button>
-          <button class="action-btn danger" id="btn-end" onclick="endTurnHuman()" style="flex:none;padding:10px 8px;font-size:11px;">END TURN</button>
-        </div>
-        <div class="mode-indicator" id="mode-indicator" style="font-size:8px;text-align:center;">Select action</div>
-      </div>
+    <!-- Turn banner -->
+    <div class="turn-banner p0" id="turn-banner">P0 — DRAW</div>
 
-      <!-- Board -->
-      <div id="board-with-stare" style="display:flex;align-items:flex-start;gap:8px;justify-content:center;flex:1;min-width:0;">
-        <div id="warden-stare-left" style="display:none;width:140px;flex-shrink:0;overflow-y:auto;max-height:500px;"></div>
-        <div id="board-container" style="position:relative;">
-          <!-- Board grid + wall layers built by JS -->
-        </div>
-        <div id="warden-stare-right" style="display:none;width:140px;flex-shrink:0;overflow-y:auto;max-height:500px;"></div>
+    <!-- Board -->
+    <div id="board-with-stare" style="display:flex;align-items:flex-start;gap:8px;justify-content:center;flex:1;min-height:0;">
+      <div id="warden-stare-left" style="display:none;width:140px;flex-shrink:0;overflow-y:auto;max-height:500px;"></div>
+      <div id="board-container" style="position:relative;">
+        <!-- Board grid + wall layers built by JS -->
       </div>
+      <div id="warden-stare-right" style="display:none;width:140px;flex-shrink:0;overflow-y:auto;max-height:500px;"></div>
     </div>
+
+    <!-- Action buttons below board -->
+    <div class="action-bar" id="action-bar">
+      <button class="action-btn primary" id="btn-move" onclick="enterMoveMode()">MOVE</button>
+      <button class="action-btn danger" id="btn-end" onclick="endTurnHuman()">END TURN</button>
+    </div>
+    <div class="mode-indicator" id="mode-indicator" style="font-size:9px;text-align:center;">Select an action above</div>
 
     <!-- Log (hidden in layout-bottom) -->
     <div class="log-section" style="width:100%">
