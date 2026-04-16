@@ -403,6 +403,70 @@
     color: var(--danger);
   }
 
+  /* ── Relic icons ───────────────────────────────────────────────── */
+  .relic-icon {
+    position: relative;
+    width: 26px; height: 26px;
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 14px; line-height: 1;
+    border: 1px solid var(--border);
+    background: var(--surface2);
+    cursor: default;
+    user-select: none;
+  }
+  .relic-icon.rarity-Common    { border-color: #888; }
+  .relic-icon.rarity-Uncommon  { border-color: #4ade80; color: #4ade80; }
+  .relic-icon.rarity-Rare      { border-color: #60a5fa; color: #60a5fa; }
+  .relic-icon.rarity-Legendary { border-color: #fbbf24; color: #fbbf24; }
+  .relic-icon.active-ready     {
+    cursor: pointer;
+    border-color: #4ade80;
+    background: rgba(74,222,128,0.15);
+    box-shadow: 0 0 6px rgba(74,222,128,0.5);
+    animation: relicPulse 1.4s ease-in-out infinite;
+  }
+  .relic-icon.active-cooldown  {
+    cursor: not-allowed;
+    border-color: #e05050;
+    background: rgba(224,80,80,0.12);
+    opacity: 0.75;
+  }
+  @keyframes relicPulse {
+    0%,100% { box-shadow: 0 0 4px rgba(74,222,128,0.3); }
+    50%     { box-shadow: 0 0 10px rgba(74,222,128,0.7); }
+  }
+  .relic-tooltip {
+    position: absolute;
+    bottom: calc(100% + 6px);
+    right: 0;
+    min-width: 180px; max-width: 220px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    padding: 6px 8px;
+    font-size: 10px; line-height: 1.3;
+    letter-spacing: 0.02em;
+    color: var(--text);
+    z-index: 500;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.12s ease;
+    white-space: normal;
+    text-align: left;
+  }
+  .relic-tooltip .relic-tooltip-name {
+    font-family: 'Teko', sans-serif;
+    font-size: 14px;
+    letter-spacing: 0.05em;
+    margin-bottom: 3px;
+  }
+  .relic-tooltip .relic-tooltip-rarity {
+    font-size: 8px;
+    letter-spacing: 0.15em;
+    color: var(--text-dim);
+    margin-bottom: 4px;
+  }
+  .relic-icon:hover .relic-tooltip { opacity: 1; }
+
   /* ── Hand ──────────────────────────────────────────────────────── */
   .hand-section {}
   .hand-label {
@@ -2411,7 +2475,6 @@
         <div class="stat-value" id="p0-draw">2</div>
       </div>
     </div>
-    <div id="p0-status" class="status-effects"></div>
     <!-- Ultimate -->
     <div class="ultimate-section" style="margin:0;">
       <div class="ultimate-label">ULTIMATE</div>
@@ -2442,6 +2505,11 @@
         <div id="p0-hand-energy" style="font-family:'Teko',sans-serif;font-size:16px;color:var(--amber);letter-spacing:.05em;">⚡ 3/3</div>
       </div>
       <div class="hand-cards" id="p0-hand" style="overflow-y:auto;flex:1;"></div>
+    </div>
+    <!-- Status effects (bottom of left column) -->
+    <div class="panel-section" id="p0-status-section" style="margin-top:auto;padding-top:6px;border-top:1px solid var(--border);">
+      <div style="font-size:8px;color:var(--text-dim);letter-spacing:.15em;margin-bottom:4px;">STATUS</div>
+      <div id="p0-status" class="status-effects" style="display:flex;flex-wrap:wrap;gap:3px;min-height:14px;"></div>
     </div>
   </div>
 
@@ -2520,6 +2588,11 @@
     <div class="hand-section">
       <div class="hand-label">HAND <span id="p1-deck-count" style="color:var(--text-dim)">(deck: 15)</span></div>
       <div class="hand-cards" id="p1-hand"></div>
+    </div>
+    <!-- Relic tray (Gauntlet only — bottom of right column) -->
+    <div class="panel-section" id="relic-tray-section" style="margin-top:auto;padding-top:6px;border-top:1px solid var(--border);display:none;">
+      <div style="font-size:8px;color:var(--text-dim);letter-spacing:.15em;margin-bottom:4px;">RELICS</div>
+      <div id="relic-tray" style="display:flex;flex-wrap:wrap;gap:4px;min-height:24px;"></div>
     </div>
   </div>
 
@@ -2952,6 +3025,429 @@ const MP_BOARD_VARIANTS = {
   labyrinth: { name:'The Labyrinth', desc:'Dense permanent walls',         rows:9, cols:9, preWalls: GAUNTLET_BOSSES[12]?.[1]?.preWalls || [] },
   corridor:  { name:'The Corridor',  desc:'Deadly 3-column gauntlet',      rows:9, cols:9, preWalls: GAUNTLET_BOSSES[15]?.[0]?.preWalls || [] },
 };
+
+// ── Gauntlet Relics ─────────────────────────────────────────────────
+// Universal relics (any champion can pick up any relic). Drop weight
+// depends on rarity (see GAUNTLET_RELIC_RARITY_WEIGHTS).
+// Effect logic lives in applyRelicHook() — keep this table pure data.
+const RELICS = {
+  // ── Common ────────────────────────────────────────────────────────
+  compass:        { id:'compass',        name:'Compass of the Lost',  rarity:'Common',
+                    desc:'+1 energy on turn 1 of each match.' },
+  corridor_map:   { id:'corridor_map',   name:'Corridor Map',         rarity:'Common',
+                    desc:'Draw 1 extra card in the opening hand of each match.' },
+  pathbreaker:    { id:'pathbreaker',    name:'Pathbreaker\'s Coin',  rarity:'Common',
+                    desc:'+5 gold from every battle victory.' },
+  scout_token:    { id:'scout_token',    name:'Scout\'s Token',       rarity:'Common',
+                    desc:'+1 shard from every battle victory.' },
+  travelers:      { id:'travelers',      name:'Traveler\'s Rations',  rarity:'Common',
+                    desc:'+1 bonus movement step on turn 1 of each match.' },
+  tinkers_kit:    { id:'tinkers_kit',    name:'Tinker\'s Kit',        rarity:'Common',
+                    desc:'First Wall card you play each match costs 1 less energy (min 0).' },
+  scholars_inkwell:{id:'scholars_inkwell',name:'Scholar\'s Inkwell',  rarity:'Common',
+                    desc:'First Disruption card you play each match costs 1 less energy (min 0).' },
+  runners_charm:  { id:'runners_charm',  name:'Runner\'s Charm',      rarity:'Common',
+                    desc:'First Movement card you play each match costs 1 less energy (min 0).' },
+  scavengers_pouch:{id:'scavengers_pouch',name:'Scavenger\'s Pouch',  rarity:'Common',
+                    desc:'Gain +1 gold at the end of each turn you played a card (max +30/match).' },
+  lantern_oil:    { id:'lantern_oil',    name:'Lantern Oil',          rarity:'Common',
+                    desc:'Gain +1 energy the first turn you end adjacent to a wall each match.' },
+
+  // ── Uncommon ──────────────────────────────────────────────────────
+  foremans_whistle:{id:'foremans_whistle',name:'Foreman\'s Whistle',  rarity:'Uncommon',
+                    desc:'+1 wall limit for the rest of the run.' },
+  spare_pages:    { id:'spare_pages',    name:'Spare Deck Pages',     rarity:'Uncommon',
+                    desc:'+1 card draw per turn for the rest of the run.' },
+  iron_decree:    { id:'iron_decree',    name:'Iron Decree',          rarity:'Uncommon',
+                    desc:'First Disruption card you play each match costs 0 energy.' },
+  phantom_veil:   { id:'phantom_veil',   name:'Phantom Veil',         rarity:'Uncommon',
+                    desc:'Start each match with a free Phantom Wall card in hand (exiled after use).' },
+  battle_standard:{ id:'battle_standard',name:'Battle Standard',      rarity:'Uncommon',
+                    desc:'+10 gold from every battle victory.' },
+  focus_charm:    { id:'focus_charm',    name:'Focus Charm',          rarity:'Uncommon',
+                    desc:'Gain +1 energy the first time you play 3+ cards in a single turn each match.' },
+  scholars_archive:{id:'scholars_archive',name:'Scholar\'s Archive',  rarity:'Uncommon',
+                    desc:'Start each match with a random Common card added to your opening hand.' },
+  phalanx_plate:  { id:'phalanx_plate',  name:'Phalanx Plate',        rarity:'Uncommon',
+                    desc:'The second Wall card you play each match costs 1 less energy (min 0).' },
+
+  // ── Rare ──────────────────────────────────────────────────────────
+  wardens_seal:   { id:'wardens_seal',   name:'Warden\'s Seal',       rarity:'Rare',
+                    desc:'Opponent starts each match with −1 energy.' },
+  runners_laurel: { id:'runners_laurel', name:'Runner\'s Laurel',     rarity:'Rare',
+                    desc:'Once per match, take a free bonus move action.' },
+  echo_chamber:   { id:'echo_chamber',   name:'Echo Chamber',         rarity:'Rare',
+                    desc:'Every 5th card you play in a match grants +1 energy.' },
+  plumb_line:     { id:'plumb_line',     name:'Architect\'s Plumb Line', rarity:'Rare',
+                    desc:'First wall you place each match doesn\'t count toward your wall limit.' },
+  veil_of_echoes: { id:'veil_of_echoes', name:'Veil of Echoes',       rarity:'Rare',
+                    desc:'Once per match, your next Wall card played becomes a Phantom Wall.' },
+
+  // ── Legendary ────────────────────────────────────────────────────
+  hourglass:      { id:'hourglass',      name:'Chronist\'s Hourglass',rarity:'Legendary',
+                    desc:'The first card you play each turn costs 1 less energy (min 0).' },
+  crown:          { id:'crown',          name:'Crown of Corridors',   rarity:'Legendary',
+                    desc:'+1 energy per turn AND +1 wall limit for the rest of the run.' },
+};
+
+// Rarity weights (sum to 100). Rarity is rolled first; a relic of that rarity
+// is then picked uniformly, excluding anything the player already owns.
+const GAUNTLET_RELIC_RARITY_WEIGHTS = { Common:50, Uncommon:30, Rare:15, Legendary:5 };
+const GAUNTLET_RELIC_PRICES = { Common:10, Uncommon:20, Rare:35, Legendary:60 };
+const RELIC_RARITY_COLOR = { Common:'#aaa', Uncommon:'#4ade80', Rare:'#60a5fa', Legendary:'#fbbf24' };
+
+// Pick one random relic the player doesn't already own, weighted by rarity.
+// Returns null if every relic is already owned.
+function rollGauntletRelic() {
+  const owned = new Set(_gauntletRun?.relics || []);
+  // Build per-rarity pools of unowned relics
+  const pools = {};
+  for (const r of Object.values(RELICS)) {
+    if (owned.has(r.id)) continue;
+    if (!pools[r.rarity]) pools[r.rarity] = [];
+    pools[r.rarity].push(r);
+  }
+  // Reweight to only rarities with available relics
+  const avail = Object.entries(GAUNTLET_RELIC_RARITY_WEIGHTS).filter(([r]) => pools[r]?.length);
+  if (!avail.length) return null;
+  const total = avail.reduce((s, [, w]) => s + w, 0);
+  let roll = Math.random() * total;
+  let chosenRarity = avail[0][0];
+  for (const [r, w] of avail) { roll -= w; if (roll <= 0) { chosenRarity = r; break; } }
+  const pool = pools[chosenRarity];
+  return pool[Math.floor(Math.random() * pool.length)];
+}
+
+// Pick N distinct relics (weighted). Used by Ancient Altar & similar.
+function rollGauntletRelics(n) {
+  const picks = [];
+  const taken = new Set();
+  const owned = new Set(_gauntletRun?.relics || []);
+  for (let i = 0; i < n; i++) {
+    // Temporarily treat prior picks as owned so we don't duplicate
+    const ownedSnapshot = _gauntletRun.relics;
+    _gauntletRun.relics = [...owned, ...taken];
+    const relic = rollGauntletRelic();
+    _gauntletRun.relics = ownedSnapshot;
+    if (!relic) break;
+    picks.push(relic);
+    taken.add(relic.id);
+  }
+  return picks;
+}
+
+// Give the player a relic (used by all relic acquisition paths).
+function gainRelic(relicId) {
+  if (!_gauntletRun) return false;
+  if (!_gauntletRun.relics) _gauntletRun.relics = [];
+  if (_gauntletRun.relics.includes(relicId)) return false;
+  _gauntletRun.relics.push(relicId);
+  return true;
+}
+
+function hasRelic(id) {
+  return !!(_gauntletRun && _gauntletRun.relics && _gauntletRun.relics.includes(id));
+}
+
+// Emoji icons for each relic (one glyph each, no descriptions — details live in
+// the hover tooltip). Kept in a separate table so RELICS stays pure data.
+const RELIC_ICONS = {
+  compass:'🧭', corridor_map:'🗺', pathbreaker:'🪙', scout_token:'🔎',
+  travelers:'🥖', tinkers_kit:'🔧', scholars_inkwell:'🖋', runners_charm:'🏃',
+  scavengers_pouch:'💰', lantern_oil:'🕯',
+  foremans_whistle:'📯', spare_pages:'📜', iron_decree:'⚖', phantom_veil:'👻',
+  battle_standard:'🚩', focus_charm:'🎯', scholars_archive:'📚', phalanx_plate:'🛡',
+  wardens_seal:'🪬', runners_laurel:'🌿', echo_chamber:'🔊', plumb_line:'📐',
+  veil_of_echoes:'🫥',
+  hourglass:'⏳', crown:'👑',
+};
+
+// A relic is "activatable" if the player must click it to trigger an effect.
+// Currently: runners_laurel (once-per-match free bonus move).
+const ACTIVATABLE_RELICS = new Set(['runners_laurel']);
+
+// Ready/cooldown state per activatable relic. Keys off gameState._relicMatch
+// when available; returns 'ready', 'cooldown', or 'passive' for non-actives.
+function getRelicActivationState(relicId) {
+  if (!ACTIVATABLE_RELICS.has(relicId)) return 'passive';
+  if (!gameState || !gameState._relicMatch) return 'cooldown';
+  if (relicId === 'runners_laurel') {
+    return gameState._relicMatch.laurelUsed ? 'cooldown' : 'ready';
+  }
+  return 'cooldown';
+}
+
+// Click handler for activatable relics. Bailouts are silent — state reflects
+// button enable/disable already.
+function activateRelic(relicId) {
+  if (!hasRelic(relicId)) return;
+  const state = getRelicActivationState(relicId);
+  if (state !== 'ready') return;
+  // Only allow activation on the human player's turn, during action phase.
+  if (!gameState || gameState.phase !== 'action') return;
+  if (gameState.activePlayer !== 0) return;
+
+  if (relicId === 'runners_laurel') {
+    gameState._relicMatch.laurelUsed = true;
+    if (typeof grantBonusMove === 'function') grantBonusMove(0);
+    addLog(0, 'relic', 'Runner\'s Laurel: free bonus move!');
+    showStatus('Runner\'s Laurel: bonus move granted', 'active');
+    renderPanels();
+  }
+}
+
+// Render the relic tray (called from renderPanels). Shown only in Gauntlet.
+function renderRelicTray() {
+  const section = document.getElementById('relic-tray-section');
+  const tray    = document.getElementById('relic-tray');
+  if (!section || !tray) return;
+  const inGauntlet = (gameMode === 'gauntlet' && _gauntletRun && _gauntletRun.relics?.length);
+  if (!inGauntlet) { section.style.display = 'none'; return; }
+  section.style.display = '';
+
+  const html = _gauntletRun.relics.map(id => {
+    const relic = RELICS[id]; if (!relic) return '';
+    const icon  = RELIC_ICONS[id] || '✦';
+    const state = getRelicActivationState(id);
+    const classes = ['relic-icon', `rarity-${relic.rarity}`];
+    let clickAttr = '';
+    if (state === 'ready')    { classes.push('active-ready');    clickAttr = ` onclick="activateRelic('${id}')"`; }
+    if (state === 'cooldown') { classes.push('active-cooldown'); }
+    // Tooltip shows name / rarity / desc; also mentions activation status for active relics
+    const stateLine = state === 'ready'    ? '<div style="font-size:8px;color:#4ade80;margin-top:3px;letter-spacing:.1em;">CLICK TO ACTIVATE</div>'
+                    : state === 'cooldown' ? '<div style="font-size:8px;color:#e05050;margin-top:3px;letter-spacing:.1em;">USED THIS MATCH</div>'
+                    : '';
+    const safeDesc = (relic.desc || '').replace(/"/g, '&quot;');
+    return `<div class="${classes.join(' ')}"${clickAttr} data-relic-id="${id}">
+      ${icon}
+      <div class="relic-tooltip">
+        <div class="relic-tooltip-name" style="color:${RELIC_RARITY_COLOR[relic.rarity]||'#ccc'};">✦ ${relic.name}</div>
+        <div class="relic-tooltip-rarity">${relic.rarity} · RELIC</div>
+        <div>${safeDesc}</div>
+        ${stateLine}
+      </div>
+    </div>`;
+  }).join('');
+  tray.innerHTML = html;
+}
+
+// Per-match relic trigger state (resets in initGauntletGame).
+function initRelicMatchState() {
+  if (!gameState) return;
+  gameState._relicMatch = {
+    wallsPlayed: 0,          // count of Wall cards played by human this match
+    firstWallCostUsed: false,// tinkers_kit consumed
+    firstDisruptCostUsed: false, // scholars_inkwell & iron_decree
+    firstMovementCostUsed: false,// runners_charm
+    secondWallCostUsed: false,   // phalanx_plate
+    cardsPlayed: 0,          // echo_chamber counter
+    focusTriggered: false,   // focus_charm once/match
+    laurelUsed: false,       // runners_laurel once/match
+    veilEchoesPending: false,// veil_of_echoes armed
+    veilEchoesUsed: false,
+    lanternTriggered: false, // lantern_oil once/match
+    travelersUsed: false,    // travelers extra step consumed
+    scavengerGold: 0,        // scavengers_pouch gold gained this match
+  };
+}
+
+// Called only for the human player (pi=0) — relics don't buff the AI.
+function isHumanRelicPlayer(pi) { return pi === 0 && gameMode === 'gauntlet'; }
+
+// Apply a relic cost discount to a card (returns the new cost, never < 0).
+// Hook point: getEffectiveEnergyCost. Mutates no state by itself — a separate
+// consumeRelicCostDiscount call records the "first card of type" when the card
+// is actually paid for in countCardPlayed, so discounts stay consistent across
+// hover/tooltip re-evaluations.
+function relicCostDiscount(card, pi) {
+  if (!isHumanRelicPlayer(pi)) return 0;
+  if (!_gauntletRun || !_gauntletRun.relics?.length) return 0;
+  const m = gameState._relicMatch;
+  if (!m) return 0;
+  let discount = 0;
+
+  // hourglass: first card per turn costs 1 less
+  if (hasRelic('hourglass') && (cardsPlayedThisTurn === 0)) discount = Math.max(discount, 1);
+
+  const type = (CARDS[card.id] || card).type;
+  if (type === 'Wall') {
+    if (hasRelic('tinkers_kit') && !m.firstWallCostUsed) discount = Math.max(discount, 1);
+    // phalanx_plate: second wall gets -1
+    if (hasRelic('phalanx_plate') && m.wallsPlayed === 1 && !m.secondWallCostUsed) discount = Math.max(discount, 1);
+  } else if (type === 'Disruption') {
+    if (hasRelic('iron_decree') && !m.firstDisruptCostUsed) {
+      discount = Math.max(discount, (card.energyCost ?? 1));
+    } else if (hasRelic('scholars_inkwell') && !m.firstDisruptCostUsed) {
+      discount = Math.max(discount, 1);
+    }
+  } else if (type === 'Movement') {
+    if (hasRelic('runners_charm') && !m.firstMovementCostUsed) discount = Math.max(discount, 1);
+  }
+  return discount;
+}
+
+// Consume the "first card of type" relic flags when the card is actually paid
+// for. Called from countCardPlayed (only when the play is NOT free).
+function consumeRelicCostFlags(card, pi) {
+  if (!isHumanRelicPlayer(pi)) return;
+  const m = gameState._relicMatch; if (!m) return;
+  const type = (CARDS[card.id] || card).type;
+  if (type === 'Wall') {
+    if (!m.firstWallCostUsed) m.firstWallCostUsed = true;
+    else if (!m.secondWallCostUsed && m.wallsPlayed === 1) m.secondWallCostUsed = true;
+    m.wallsPlayed++;
+  } else if (type === 'Disruption') {
+    m.firstDisruptCostUsed = true;
+  } else if (type === 'Movement') {
+    m.firstMovementCostUsed = true;
+  }
+}
+
+// Called from countCardPlayed after a non-free card play (hooks that care about
+// *any* card regardless of cost): echo_chamber, focus_charm, scavengers_pouch.
+function relicOnCardPlayed(card, pi) {
+  if (!isHumanRelicPlayer(pi)) return;
+  const m = gameState._relicMatch; if (!m) return;
+
+  m.cardsPlayed++;
+
+  // echo_chamber: every 5th card → +1 energy
+  if (hasRelic('echo_chamber') && m.cardsPlayed > 0 && m.cardsPlayed % 5 === 0) {
+    gameState.players[pi].energyCurrent = (gameState.players[pi].energyCurrent || 0) + 1;
+    addLog(pi, 'relic', 'Echo Chamber: +1 energy');
+    showStatus('Echo Chamber: +1 energy', 'success');
+  }
+
+  // focus_charm: when reaching 3 cards in a single turn (once per match)
+  if (hasRelic('focus_charm') && !m.focusTriggered && cardsPlayedThisTurn >= 3) {
+    m.focusTriggered = true;
+    gameState.players[pi].energyCurrent = (gameState.players[pi].energyCurrent || 0) + 1;
+    addLog(pi, 'relic', 'Focus Charm: +1 energy (3 cards in a turn)');
+  }
+}
+
+// Called from countCardPlayed at end-of-turn bookkeeping, or simply once at
+// turn end. scavengers_pouch awards gold if the player played at least one
+// card this turn.
+function relicOnTurnEnd(pi) {
+  if (!isHumanRelicPlayer(pi)) return;
+  const m = gameState._relicMatch; if (!m) return;
+  if (hasRelic('scavengers_pouch') && cardsPlayedThisTurn > 0 && m.scavengerGold < 30) {
+    _gauntletRun.gold = (_gauntletRun.gold || 0) + 1;
+    m.scavengerGold++;
+  }
+  // lantern_oil: if ended adjacent to a wall and hasn't triggered yet, grant +1 next turn
+  if (hasRelic('lantern_oil') && !m.lanternTriggered) {
+    const pos = gameState.players[pi].position;
+    const adj = gameState.walls.some(w => {
+      if (w.isPhantom) return false;
+      return wallEdges(w).some(e =>
+        (e.a.row === pos.row && e.a.col === pos.col) ||
+        (e.b.row === pos.row && e.b.col === pos.col));
+    });
+    if (adj) {
+      m.lanternTriggered = true;
+      gameState.players[pi].energyNextTurnBonus = (gameState.players[pi].energyNextTurnBonus || 0) + 1;
+      addLog(pi, 'relic', 'Lantern Oil: +1 energy next turn');
+    }
+  }
+}
+
+// Called by onWallPlaced for Wall cards played by the human in gauntlet.
+// plumb_line: first wall each match doesn't count toward wall limit.
+// Returns true if the wall count should be REVERTED (decremented back).
+function relicOnWallPlaced(pi) {
+  if (!isHumanRelicPlayer(pi)) return false;
+  const m = gameState._relicMatch; if (!m) return false;
+  if (hasRelic('plumb_line') && !m.plumbLineUsed) {
+    m.plumbLineUsed = true;
+    addLog(pi, 'relic', 'Architect\'s Plumb Line: first wall free of the limit');
+    return true;
+  }
+  return false;
+}
+
+// Called at the start of a gauntlet match (initGauntletGame).
+// Handles: compass (+1 energy), corridor_map (+1 opening hand), wardens_seal
+// (-1 opp energy), phantom_veil / scholars_archive (add card to opening hand),
+// crown (already baked into stats, see below).
+function relicOnMatchStart() {
+  if (!_gauntletRun || !_gauntletRun.relics?.length) return;
+  initRelicMatchState();
+  const pi = 0;
+  const p = gameState.players[pi];
+
+  // compass: +1 energy on turn 1
+  if (hasRelic('compass')) {
+    p.energyCurrent = (p.energyCurrent || 0) + 1;
+  }
+  // travelers_rations: +1 bonus movement step turn 1 → grant a bonus move
+  if (hasRelic('travelers')) {
+    // Deferred: grantBonusMove expects gameState fully initialised. Queue it.
+    setTimeout(() => { try { if (typeof grantBonusMove === 'function') grantBonusMove(0); } catch(e){} }, 50);
+  }
+  // runners_laurel: click-activated (see activateRelic + relic tray). Nothing
+  // to grant at match start — player decides when to spend it.
+  // wardens_seal: opp starts -1 energy
+  if (hasRelic('wardens_seal')) {
+    const opp = gameState.players[1];
+    opp.energyCurrent = Math.max(0, (opp.energyCurrent || 0) - 1);
+  }
+  // crown: +1 energy per turn for the entire run (permanent stat bump)
+  // Applied here at match start on energyPerTurn so turn-reset math picks it up.
+  if (hasRelic('crown')) {
+    p.energyPerTurn = (p.energyPerTurn || 0) + 1;
+    p.energyCurrent = (p.energyCurrent || 0) + 1;
+    p.wallLimitCurrent = (p.wallLimitCurrent || 0) + 1;
+  }
+  // foremans_whistle: +1 wall limit for the run
+  if (hasRelic('foremans_whistle')) {
+    p.wallLimitCurrent = (p.wallLimitCurrent || 0) + 1;
+  }
+  // spare_pages: +1 card draw per turn for the run
+  if (hasRelic('spare_pages')) {
+    p.champion = { ...p.champion, cardDraw: (p.champion.cardDraw || 3) + 1 };
+  }
+  // NOTE: corridor_map / phantom_veil / scholars_archive modify the opening
+  // hand — applied in performDraw() the first time it draws for this match
+  // (see _relicOpeningHandDone flag below).
+}
+
+// Called once per match, after the opening hand is drawn.
+function relicApplyOpeningHand(pi) {
+  if (!isHumanRelicPlayer(pi)) return;
+  if (gameState._relicOpeningHandDone) return;
+  gameState._relicOpeningHandDone = true;
+  const p = gameState.players[pi];
+  const extras = [];
+  // corridor_map: +1 card. Just draw one extra from deck.
+  if (hasRelic('corridor_map') && p.deck.length) {
+    extras.push(p.deck.shift());
+  }
+  // phantom_veil: add a free Phantom Wall (PH1) card, exiled after use
+  if (hasRelic('phantom_veil') && CARDS['PH1']) {
+    extras.push({ ...CARDS['PH1'], exile: true, _relicGranted: true });
+  }
+  // scholars_archive: add a random Common card
+  if (hasRelic('scholars_archive')) {
+    const commons = Object.values(CARDS).filter(c => c.rarity === 'Common' && c.faction !== 'Basic');
+    if (commons.length) extras.push({ ...commons[Math.floor(Math.random() * commons.length)] });
+  }
+  if (extras.length) {
+    gameState.players[pi] = { ...p, deck: p.deck, hand: [...p.hand, ...extras] };
+    addLog(pi, 'relic', `Relics added ${extras.length} card${extras.length>1?'s':''} to opening hand`);
+  }
+}
+
+// Called by the player's "end of battle" reward flow.
+function relicOnBattleWin() {
+  if (!_gauntletRun || !_gauntletRun.relics?.length) return { goldBonus:0, shardBonus:0 };
+  let goldBonus = 0, shardBonus = 0;
+  if (hasRelic('pathbreaker'))    goldBonus  += 5;
+  if (hasRelic('battle_standard'))goldBonus  += 10;
+  if (hasRelic('scout_token'))    shardBonus += 1;
+  return { goldBonus, shardBonus };
+}
 
 // ── Branching Path Map Generator ────────────────────────────────────
 const GAUNTLET_NODE_TYPES = {
@@ -4121,6 +4617,10 @@ function initGauntletGame(playerChamp, aiChamp, playerDeckIds, aiDeckCards) {
   if (p0Label) p0Label.textContent = 'YOU';
   if (p1Label) p1Label.textContent = 'OPPONENT';
 
+  // ── Relic hooks: match-start effects (energy, stat bumps, etc) ──
+  // Must run before performDraw so opening-hand modifiers take effect.
+  if (typeof relicOnMatchStart === 'function') relicOnMatchStart();
+
   renderAll();
   const stageLabel = GAUNTLET_BOSS_STAGES.includes(_gauntletRun.stage) ? 'BOSS STAGE' : 'STAGE';
   addLog(0, 'system', `Gauntlet ${stageLabel} ${_gauntletRun.stage}: ${playerChamp.name} vs ${aiChamp.name}`);
@@ -4530,6 +5030,11 @@ function performDraw() {
   const newHand = [...p.hand, ...drawn];
   gameState.players[pi] = {...p, deck, discard, hand: newHand};
   if (drawn.length) addLog(pi, 'draw', `Drew ${drawn.length}: ${drawn.filter(x=>x&&x.name).map(c=>c.name).join(', ')}`);
+
+  // ── Relic hook: add opening-hand extras on the first draw of each match ──
+  if (gameMode === 'gauntlet' && typeof relicApplyOpeningHand === 'function') {
+    relicApplyOpeningHand(pi);
+  }
 
   gameState.phase = 'action';
   hasMoved = false;
@@ -5092,6 +5597,16 @@ function executeMove(to) {
     }
   }
 
+  // ── Resume the delayed-card queue if this move resolved a delayed movement card ──
+  // Must run before isTurnDone so queued cards get their chance this turn.
+  if (wasCardMove && gameState._delayedCards && gameState._delayedCards[pi]?.length) {
+    resolveDelayedCards(pi);
+    if (uiMode === 'wall' || uiMode === 'move') {
+      renderAll();
+      return; // next delayed card is awaiting UI; don't fall through to isTurnDone yet
+    }
+  }
+
   if (isTurnDone()) {
     gameState.phase = 'end_turn';
     renderAll();
@@ -5155,7 +5670,11 @@ function executePlaceWall(anchor, orientation, length, isPhantom=false, isDurabl
   const isRedirectPlace = (selectedCard?._redirectOwner !== undefined);
   const isFreePhantom = !!(selectedCard?._freePhantom);
   const isFreeWall = !!(selectedCard?._freeWall);
-  if (!isRedirectPlace && !isFreePhantom && !isFreeWall) {
+  // Relic: Architect's Plumb Line — first wall each match is free of the limit
+  const relicPlumbLine = (!isRedirectPlace && !isFreePhantom && !isFreeWall
+                          && typeof relicOnWallPlaced === 'function'
+                          && relicOnWallPlaced(wallOwner));
+  if (!isRedirectPlace && !isFreePhantom && !isFreeWall && !relicPlumbLine) {
     gameState.players[wallOwner] = {...gameState.players[wallOwner],
       wallsInPlay: gameState.players[wallOwner].wallsInPlay + 1};
   }
@@ -5803,16 +6322,20 @@ function delayCard(pi, card) {
   addLog(pi, 'card', `${card.name} delayed — will activate next turn`);
 }
 
-// Called at the start of a player's turn, before draw phase
+// Called at the start of a player's turn, before draw phase, AND re-invoked
+// by executeMove / onWallPlaced / disruption callbacks after a UI-blocking
+// delayed card resolves. Safe to call with an empty queue.
+// Drains gameState._delayedCards[pi] from the front, one card at a time,
+// so additional delayed cards queued while resolving (e.g. from chain effects)
+// are preserved correctly.
 function resolveDelayedCards(pi) {
   if (!gameState._delayedCards || !gameState._delayedCards[pi]?.length) return;
-  const delayed = [...gameState._delayedCards[pi]];
-  gameState._delayedCards[pi] = [];
 
-  for (const card of delayed) {
+  while (gameState._delayedCards[pi].length > 0) {
+    const card = gameState._delayedCards[pi].shift();
     // Delayed cards play for free — energy was already paid when Delay was used
     addLog(pi, 'card', `Delayed ${card.name} activates! (free — energy pre-paid)`);
-    // Resolve the card as if played — route through type handlers
+
     if (card.type === 'Wall') {
       if (!isHumanSeat(pi)) {
         // AI: auto-place the wall near opponent using best available candidate
@@ -5833,9 +6356,10 @@ function resolveDelayedCards(pi) {
           }
         }
         if (!placed) addLog(pi, 'card', `Delayed ${card.name}: no legal placement found, card lost`);
-        continue; // process remaining delayed cards
+        continue; // process next delayed card in queue
       }
-      // Human: Enter wall placement mode with the delayed card
+      // Human: enter wall-placement UI, return — onWallPlaced will resume the
+      // queue via resolveDelayedCards(pi) when this wall is placed.
       const isPhantom = !!card.phantom;
       const isDurable = !!card.durable;
       const length = card.wallLen || 2;
@@ -5843,48 +6367,49 @@ function resolveDelayedCards(pi) {
       uiMode = 'wall';
       renderAll();
       showStatus(`Delayed ${card.name} — place your wall now`, 'active');
-      return; // Only resolve one delayed card at a time (wall needs UI interaction)
+      return;
     } else if (card.type === 'Movement') {
       if (!isHumanSeat(pi)) {
-        // AI: boost will be applied when runAI calls executeMove; store as pending
+        // AI: set up pending move for runAI to consume. Return — executeMove
+        // will re-invoke resolveDelayedCards after the move resolves. (We can
+        // only have one pending movement card at a time.)
         const speed = card.overrideSpeed || 1;
         selectedCard = { id: card.id, idx: -1, overrideSpeed: speed,
           tunnelThrough: !!card.tunnelThrough, diagonal: !!card.diagonal,
           ownWallsPassthrough: !!card.ownWallsPassthrough,
           lateralOnly: !!(card.special === 'flanking'),
           _pendingMove: true, _delayed: true };
-        uiMode = 'move'; // runAI will call executeMove, which will resolve this
-        continue;
+        uiMode = 'move';
+        return;
       }
-      // Human: Auto-apply movement boost
+      // Human: enter movement UI, return — executeMove will resume the queue.
       const speed = card.overrideSpeed || 1;
       selectedCard = { id: card.id, idx: -1, overrideSpeed: speed,
         tunnelThrough: !!card.tunnelThrough, diagonal: !!card.diagonal,
         ownWallsPassthrough: !!card.ownWallsPassthrough,
         lateralOnly: !!(card.special === 'flanking'),
         _pendingMove: true, _delayed: true, _freePlay: true };
-      // Flanking Path delayed: restrict to lateral only
       if (card.special === 'flanking') selectedCard.lateralOnly = true;
       uiMode = 'move';
       renderAll();
       showStatus(`Delayed ${card.name} — move now (${speed} step${speed > 1 ? 's' : ''})`, 'active');
       return;
     } else if (card.type === 'Disruption') {
-      // Resolve delayed disruption card through the proper handler
-      addLog(pi, 'card', `Delayed ${card.name} activates!`);
-      gameState._freePlayActive = true;
-      if (!isHumanSeat(pi)) {
-        selectedCard = { id: card.id, idx: -99, _delayed: true, _freePlay: true };
-        applyDisruptionCard(pi, card, -99);
-        selectedCard = null; gameState._freePlayActive = false;
-        continue;
-      } else {
-        selectedCard = { id: card.id, idx: -99, _delayed: true, _freePlay: true };
-        applyDisruptionCard(pi, card, -99);
-        // If the disruption needs UI interaction (e.g. card picker), it will return
-        // and the remaining delayed cards will be processed next turn
-        return;
-      }
+      // Resolve delayed disruption card through the proper handler.
+      // Note: do NOT set gameState._freePlayActive here — it would also zero
+      // out the cost of other cards the player plays this turn (bug when
+      // delaying 0-cost cards). selectedCard._delayed is sufficient for
+      // countCardPlayed to recognise this as a free play.
+      selectedCard = { id: card.id, idx: -99, _delayed: true, _freePlay: true };
+      applyDisruptionCard(pi, card, -99);
+      // If the disruption opened a wall/move UI, bail — the UI handler will
+      // call resolveDelayedCards again to drain the rest of the queue.
+      if (uiMode === 'wall' || uiMode === 'move') return;
+      // Card pickers / other modal flows: the modal's callback is responsible
+      // for re-calling resolveDelayedCards(pi) when it finishes. We stop here.
+      if (gameState._delayPending || gameState._recallPending) return;
+      selectedCard = null;
+      continue;
     }
   }
 }
@@ -6354,6 +6879,11 @@ function endTurn() {
 
   const pi = gameState.activePlayer;
   const p = gameState.players[pi];
+
+  // ── Relic hook: end-of-turn effects (scavengers_pouch, lantern_oil) ──
+  if (gameMode === 'gauntlet' && typeof relicOnTurnEnd === 'function') {
+    relicOnTurnEnd(pi);
+  }
 
   // Charge ultimate — also clear the one-turn ultimateUsed lock if set
   const newCharge = Math.min(p.ultimateCharge+1, p.champion.ultimateCost);
@@ -8492,6 +9022,7 @@ async function startGauntletRun(champion) {
     deck: deckIds,
     earnedShards: 0,
     gold: 0,                    // in-gauntlet currency for shops
+    relics: [],                 // relic IDs collected on this run
     bossUpgrades: [],
     startedAt: new Date().toISOString(),
     map: map,
@@ -8838,6 +9369,14 @@ function showGauntletRandomEvent() {
         return `+1 ${labels[stat]}!`;
       }},
     { title:'FOREIGN DIPLOMAT', desc:'An emissary from another faction offers cards. Pick one.', good:true, interactive:'pick_foreign_card' },
+    { title:'ANCIENT ALTAR',    desc:'An altar hums with arcane power. Choose one relic to claim.', good:true, interactive:'pick_relic' },
+    { title:'DUSTWALKER\'S CACHE', desc:'A traveller\'s cache contains a forgotten relic.', good:true,
+      execute: () => {
+        const relic = rollGauntletRelic();
+        if (!relic) return 'The cache is empty — you\'ve claimed every relic already!';
+        gainRelic(relic.id);
+        return `Found ✦ ${relic.name} (${relic.rarity})!`;
+      }},
   ];
   const badEvents = [
     { title:'DECK FLOOD', desc:'A chaotic surge fills your deck with weak cards.', good:false,
@@ -8902,11 +9441,13 @@ function showGauntletRandomEvent() {
     }
     const cardsHtml = picks.map((c, i) => {
       const rc = rarityColor(c.rarity);
+      const ec = (c.energyCost ?? 1);
       return `<div onclick="gauntletEventPickCard(${i})" style="cursor:pointer;background:var(--surface);border:2px solid ${rc};
         padding:14px;width:150px;text-align:center;transition:transform 0.15s;"
         onmouseover="this.style.transform='scale(1.05)'" onmouseout="this.style.transform='scale(1)'">
         <div style="font-family:'Teko',sans-serif;font-size:16px;color:${rc};">${c.name}</div>
         <div style="font-size:9px;color:#888;">${c.rarity} · ${c.faction}</div>
+        <div style="font-size:10px;color:#60a5fa;margin-top:3px;">⚡ ${ec} ENERGY</div>
         <div style="font-size:10px;color:var(--text);margin-top:4px;line-height:1.3;">${c.desc}</div>
       </div>`;
     }).join('');
@@ -8922,6 +9463,44 @@ function showGauntletRandomEvent() {
     return;
   }
 
+  if (event.interactive === 'pick_relic') {
+    const picks = rollGauntletRelics(3);
+    if (!picks.length) {
+      // No relics left to offer — fall back to gold
+      const amount = 20;
+      _gauntletRun.gold = (_gauntletRun.gold || 0) + amount;
+      overlay.innerHTML = `
+        <div style="font-size:48px;margin-bottom:8px;">✦</div>
+        <div style="font-family:'Teko',sans-serif;font-size:32px;color:${eventColor};margin-bottom:8px;">${event.title}</div>
+        <div style="font-size:13px;color:var(--text);margin-bottom:20px;">Every relic already claimed — the altar offers ${amount} gold instead.</div>
+        <button class="landing-btn amber" style="width:180px;" onclick="gauntletFinishEventAfterGold()">PROCEED</button>
+      `;
+      overlay._event = event;
+      document.body.appendChild(overlay);
+      return;
+    }
+    const relicsHtml = picks.map((r, i) => {
+      const rc = RELIC_RARITY_COLOR[r.rarity] || '#ccc';
+      return `<div onclick="gauntletEventPickRelic(${i})" style="cursor:pointer;background:var(--surface);border:2px solid ${rc};
+        padding:14px;width:180px;text-align:center;transition:transform 0.15s;"
+        onmouseover="this.style.transform='scale(1.05)'" onmouseout="this.style.transform='scale(1)'">
+        <div style="font-family:'Teko',sans-serif;font-size:16px;color:${rc};">✦ ${r.name}</div>
+        <div style="font-size:9px;color:#888;">${r.rarity} · RELIC</div>
+        <div style="font-size:10px;color:var(--text);margin-top:6px;line-height:1.3;">${r.desc}</div>
+      </div>`;
+    }).join('');
+    overlay.innerHTML = `
+      <div style="font-size:48px;margin-bottom:8px;">✦</div>
+      <div style="font-family:'Teko',sans-serif;font-size:32px;color:${eventColor};margin-bottom:8px;">${event.title}</div>
+      <div style="font-size:13px;color:var(--text);margin-bottom:20px;">${event.desc}</div>
+      <div style="display:flex;gap:12px;flex-wrap:wrap;justify-content:center;">${relicsHtml}</div>
+    `;
+    overlay._relicPicks = picks;
+    overlay._event = event;
+    document.body.appendChild(overlay);
+    return;
+  }
+
   if (event.interactive === 'lose_card') {
     // Show the 3 highest-rarity cards in the deck for player to choose which to lose
     const rarityRank = {Legendary:4, Rare:3, Uncommon:2, Common:1};
@@ -8932,11 +9511,13 @@ function showGauntletRandomEvent() {
     const top3 = sorted.slice(0, 3);
     const loseHtml = top3.map((x, i) => {
       const rc = rarityColor(x.card.rarity);
+      const ec = (x.card.energyCost ?? 1);
       return `<div onclick="gauntletEventLoseCard(${x.i})" style="cursor:pointer;background:var(--surface);border:2px solid ${rc};
         padding:14px;width:150px;text-align:center;transition:transform 0.15s;"
         onmouseover="this.style.borderColor='#e05050'" onmouseout="this.style.borderColor='${rc}'">
         <div style="font-family:'Teko',sans-serif;font-size:16px;color:${rc};">${x.card.name}</div>
         <div style="font-size:9px;color:#888;">${x.card.rarity} · ${x.card.faction}</div>
+        <div style="font-size:10px;color:#60a5fa;margin-top:3px;">⚡ ${ec} ENERGY</div>
         <div style="font-size:10px;color:var(--text);margin-top:4px;line-height:1.3;">${x.card.desc}</div>
       </div>`;
     }).join('');
@@ -8963,6 +9544,22 @@ function showGauntletRandomEvent() {
   `;
   overlay._event = event;
   document.body.appendChild(overlay);
+}
+
+async function gauntletEventPickRelic(idx) {
+  const overlay = document.getElementById('gauntlet-event-overlay');
+  if (!overlay?._relicPicks) return;
+  const relic = overlay._relicPicks[idx];
+  if (!relic) return;
+  gainRelic(relic.id);
+  await gauntletFinishEvent(overlay._event, `Claimed ✦ ${relic.name} (${relic.rarity})!`);
+}
+
+// Proceed button for the no-relics-left altar fallback
+async function gauntletFinishEventAfterGold() {
+  const overlay = document.getElementById('gauntlet-event-overlay');
+  if (!overlay) return;
+  await gauntletFinishEvent(overlay._event, `The altar has no more relics to offer.`);
 }
 
 async function gauntletEventPickCard(idx) {
@@ -9014,6 +9611,9 @@ function showGauntletShop() {
   const gold = _gauntletRun.gold || 0;
   let shopRemovedCard = false;   // track if card removal was used this visit
   let shopUpgradedStat = false;  // track if stat upgrade was used this visit
+  // Roll one relic for sale this visit (rarity-weighted). May be null if player owns them all.
+  let shopRelic = rollGauntletRelic();
+  let shopRelicPurchased = false;
 
   // Generate 5 random cards from any faction
   const shopCards = [];
@@ -9044,11 +9644,13 @@ function showGauntletShop() {
       const price = GAUNTLET_SHOP_PRICES[c.rarity] || 10;
       const canAfford = curGold >= price;
       const rc = rarityColor(c.rarity);
+      const ec = (c.energyCost ?? 1);
       return `<div style="background:var(--surface);border:2px solid ${canAfford ? rc : '#333'};padding:10px;width:130px;text-align:center;
         ${canAfford ? 'cursor:pointer;' : 'opacity:0.5;'}transition:transform 0.15s;"
         ${canAfford ? `onclick="gauntletShopBuyCard(${i})" onmouseover="this.style.transform='scale(1.05)'" onmouseout="this.style.transform='scale(1)'"` : ''}>
         <div style="font-family:'Teko',sans-serif;font-size:14px;color:${rc};">${c.name}</div>
         <div style="font-size:8px;color:#888;">${c.rarity} · ${c.faction}</div>
+        <div style="font-size:9px;color:#60a5fa;margin-top:2px;">⚡ ${ec} ENERGY</div>
         <div style="font-size:8px;color:#aaa;margin-top:4px;line-height:1.3;">${c.desc}</div>
         <div style="font-size:12px;color:#fbbf24;margin-top:6px;">🪙 ${price}</div>
       </div>`;
@@ -9057,10 +9659,32 @@ function showGauntletShop() {
     const canRemove = curGold >= GAUNTLET_SHOP_PRICES.cardRemoval && _gauntletRun.deck.length > 5 && !shopRemovedCard;
     const canUpgrade = curGold >= GAUNTLET_SHOP_PRICES.statUpgrade && !shopUpgradedStat;
 
+    // Relic section (only shown if a relic is on offer and not yet purchased)
+    let relicHtml = '';
+    if (shopRelic && !shopRelicPurchased) {
+      const rprice = GAUNTLET_RELIC_PRICES[shopRelic.rarity] || 20;
+      const rCanAfford = curGold >= rprice;
+      const rColor = RELIC_RARITY_COLOR[shopRelic.rarity] || '#ccc';
+      relicHtml = `
+        <div style="font-size:11px;color:var(--text-dim);margin-bottom:8px;">Relic for sale</div>
+        <div style="background:var(--surface);border:2px solid ${rCanAfford ? rColor : '#333'};padding:12px;width:220px;text-align:center;margin-bottom:16px;
+          ${rCanAfford ? 'cursor:pointer;' : 'opacity:0.5;'}transition:transform 0.15s;"
+          ${rCanAfford ? `onclick="gauntletShopBuyRelic()" onmouseover="this.style.transform='scale(1.05)'" onmouseout="this.style.transform='scale(1)'"` : ''}>
+          <div style="font-family:'Teko',sans-serif;font-size:16px;color:${rColor};">✦ ${shopRelic.name}</div>
+          <div style="font-size:8px;color:#888;">${shopRelic.rarity} · RELIC</div>
+          <div style="font-size:9px;color:#aaa;margin-top:4px;line-height:1.3;">${shopRelic.desc}</div>
+          <div style="font-size:12px;color:#fbbf24;margin-top:6px;">🪙 ${rprice}</div>
+        </div>
+      `;
+    } else if (shopRelicPurchased) {
+      relicHtml = `<div style="font-size:11px;color:#4ade80;margin-bottom:16px;">Relic acquired</div>`;
+    }
+
     overlay.innerHTML = `
       <div style="font-size:32px;margin-bottom:4px;">🏪</div>
       <div style="font-family:'Teko',sans-serif;font-size:28px;color:#fbbf24;margin-bottom:4px;">SHOP</div>
       <div style="font-size:13px;color:#fbbf24;margin-bottom:16px;">🪙 ${curGold} GOLD</div>
+      ${relicHtml}
       <div style="font-size:11px;color:var(--text-dim);margin-bottom:8px;">Buy cards for your deck</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin-bottom:20px;">${cardsHtml}</div>
       <div style="display:flex;gap:12px;margin-bottom:20px;">
@@ -9077,6 +9701,9 @@ function showGauntletShop() {
 
   overlay._shopCards = shopCards;
   overlay._renderShop = renderShop;
+  overlay._getShopRelic = () => shopRelic;
+  overlay._setShopRelicPurchased = () => { shopRelicPurchased = true; };
+  overlay._shopRelicPurchased = () => shopRelicPurchased;
   overlay._shopRemovedCard = () => shopRemovedCard;
   overlay._shopUpgradedStat = () => shopUpgradedStat;
   overlay._setShopRemovedCard = () => { shopRemovedCard = true; };
@@ -9097,6 +9724,22 @@ async function gauntletShopBuyCard(idx) {
   overlay._shopCards.splice(idx, 1); // Remove from shop
   if (_userProfile) await saveUserProfile({ gauntlet_run: _gauntletRun });
   overlay._renderShop();
+}
+
+async function gauntletShopBuyRelic() {
+  const overlay = document.getElementById('gauntlet-event-overlay');
+  if (!overlay?._getShopRelic) return;
+  if (overlay._shopRelicPurchased?.()) return;
+  const relic = overlay._getShopRelic();
+  if (!relic) return;
+  const price = GAUNTLET_RELIC_PRICES[relic.rarity] || 20;
+  if ((_gauntletRun.gold || 0) < price) return;
+  _gauntletRun.gold -= price;
+  gainRelic(relic.id);
+  overlay._setShopRelicPurchased();
+  if (_userProfile) await saveUserProfile({ gauntlet_run: _gauntletRun });
+  overlay._renderShop();
+  showOverlayFeedback(`✦ ${relic.name} acquired!`, 'success');
 }
 
 function gauntletShopRemoveCard() {
@@ -9294,13 +9937,21 @@ async function showGauntletVictory(winner) {
   const [min, max] = GAUNTLET_SHARD_REWARDS[stage] || [10,20];
   let shards = min + Math.floor(Math.random() * (max - min + 1));
   if (isBoss) shards = Math.floor(shards * 1.5);
-  await grantShards(shards);
-  _gauntletRun.earnedShards += shards;
 
   // Award gold based on node type
   const nodeType = currentNode?.type || 'battle';
   const goldRange = GAUNTLET_GOLD_REWARDS[nodeType] || GAUNTLET_GOLD_REWARDS.battle;
-  const goldEarned = goldRange[0] + Math.floor(Math.random() * (goldRange[1] - goldRange[0] + 1));
+  let goldEarned = goldRange[0] + Math.floor(Math.random() * (goldRange[1] - goldRange[0] + 1));
+
+  // ── Relic bonuses on battle win (pathbreaker, battle_standard, scout_token) ──
+  if (typeof relicOnBattleWin === 'function') {
+    const bonus = relicOnBattleWin();
+    shards     += bonus.shardBonus || 0;
+    goldEarned += bonus.goldBonus  || 0;
+  }
+
+  await grantShards(shards);
+  _gauntletRun.earnedShards += shards;
   _gauntletRun.gold = (_gauntletRun.gold || 0) + goldEarned;
 
   if (_userProfile) await saveUserProfile({ gauntlet_run: _gauntletRun });
@@ -9378,10 +10029,12 @@ function showGauntletCardReward(shardsEarned, goldEarned) {
     const rarityColor = r => r==='Common'?'#aaa':r==='Uncommon'?'#4ade80':r==='Rare'?'#60a5fa':r==='Legendary'?'#fbbf24':'#ccc';
     const cardHtml = cards.map((c, i) => {
       const rc = rarityColor(c.rarity);
+      const ec = (c.energyCost ?? 1);
       return `<div onclick="gauntletPickCard(${i})" style="cursor:pointer;background:var(--surface);border:2px solid ${rc};
         padding:14px;width:160px;text-align:center;transition:transform 0.15s;" onmouseover="this.style.transform='scale(1.05)'" onmouseout="this.style.transform='scale(1)'">
         <div style="font-family:'Teko',sans-serif;font-size:18px;color:${rc};">${c.name}</div>
         <div style="font-size:9px;color:#888;">${c.rarity} · ${c.faction}</div>
+        <div style="font-size:10px;color:#60a5fa;margin-top:3px;">⚡ ${ec} ENERGY</div>
         <div style="font-size:10px;color:var(--text);margin-top:6px;line-height:1.3;">${c.desc}</div>
       </div>`;
     }).join('');
@@ -9516,7 +10169,18 @@ async function gauntletElitePickStat(idx) {
   const defaultVal = upgrade.stat === 'ultimateCost' ? 6 : 3;
   _gauntletRun.champion[upgrade.stat] = (_gauntletRun.champion[upgrade.stat] || defaultVal) + delta;
   if (upgrade.stat === 'ultimateCost') _gauntletRun.champion[upgrade.stat] = Math.max(1, _gauntletRun.champion[upgrade.stat]);
+  // ── Elite bonus: guaranteed relic drop ──
+  const relic = rollGauntletRelic();
+  if (relic) gainRelic(relic.id);
   if (_userProfile) await saveUserProfile({ gauntlet_run: _gauntletRun });
+  const relicHtml = relic
+    ? `<div style="background:var(--surface);border:2px solid ${RELIC_RARITY_COLOR[relic.rarity]||'#ccc'};padding:12px 18px;margin-bottom:20px;text-align:center;">
+        <div style="font-size:10px;color:var(--text-dim);margin-bottom:4px;">ELITE RELIC DROP</div>
+        <div style="font-family:'Teko',sans-serif;font-size:18px;color:${RELIC_RARITY_COLOR[relic.rarity]||'#ccc'};">✦ ${relic.name}</div>
+        <div style="font-size:9px;color:#888;">${relic.rarity} · RELIC</div>
+        <div style="font-size:10px;color:#aaa;margin-top:4px;line-height:1.3;">${relic.desc}</div>
+      </div>`
+    : '';
   // Show confirmation, then advance button
   overlay.innerHTML = `
     <div style="font-family:'Teko',sans-serif;font-size:28px;color:#f59e0b;margin-bottom:8px;">⚡ ${upgrade.label.toUpperCase()}</div>
@@ -9525,6 +10189,7 @@ async function gauntletElitePickStat(idx) {
       <div style="font-size:10px;color:var(--text-dim);margin-bottom:6px;">STATS</div>
       <div style="font-size:12px;color:#ccc;">W:${_gauntletRun.champion.wallLimit} E:${_gauntletRun.champion.energy||3} D:${_gauntletRun.champion.cardDraw} U:${_gauntletRun.champion.ultimateCost}</div>
     </div>
+    ${relicHtml}
     <button class="landing-btn amber" style="width:220px;" onclick="gauntletAdvanceStage();">CONTINUE →</button>
   `;
 }
@@ -9777,6 +10442,18 @@ function showGauntletMap(autoStartNext) {
         <div style="font-size:10px;color:var(--amber);">◆ ${_gauntletRun.earnedShards}</div>
         <div style="font-size:10px;color:#fbbf24;">🪙 ${_gauntletRun.gold || 0}</div>
       </div>
+      ${(() => {
+        const owned = (_gauntletRun.relics || []).map(id => RELICS[id]).filter(Boolean);
+        if (!owned.length) return '';
+        const chips = owned.map(r => {
+          const col = RELIC_RARITY_COLOR[r.rarity] || '#ccc';
+          const safeDesc = (r.desc || '').replace(/"/g, '&quot;');
+          return `<span title="${r.name} — ${safeDesc}" style="display:inline-flex;align-items:center;gap:4px;font-size:9px;color:${col};border:1px solid ${col};padding:2px 6px;border-radius:2px;">✦ ${r.name}</span>`;
+        }).join('');
+        return `<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;padding:6px 10px;background:rgba(255,255,255,0.02);border:1px solid var(--border);margin-bottom:12px;">
+          <span style="font-size:9px;color:#666;letter-spacing:.15em;">RELICS</span>${chips}
+        </div>`;
+      })()}
     </div>
   `;
 
@@ -10516,11 +11193,16 @@ function getEffectiveEnergyCost(card, pi) {
   if (gameState._infiniteRecursionActive === pi) return 0;
   // Free-play (Delay, Recall, etc.)
   if (gameState._freePlayActive) return 0;
-  const baseCost = cardDef.energyCost ?? 1;
+  let baseCost = cardDef.energyCost ?? 1;
   // Magnus passive: Wall cards cost 1 less (min 1)
   const champId = getPassiveId(pi);
   if (champId === 'magnus' && cardDef.type === 'Wall') {
-    return Math.max(1, baseCost - 1);
+    baseCost = Math.max(1, baseCost - 1);
+  }
+  // Relic discounts (Gauntlet only, human only). Can never reduce below 0.
+  if (typeof relicCostDiscount === 'function') {
+    const disc = relicCostDiscount(card, pi);
+    if (disc) baseCost = Math.max(0, baseCost - disc);
   }
   return baseCost;
 }
@@ -10852,10 +11534,18 @@ function selectCard(cardId, idx) {
 
   if (card.type === 'Wall') {
     trackCategory('Wall');
-    const isPhantom = !!(card.phantom);
+    let isPhantom = !!(card.phantom);
     const isDurable = !!(card.durable);
     const length    = getCardWallLength(card.id);
     const _io = !!(card._instantOnce);
+    // Relic: Veil of Echoes — first Wall card played each match becomes a Phantom Wall
+    if (gameMode === 'gauntlet' && pi === 0 && !isPhantom
+        && typeof hasRelic === 'function' && hasRelic('veil_of_echoes')
+        && gameState._relicMatch && !gameState._relicMatch.veilEchoesUsed) {
+      gameState._relicMatch.veilEchoesUsed = true;
+      isPhantom = true;
+      addLog(pi, 'relic', 'Veil of Echoes: this wall becomes a Phantom Wall');
+    }
     selectedCard = { ...selectedCard, length, isPhantom, isDurable, _instantOnce: _io || (selectedCard && selectedCard._instantOnce) };
     // Doppelganger Wall: first wall is free (doesn't cost a wall slot)
     if (card.special === 'doppelganger') selectedCard._freePhantom = true;
@@ -10916,11 +11606,18 @@ function countCardPlayed(pi, _playedCard) {
     console.log('[countCardPlayed] Skipping count — Infinite Recursion instant-once:', card.id);
     // Remove _instantOnce from the card (already discarded at this point, but clear the flag)
   } else {
-    cardsPlayedThisTurn++;
-    hasPlayedCard = true;
-    // ── Deduct energy ──
+    // Deduct energy BEFORE bumping the played-count so relics that key off
+    // "first card of the turn" (e.g. Chronist's Hourglass) see the correct
+    // cardsPlayedThisTurn value.
     const energyCost = getEffectiveEnergyCost(card, pi);
     gameState.players[pi].energyCurrent = Math.max(0, gameState.players[pi].energyCurrent - energyCost);
+    cardsPlayedThisTurn++;
+    hasPlayedCard = true;
+    // ── Relic hooks: consume first-of-type flags, then run onCardPlayed ──
+    if (gameMode === 'gauntlet' && card && card.id) {
+      if (typeof consumeRelicCostFlags === 'function') consumeRelicCostFlags(card, pi);
+      if (typeof relicOnCardPlayed === 'function')      relicOnCardPlayed(card, pi);
+    }
   }
   // Track card history for Infinite Recursion
   if (card && card.id && card.id !== '__breach__') {
@@ -11690,6 +12387,14 @@ function onWallPlaced(pi, fromCardId, _wasDelayedCard, _placedCard) {
   // Delayed walls are free — ensure phase stays 'action' so the player gets their full turn
   if (isDelayedWall) {
     gameState.phase = 'action';
+    // Resume the delayed-card queue so additional queued cards can be played this turn
+    if (gameState._delayedCards && gameState._delayedCards[pi]?.length) {
+      resolveDelayedCards(pi);
+      if (uiMode === 'wall' || uiMode === 'move') {
+        renderAll(); updateActionBar();
+        return;
+      }
+    }
   } else if (gameState._freePlayQueue && gameState._freePlayQueue.length > 0) {
     // Infinite Recursion queue: advance to the next queued card after this wall was placed
     advanceFreePlayQueue(pi);
@@ -13358,9 +14063,11 @@ async function applyDisruptionCard(pi, card, idx) {
       return { ...c, _instantOnce: true };
     });
     gameState.players[pi] = { ...gameState.players[pi], hand: newHand };
-    gameState._infiniteRecursionActive = pi; // track which player has it active
     addLog(pi, 'card', 'Infinite Recursion: all hand cards are now Instants this turn!');
+    // Discard and pay CH11's own energy cost BEFORE activating the free-play flag,
+    // otherwise getEffectiveEnergyCost short-circuits to 0 for CH11 itself.
     discardCard(pi, idx); selectedCard = null; countCardPlayed(pi);
+    gameState._infiniteRecursionActive = pi; // activate after self-cost is paid
     if (isTurnDone()) gameState.phase = 'end_turn';
     renderAll();
     showStatus('Infinite Recursion — all cards in hand are Instants this turn!', 'success');
@@ -14936,6 +15643,9 @@ function renderPanels() {
       }
     }
   }
+
+  // Relic tray — rendered once per panel refresh (Gauntlet only)
+  if (typeof renderRelicTray === 'function') renderRelicTray();
 }
 
 function renderCard(card, idx, pi, interactive, canPlayNonInstant) {
