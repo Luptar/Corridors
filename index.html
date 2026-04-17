@@ -151,6 +151,12 @@
     display: flex;
     flex-direction: column;
     gap: 16px;
+    /* Cap panel height to the viewport so a long hand can't push the
+       column off-screen. The inner `.hand-cards` scrolls (overflow-y:auto
+       + flex:1 + min-height:0 chain) when the hand exceeds available space. */
+    max-height: calc(100vh - 70px);
+    min-height: 0;
+    overflow: hidden;
   }
   .panel.right {
     border-right: none;
@@ -1945,6 +1951,10 @@
   @keyframes rewardFadeIn {
     from { opacity: 0; transform: translateY(8px); }
     to   { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes inviteSlideIn {
+    from { opacity: 0; transform: translateX(24px); }
+    to   { opacity: 1; transform: translateX(0); }
   }
   .reward-banner-label {
     font-size: 9px; letter-spacing: .22em; color: var(--text-dim);
@@ -8580,6 +8590,15 @@ function showLandingScreen() {
     document.getElementById(id)?.remove();
   });
 
+  // Honour a pending invite URL that was stashed while the user was signed
+  // out. Consume it once so repeated landing-screen renders don't re-route.
+  if (mp_pendingJoin && _authUser) {
+    const code = mp_pendingJoin;
+    mp_pendingJoin = null;
+    showGameLobby(code);
+    return;
+  }
+
   const username = _userProfile?.username || _userName || 'Wanderer';
   const shards   = _userProfile?.shards ?? 0;
 
@@ -13479,8 +13498,8 @@ async function applyDisruptionCard(pi, card, idx) {
     if (gameMode === 'mp' && gameState.players[opp].hand.length === 0) {
       const sb = mpInit();
       if (sb) {
-        const oppHandKey = opp === 0 ? 'host_hand' : 'guest_hand';
-        const oppDeckKey = opp === 0 ? 'host_deck' : 'guest_deck';
+        const oppHandKey = seatHandKey(opp);
+        const oppDeckKey = seatDeckKey(opp);
         const { data: g } = await sb.from('mp_games').select(`${oppHandKey},${oppDeckKey}`).eq('id', mp_gameId).single();
         if (g) {
           gameState.players[opp] = {...gameState.players[opp],
@@ -14101,7 +14120,7 @@ async function applyDisruptionCard(pi, card, idx) {
     if (gameMode === 'mp' && wallOwner !== pi) {
       const sb = mpInit();
       if (sb) {
-        const oppHandKey = wallOwner === 0 ? 'host_hand' : 'guest_hand';
+        const oppHandKey = seatHandKey(wallOwner);
         const { data: g } = await sb.from('mp_games').select(oppHandKey).eq('id', mp_gameId).single();
         if (g) {
           gameState.players[wallOwner] = {...gameState.players[wallOwner],
@@ -14434,7 +14453,7 @@ async function applyDisruptionCard(pi, card, idx) {
     if (gameMode === 'mp' && gameState.players[opp].hand.length === 0) {
       const sb = mpInit();
       if (sb) {
-        const oppHandKey = opp === 0 ? 'host_hand' : 'guest_hand';
+        const oppHandKey = seatHandKey(opp);
         const { data: g } = await sb.from('mp_games').select(oppHandKey).eq('id', mp_gameId).single();
         if (g) gameState.players[opp] = {...gameState.players[opp], hand: JSON.parse(g[oppHandKey] || '[]')};
       }
@@ -14504,7 +14523,7 @@ async function applyDisruptionCard(pi, card, idx) {
       if (gameMode === 'mp' && gameState.players[oi].hand.length === 0) {
         const sb = mpInit();
         if (sb) {
-          const oppHandKey = oi === 0 ? 'host_hand' : 'guest_hand';
+          const oppHandKey = seatHandKey(oi);
           const { data: g } = await sb.from('mp_games').select(oppHandKey).eq('id', mp_gameId).single();
           if (g) {
             const oppHand = JSON.parse(g[oppHandKey] || '[]');
@@ -15467,6 +15486,16 @@ function renderAIStatusStrip() {
       </div>`;
   }
 
+  // Relic tray — only shown during a Gauntlet run
+  const inGauntlet = (gameMode === 'gauntlet' && _gauntletRun && _gauntletRun.relics?.length);
+  if (inGauntlet) {
+    panelHtml += `
+      <div id="relic-tray-section" style="margin-top:auto;padding-top:6px;border-top:1px solid var(--border);">
+        <div style="font-size:9px;color:var(--text-dim);letter-spacing:.15em;margin-bottom:4px;">RELICS</div>
+        <div id="relic-tray" style="display:flex;flex-wrap:wrap;gap:4px;min-height:24px;"></div>
+      </div>`;
+  }
+
   panel.innerHTML = panelHtml;
 
   // Insert as 3rd column in the grid (after board-area)
@@ -15474,6 +15503,9 @@ function renderAIStatusStrip() {
   if (mainEl) {
     mainEl.appendChild(panel);
   }
+
+  // Populate relic tray icons (renderRelicTray looks up #relic-tray by id).
+  if (inGauntlet && typeof renderRelicTray === 'function') renderRelicTray();
 }
 
 function renderHandRow() {
@@ -17615,7 +17647,6 @@ function showMultiplayerLobby(tab = 'home', prefillCode = null) {
       <button class="mp-tab ${tab==='home'?'active':''}" onclick="mpShowTab('home')">MY GAMES</button>
       <button class="mp-tab ${tab==='browse'?'active':''}" onclick="mpShowTab('browse')">BROWSE</button>
       <button class="mp-tab ${tab==='create'?'active':''}" onclick="mpShowTab('create')">CREATE GAME</button>
-      <button class="mp-tab ${tab==='join'?'active':''}" onclick="mpShowTab('join')">JOIN GAME</button>
       <button class="mp-tab ${tab==='leaderboard'?'active':''}" onclick="mpShowTab('leaderboard')">LEADERBOARD</button>
     </div>
 
@@ -17630,16 +17661,10 @@ function showMultiplayerLobby(tab = 'home', prefillCode = null) {
 
   document.body.appendChild(overlay);
 
-  // Prefill join code from URL invite
-  if (prefillCode) {
-    setTimeout(() => {
-      mpShowTab('join');
-      const inp = document.getElementById('mp-join-code');
-      if (inp) inp.value = prefillCode;
-    }, 50);
-  } else {
-    mpShowTab(tab);
-  }
+  // `prefillCode` used to land users on the JOIN tab with a game code. That
+  // flow is now handled by routing the user straight to showGameLobby(code)
+  // before this overlay opens, so we just render the requested tab.
+  mpShowTab(tab);
 }
 
 function menuReturnToLanding() {
@@ -17662,7 +17687,7 @@ function closeMpLobby(silent = false) {
 
 function mpShowTab(tab) {
   // Update tab buttons
-  const tabMap = {home:'MY GAMES',browse:'BROWSE',create:'CREATE GAME',join:'JOIN GAME',leaderboard:'LEADERBOARD'};
+  const tabMap = {home:'MY GAMES',browse:'BROWSE',create:'CREATE GAME',leaderboard:'LEADERBOARD'};
   document.querySelectorAll('.mp-tab').forEach(btn => {
     btn.className = 'mp-tab' + (btn.textContent.trim() === tabMap[tab] ? ' active' : '');
   });
@@ -17682,7 +17707,6 @@ function mpShowTab(tab) {
     case 'home':        mpRenderHomeTab(content); break;
     case 'browse':      mpRenderBrowseTab(content); break;
     case 'create':      mpRenderCreateTab(content); break;
-    case 'join':        mpRenderJoinTab(content); break;
     case 'leaderboard': mpRenderLeaderboardTab(content); break;
   }
 }
@@ -17880,7 +17904,6 @@ function mpDeckOptClick(containerId, idx, total) {
 
 function mpRenderCreateTab(content) {
   const roster = _userProfile?.roster || [];
-  const rarityColor = r => r==='Common'?'#aaa':r==='Uncommon'?'#4ade80':r==='Rare'?'#60a5fa':r==='Epic'?'#c084fc':r==='Legendary'?'#fbbf24':'#ccc';
 
   if (!roster.length) {
     content.innerHTML = `
@@ -17889,37 +17912,16 @@ function mpRenderCreateTab(content) {
       <div style="text-align:center;padding:30px;color:#888;">
         <div style="font-family:'Teko',sans-serif;font-size:22px;color:var(--amber);margin-bottom:8px;">NO CHAMPIONS AVAILABLE</div>
         <div style="font-size:12px;margin-bottom:16px;">Multiplayer requires roster champions. Earn them through the Shop or Gauntlet.</div>
-        <div style="font-size:10px;color:#555;">Champions are permanently lost if you lose a ranked match (permadeath).</div>
+        <div style="font-size:10px;color:#555;">Champion and deck are chosen in the lobby after the game is created.</div>
       </div>
     `;
     return;
   }
 
-  const champCards = roster.map(c => {
-    const rc = rarityColor(c.rarity);
-    return `<div class="cs-card" id="mpc-${c.id}" onclick="mpSelectChamp('${c.id}')" style="padding:12px 14px;border:2px solid ${rc};">
-      <div style="font-size:9px;color:${rc};letter-spacing:.1em;">${c.rarity.toUpperCase()}</div>
-      <div class="cs-champ-name" style="font-size:20px;color:${rc};">${c.name}</div>
-      <div class="cs-champ-title" style="font-size:10px;">${c.title}</div>
-      <div class="cs-faction" style="font-size:9px;margin-top:3px;">${c.faction}</div>
-      <div style="font-size:9px;color:#888;margin-top:2px;">W:${c.wallLimit} E:${c.energy||3} D:${c.cardDraw} U:${c.ultimateCost}</div>
-    </div>`;
-  }).join('');
-
   content.innerHTML = `
     ${mpNameInput('create')}
     <hr class="mp-divider">
-    <div class="mp-section-label">Choose Your Champion <span style="font-size:9px;color:#e05050;font-weight:normal;">PERMADEATH — lose a ranked match and your champion is destroyed</span></div>
-    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:20px;" id="mpc-grid">
-      ${champCards}
-    </div>
-    <div id="mpc-deck-section" style="display:none;">
-      <hr class="mp-divider">
-      <div class="mp-section-label">Choose Your Deck</div>
-      <div class="mp-deck-options" id="mpc-deck-options"></div>
-    </div>
-    <hr class="mp-divider">
-    <div class="mp-section-label">Game Options</div>
+    <div class="mp-section-label">Game Options <span style="font-size:9px;color:#888;font-weight:normal;">Champion & deck are picked in the lobby</span></div>
     <div style="display:flex;gap:12px;margin-bottom:12px;flex-wrap:wrap;">
       <div>
         <div style="font-size:9px;color:#888;letter-spacing:.1em;margin-bottom:4px;">MODE</div>
@@ -17963,16 +17965,48 @@ function mpRenderCreateTab(content) {
         `).join('')}
       </div>
     </div>
-    <button class="mp-btn" id="mp-create-btn" onclick="mpCreateGame()" disabled>
-      SELECT A CHAMPION TO CREATE GAME →
+    <div id="mp-create-invitees" style="display:none;margin-bottom:12px;padding:8px 10px;background:rgba(212,144,58,0.06);border:1px solid var(--amber-dim);">
+      <div style="font-size:9px;color:var(--amber);letter-spacing:.12em;margin-bottom:4px;">INVITING</div>
+      <div id="mp-create-invitees-list" style="display:flex;gap:6px;flex-wrap:wrap;"></div>
+      <div style="font-size:9px;color:var(--text-dim);margin-top:6px;">These friends will receive a popup invite when the game is created.</div>
+    </div>
+    <button class="mp-btn" id="mp-create-btn" onclick="mpCreateGame()">
+      CREATE GAME →
     </button>
     <div id="mp-create-status"></div>
   `;
+
+  // If pending invitees were staged (e.g. from a "Challenge" button), render chips.
+  mpRenderCreateInvitees();
 }
 
-let mp_selectedChamp = null;
-let mp_selectedDeckCards = null; // null = starter deck
-let mp_selectedDeckIdx = 0;
+// ── Pending invitees staged for the next created game ──
+// Populated by challengeFriend() and the lobby's "invite friend" button.
+// Consumed (and cleared) by mpCreateGame().
+let mp_pendingInvitees = []; // [{ authId, username }]
+
+function mpRenderCreateInvitees() {
+  const box  = document.getElementById('mp-create-invitees');
+  const list = document.getElementById('mp-create-invitees-list');
+  if (!box || !list) return;
+  if (!mp_pendingInvitees.length) { box.style.display = 'none'; return; }
+  box.style.display = '';
+  list.innerHTML = mp_pendingInvitees.map((inv, i) => {
+    const name = (inv.username || 'Unknown').replace(/</g, '&lt;');
+    return `<span style="display:inline-flex;align-items:center;gap:4px;background:var(--surface2);border:1px solid var(--border);padding:2px 8px;font-size:11px;color:#ccc;">
+      ${name}
+      <span onclick="mpRemovePendingInvitee(${i})" style="cursor:pointer;color:var(--danger);font-weight:bold;padding:0 2px;" title="Remove">×</span>
+    </span>`;
+  }).join('');
+}
+
+function mpRemovePendingInvitee(idx) {
+  mp_pendingInvitees.splice(idx, 1);
+  mpRenderCreateInvitees();
+}
+
+// Champion and deck are now picked inside the game lobby (for host and joiners),
+// not on the Create tab. The Create tab only sets game-level options below.
 let mp_selectedMode = '1v1';
 let mp_selectedVisibility = 'private';
 let mp_selectedGameType = 'casual';
@@ -18020,26 +18054,6 @@ function mpSelectBoardVariant(variant) {
   });
 }
 
-function mpSelectChamp(id) {
-  mp_selectedChamp = id;
-  mp_selectedDeckCards = null;
-  mp_selectedDeckIdx = 0;
-  document.querySelectorAll('[id^="mpc-"]').forEach(el => el.classList.remove('selected'));
-  const card = document.getElementById('mpc-' + id);
-  if (card) card.classList.add('selected');
-  const champ = resolveChampion(id);
-  const btn = document.getElementById('mp-create-btn');
-  if (btn && champ) {
-    btn.textContent = `CREATE GAME AS ${champ.name.toUpperCase()} →`;
-    btn.disabled = false;
-  }
-  // Populate deck picker
-  mpRenderDeckPicker('mpc-deck-options', 'mpc-deck-section', id, (cards, idx) => {
-    mp_selectedDeckCards = cards;
-    mp_selectedDeckIdx = idx;
-  });
-}
-
 async function mpCreateGame() {
   const sb = mpInit();
   if (!sb) return;
@@ -18047,8 +18061,6 @@ async function mpCreateGame() {
   const name = (nameEl?.value?.trim() || 'Player').slice(0, 24);
   localStorage.setItem('corridors:userName', name);
   _userName = name;
-
-  if (!mp_selectedChamp) return;
 
   const btn = document.getElementById('mp-create-btn');
   if (btn) { btn.disabled = true; btn.textContent = 'CREATING…'; }
@@ -18058,9 +18070,8 @@ async function mpCreateGame() {
     const { data, error } = await sb.from('mp_games').insert({
       host_id:       _userId,
       host_name:     name,
-      host_champ:    mp_selectedChamp,
-      host_deck_id:  mp_selectedDeckCards ? 'custom' : 'starter',
-      host_deck_cards: mp_selectedDeckCards ? JSON.stringify(mp_selectedDeckCards) : null,
+      // host_champ / host_deck_* are set by the host inside the lobby via
+      // state.lobby.seats[0], not at create time.
       status:        'waiting',
       is_public:     mp_selectedVisibility === 'public',
       game_type:     mp_selectedGameType,
@@ -18075,35 +18086,31 @@ async function mpCreateGame() {
     if (error) throw error;
 
     const gameId = data.id;
-    const inviteUrl = `${window.location.href.split('?')[0]}?join=${gameId}`;
 
-    const statusEl = document.getElementById('mp-create-status');
-    if (statusEl) statusEl.innerHTML = `
-      <div class="mp-status info">
-        <div><span class="mp-waiting-pulse"></span>Waiting for opponent to join…</div>
-      </div>
-      <div class="mp-section-label" style="margin-top:16px;">Share This Invite Link</div>
-      <div class="mp-invite-box" onclick="mpCopyInvite('${inviteUrl}',this)" title="Click to copy">
-        ${inviteUrl}
-      </div>
-      <button class="mp-btn" onclick="mpCopyInvite('${inviteUrl}',this)">📋 COPY INVITE LINK</button>
-      <div style="margin-top:8px;font-size:10px;color:var(--text-dim);text-align:center;letter-spacing:.1em;">
-        Or share code: <strong style="color:var(--amber)">${gameId}</strong>
-      </div>
-    `;
-
-    // Poll for guest joining
-    const pollId = setInterval(async () => {
-      const { data: g } = await sb.from('mp_games').select('status,guest_id,guest_name,guest_champ').eq('id', gameId).single();
-      if (g && g.status === 'active') {
-        clearInterval(pollId);
-        mp_opponentName = g.guest_name;
-        mpStartHostGame(gameId, mp_selectedChamp, g.guest_champ, g.guest_name);
+    // Fire invite broadcasts to every staged invitee. Failures are non-fatal —
+    // the host can always share the invite code or re-invite from the lobby.
+    if (mp_pendingInvitees.length) {
+      const invitePayload = {
+        gameId,
+        hostName: name,
+        hostChamp: null,   // set later from lobby seat
+        mode: mp_selectedMode,
+      };
+      for (const inv of mp_pendingInvitees) {
+        try { await sendGameInvite(inv.authId, invitePayload); }
+        catch(e) { console.warn('[MP] invite send failed for', inv.username, e); }
       }
-    }, 3000);
+      mp_pendingInvitees = [];
+    }
 
-    // Store poll so we can cancel on nav
-    mp_lobbyInterval = pollId;
+    // Route the host into the new game lobby (replaces the old "waiting for
+    // opponent" view). showGameLobby handles realtime + countdown + launch.
+    if (typeof showGameLobby === 'function') {
+      showGameLobby(gameId);
+    } else {
+      // Defensive fallback (shouldn't hit once step 4 lands)
+      showMultiplayerLobby('mygames');
+    }
 
   } catch(e) {
     console.error('[MP] createGame error:', e);
@@ -18118,68 +18125,6 @@ function mpCopyInvite(url, el) {
     if (el) { const orig = el.textContent; el.textContent = '✓ COPIED!'; setTimeout(() => el.textContent = orig, 2000); }
   }).catch(() => {
     prompt('Copy this link:', url);
-  });
-}
-
-// ── Join Tab ─────────────────────────────────────────────────────────
-function mpRenderJoinTab(content) {
-  const roster = _userProfile?.roster || [];
-  const rarityColor = r => r==='Common'?'#aaa':r==='Uncommon'?'#4ade80':r==='Rare'?'#60a5fa':r==='Epic'?'#c084fc':r==='Legendary'?'#fbbf24':'#ccc';
-
-  const champCards = roster.length ? roster.map(c => {
-    const rc = rarityColor(c.rarity);
-    return `<div class="cs-card" id="mpj-${c.id}" onclick="mpSelectJoinChamp('${c.id}')" style="padding:12px 14px;border:2px solid ${rc};">
-      <div style="font-size:9px;color:${rc};letter-spacing:.1em;">${c.rarity.toUpperCase()}</div>
-      <div class="cs-champ-name" style="font-size:20px;color:${rc};">${c.name}</div>
-      <div class="cs-champ-title" style="font-size:10px;">${c.title}</div>
-      <div class="cs-faction" style="font-size:9px;margin-top:3px;">${c.faction}</div>
-      <div style="font-size:9px;color:#888;margin-top:2px;">W:${c.wallLimit} E:${c.energy||3} D:${c.cardDraw} U:${c.ultimateCost}</div>
-    </div>`;
-  }).join('') : '<div style="color:#888;padding:20px;text-align:center;grid-column:1/-1;">No roster champions. Visit the Shop or play Gauntlet first.</div>';
-
-  content.innerHTML = `
-    ${mpNameInput('join')}
-    <hr class="mp-divider">
-    <div class="mp-section-label">Game Code or Invite Link</div>
-    <input class="mp-input" id="mp-join-code" placeholder="Enter game code (e.g. a1b2c)…" maxlength="100">
-    <hr class="mp-divider">
-    <div class="mp-section-label">Choose Your Champion <span style="font-size:9px;color:#e05050;font-weight:normal;">PERMADEATH</span></div>
-    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:20px;" id="mpj-grid">
-      ${champCards}
-    </div>
-    <div id="mpj-deck-section" style="display:none;">
-      <hr class="mp-divider">
-      <div class="mp-section-label">Choose Your Deck</div>
-      <div class="mp-deck-options" id="mpj-deck-options"></div>
-    </div>
-    <button class="mp-btn" id="mp-join-btn" onclick="mpJoinGame()" disabled>
-      SELECT A CHAMPION TO JOIN →
-    </button>
-    <div id="mp-join-status"></div>
-  `;
-}
-
-let mp_joinSelectedChamp = null;
-let mp_joinSelectedDeckCards = null;
-let mp_joinSelectedDeckIdx = 0;
-
-function mpSelectJoinChamp(id) {
-  mp_joinSelectedChamp = id;
-  mp_joinSelectedDeckCards = null;
-  mp_joinSelectedDeckIdx = 0;
-  document.querySelectorAll('[id^="mpj-"]').forEach(el => el.classList.remove('selected'));
-  const card = document.getElementById('mpj-' + id);
-  if (card) card.classList.add('selected');
-  const champ = resolveChampion(id);
-  const btn = document.getElementById('mp-join-btn');
-  if (btn && champ) {
-    btn.textContent = `JOIN AS ${champ.name.toUpperCase()} →`;
-    btn.disabled = false;
-  }
-  // Populate deck picker
-  mpRenderDeckPicker('mpj-deck-options', 'mpj-deck-section', id, (cards, idx) => {
-    mp_joinSelectedDeckCards = cards;
-    mp_joinSelectedDeckIdx = idx;
   });
 }
 
@@ -18212,8 +18157,8 @@ async function mpRenderBrowseTab(content) {
       const typeColor = g.game_type === 'ranked' ? '#f59e0b' : '#888';
       const borderColor = isOwn ? 'rgba(212,144,58,0.3)' : 'var(--border)';
       const actionBtn = isOwn
-        ? `<span style="font-size:9px;color:var(--amber);letter-spacing:.1em;">YOUR GAME</span>`
-        : `<button class="action-btn primary" style="font-size:11px;padding:4px 14px;" onclick="mpShowTab('join');setTimeout(()=>{const i=document.getElementById('mp-join-code');if(i)i.value='${g.id}';},50);">JOIN</button>`;
+        ? `<button class="action-btn" style="font-size:11px;padding:4px 14px;" onclick="closeMpLobby(true);showGameLobby('${g.id}');">OPEN LOBBY</button>`
+        : `<button class="action-btn primary" style="font-size:11px;padding:4px 14px;" onclick="closeMpLobby(true);showGameLobby('${g.id}');">JOIN</button>`;
       return `<div style="display:flex;align-items:center;gap:12px;padding:10px 14px;background:var(--surface);border:1px solid ${borderColor};margin-bottom:6px;">
         <div style="flex:1;">
           <div style="font-family:'Teko',sans-serif;font-size:18px;color:#ccc;">${g.host_name}</div>
@@ -18322,81 +18267,50 @@ async function mpRenderLeaderboardTab(content) {
   `;
 }
 
-async function mpJoinGame() {
-  const sb = mpInit();
-  if (!sb) return;
-  const nameEl = document.getElementById('mp-name-input');
-  const name = (nameEl?.value?.trim() || 'Player').slice(0, 24);
-  localStorage.setItem('corridors:userName', name);
-  _userName = name;
-
-  let code = (document.getElementById('mp-join-code')?.value?.trim() || '');
-  // Handle full URLs — extract just the game id
-  const urlMatch = code.match(/[?&]join=([a-zA-Z0-9]+)/);
-  if (urlMatch) code = urlMatch[1];
-  code = code.replace(/\s/g, '').toLowerCase().slice(0, 20);
-
-  if (!code) { mpSetStatus('mp-join-status', 'Enter a game code or invite link', 'error'); return; }
-  if (!mp_joinSelectedChamp) { mpSetStatus('mp-join-status', 'Select a champion first', 'error'); return; }
-
-  const btn = document.getElementById('mp-join-btn');
-  if (btn) { btn.disabled = true; btn.textContent = 'JOINING…'; }
-
-  try {
-    // Fetch the game
-    const { data: g, error: fetchErr } = await sb.from('mp_games').select('*').eq('id', code).single();
-    if (fetchErr || !g) throw new Error('Game not found');
-    if (g.status !== 'waiting') throw new Error('Game already started or finished');
-    if (g.host_id === _userId) throw new Error("Can't join your own game");
-
-    // Randomize who goes first
-    const firstSeat = Math.random() < 0.5 ? 0 : 1;
-
-    // Build initial game state (server side — but we do it client-side for simplicity)
-    const hostChamp = g.host_champ;
-    const guestChamp = mp_joinSelectedChamp;
-    // Retrieve host deck (stored when host created the game)
-    const hostDeckCards = g.host_deck_cards ? JSON.parse(g.host_deck_cards) : null;
-    const guestDeckCards = mp_joinSelectedDeckCards || null;
-    const initState = mpBuildInitialState(hostChamp, guestChamp, firstSeat, hostDeckCards, guestDeckCards);
-
-    // Store hands separately (private to each player)
-    const hostHand = initState.players[0].hand;
-    const guestHand = initState.players[1].hand;
-    // Store decks (remaining cards after opening draw)
-    const hostDeck = initState.players[0].deck;
-    const guestDeck = initState.players[1].deck;
-    // Scrub hands from shared state (security)
-    const sharedState = mpScrubHands(initState);
-
-    const { error: updateErr } = await sb.from('mp_games').update({
-      guest_id:    _userId,
-      guest_name:  name,
-      guest_champ: guestChamp,
-      status:      'active',
-      active_seat: firstSeat,
-      state:       sharedState,
-      host_hand:   JSON.stringify(hostHand),
-      guest_hand:  JSON.stringify(guestHand),
-      host_deck:   JSON.stringify(hostDeck),
-      guest_deck:  JSON.stringify(guestDeck),
-    }).eq('id', code);
-
-    if (updateErr) throw updateErr;
-
-    mp_opponentName = g.host_name;
-    mpStartGuestGame(code, guestChamp, hostChamp, g.host_name, firstSeat, guestHand, guestDeck, initState);
-
-  } catch(e) {
-    console.error('[MP] joinGame error:', e);
-    mpSetStatus('mp-join-status', e.message || 'Join failed', 'error');
-    if (btn) { btn.disabled = false; btn.textContent = 'TRY AGAIN'; }
-  }
-}
-
 function mpSetStatus(id, msg, type) {
   const el = document.getElementById(id);
   if (el) el.innerHTML = `<div class="mp-status ${type}">${msg}</div>`;
+}
+
+// ── Seat-indexed column helpers ────────────────────────────────────
+// 1v1 uses legacy host_hand / guest_hand / host_deck / guest_deck columns.
+// 2v2 and FFA use seat2_* / seat3_* columns added via schema migration.
+// Use these helpers rather than hardcoding column names so the MP layer
+// handles any seat (0, 1, 2, 3) uniformly.
+function seatHandKey(seat) {
+  if (seat === 0) return 'host_hand';
+  if (seat === 1) return 'guest_hand';
+  if (seat === 2) return 'seat2_hand';
+  if (seat === 3) return 'seat3_hand';
+  return null;
+}
+function seatDeckKey(seat) {
+  if (seat === 0) return 'host_deck';
+  if (seat === 1) return 'guest_deck';
+  if (seat === 2) return 'seat2_deck';
+  if (seat === 3) return 'seat3_deck';
+  return null;
+}
+function seatIdKey(seat) {
+  if (seat === 0) return 'host_id';
+  if (seat === 1) return 'guest_id';
+  if (seat === 2) return 'seat2_id';
+  if (seat === 3) return 'seat3_id';
+  return null;
+}
+function seatNameKey(seat) {
+  if (seat === 0) return 'host_name';
+  if (seat === 1) return 'guest_name';
+  if (seat === 2) return 'seat2_name';
+  if (seat === 3) return 'seat3_name';
+  return null;
+}
+function seatChampKey(seat) {
+  if (seat === 0) return 'host_champ';
+  if (seat === 1) return 'guest_champ';
+  if (seat === 2) return 'seat2_champ';
+  if (seat === 3) return 'seat3_champ';
+  return null;
 }
 
 // ── Game initialisation helpers ──────────────────────────────────────
@@ -18429,17 +18343,888 @@ function mpBuildInitialState(hostChampId, guestChampId, firstSeat, hostDeckCards
 function mpScrubHands(state) {
   // Return a copy where hand/deck arrays are empty (stored separately per player)
   // but hand counts are preserved for opponent's UI (placeholder card display).
+  // Works for any player count (1v1=2, 2v2/FFA=4).
   // Traps are also scrubbed — each player's traps are private data (like hands).
   // Only trap triggers are visible to the opponent (handled in triggerTrap).
-  const scrubbed = {
+  return {
     ...state,
-    _handCounts: [state.players[0].hand.length, state.players[1].hand.length],
-    _deckCounts: [state.players[0].deck.length, state.players[1].deck.length],
+    _handCounts: state.players.map(p => p.hand.length),
+    _deckCounts: state.players.map(p => p.deck.length),
     players: state.players.map(p => ({ ...p, hand: [], deck: [] })),
-    // Remove all trap tokens from shared state — stored privately per player
     trapTokens: [],
   };
-  return scrubbed;
+}
+
+// Build an initial MP shared state for 2v2 or FFA from the lobby's seat list.
+// Seats is an array of {champ, deck, isBot, ...} objects. activeSeat is the
+// seat whose turn starts the game. `mode` is '2v2' or 'ffa'. `teams` is the
+// host-assigned team map for 2v2 (object {0:[...], 1:[...]}), null for FFA.
+// Starting positions mirror SP: 2v2 uses thirds of the board rows 0/last;
+// FFA uses the four corners. Board dimensions come from config.boardRows /
+// boardCols which the caller should set from the game-row's board_config.
+function mpBuildMultiInitialState(seats, activeSeat, mode, teams, boardRows, boardCols) {
+  const lastRow = boardRows - 1;
+  const lastCol = boardCols - 1;
+  const startPositions = mode === '2v2'
+    ? [{row:lastRow, col:Math.floor(boardCols/3)},   {row:lastRow, col:Math.floor(2*boardCols/3)},
+       {row:0,       col:Math.floor(boardCols/3)},   {row:0,       col:Math.floor(2*boardCols/3)}]
+    : [{row:0, col:0}, {row:lastRow, col:lastCol}, {row:0, col:lastCol}, {row:lastRow, col:0}]; // FFA corners
+
+  const players = seats.map((seat, i) => {
+    const champId = seat.champ;
+    const champDef = CHAMPIONS[champId];
+    const deckCards = seat.deck || null;
+    return createPlayer(i, champId, champDef.faction, deckCards, startPositions[i]);
+  });
+
+  const state = {
+    players,
+    walls: [], decoyTokens: [], trapTokens: [],
+    activePlayer: activeSeat, turnNumber: 1, phase: 'action',
+    winner: null, log: [], nextWallId: 1, nextTokenId: 1,
+    firstDraw: players.map(() => false),
+    _turnsPlayed: players.map(() => 0),
+    // Record mode + teams in the shared state so remote clients can set
+    // gameConfig correctly when they transition into the match.
+    _mpMode: mode,
+    _mpTeams: teams || null,
+    _mpBoardRows: boardRows,
+    _mpBoardCols: boardCols,
+    // FFA/team state initialisation (matches initMultiPlayerGame)
+    _teamGoalsReached: {},
+  };
+
+  // Draw opening hands — same logic as mpBuildInitialState but for N seats.
+  for (let pi = 0; pi < players.length; pi++) {
+    const p = players[pi];
+    const count = p.champion.cardDraw;
+    const drawn = p.deck.splice(0, count);
+    players[pi].hand = drawn;
+  }
+  return state;
+}
+
+// ═════════════════════════════════════════════════════════════════════
+// ── GAME LOBBY ──────────────────────────────────────────────────────
+// A pre-match room where players pick a champion, chat, and ready up.
+// The lobby's mutable state (seats, ready flags, champion picks) lives in
+// `mp_games.state.lobby` while `mp_games.status === 'waiting'`. When every
+// seat (or at least 2 in FFA) is ready, a 3-second countdown runs on every
+// client; if no one unreadies, the host performs the definitive write that
+// flips `status` to `'active'` and seeds hands/decks/shared state. From that
+// point the game runs through the existing mpLaunchGame flow.
+//
+// Chat + presence use an ephemeral `chat:{gameId}` broadcast channel.
+// Realtime seat/ready updates piggyback on the existing `game:{gameId}`
+// subscription (UPDATE on mp_games).
+// ═════════════════════════════════════════════════════════════════════
+
+let _lobbyGameId       = null;   // id of the lobby currently open
+let _lobbyChannel      = null;   // `chat:{gameId}` broadcast channel
+let _lobbyGameSub      = null;   // `lobby:{gameId}` postgres-changes subscription
+let _lobbyCountdownTm  = null;   // setTimeout for the 3s launch
+let _lobbyCountdownMs  = 0;      // expected launch time (performance.now + 3000)
+let _lobbyCountdownInt = null;   // setInterval for countdown display tick
+let _lobbyGame         = null;   // last snapshot of mp_games row (for renders)
+let _lobbyChatLog      = [];     // ephemeral chat messages {user, text, ts}
+
+// Max seat count per game mode
+function lobbyMaxSeats(mode) {
+  if (mode === '2v2' || mode === 'ffa') return 4;
+  return 2; // 1v1 default
+}
+
+// Minimum seats before the lobby allows "ready to launch". FFA can start with
+// 2 real players and bot-fill the rest; 1v1/2v2 require full seats.
+function lobbyMinSeats(mode) {
+  if (mode === 'ffa') return 2;
+  return lobbyMaxSeats(mode);
+}
+
+// Extract the lobby sub-state from a mp_games row, initialising it if absent.
+// Shape:
+//   { seats: [ {authId, userId, name, champ, ready, isBot} | null ],
+//     chatLog: []   // unused; broadcast is live-only, log is client-local }
+function lobbyExtractState(g) {
+  const base = (g?.state && typeof g.state === 'object') ? g.state : {};
+  const lobby = base.lobby || {};
+  const max = lobbyMaxSeats(g?.game_mode_type || '1v1');
+  let seats = Array.isArray(lobby.seats) ? lobby.seats.slice() : [];
+  // Ensure we have the right number of slots and that seat 0 is always host
+  while (seats.length < max) seats.push(null);
+  if (seats.length > max) seats = seats.slice(0, max);
+  // Seat 0 is always the host (auto-filled from mp_games host_* columns).
+  // host_champ / host_deck_* are NOT set at create time anymore — the host
+  // picks their champion and deck inside the lobby, same as every joiner.
+  if (!seats[0] && g) {
+    seats[0] = {
+      authId: g.host_auth_id || null,
+      userId: g.host_id,
+      name:   g.host_name,
+      champ:  null,
+      deck:   null,       // null == starter deck
+      ready:  false,
+      isBot:  false,
+    };
+  }
+  return { seats };
+}
+
+// Persist the lobby sub-state back to mp_games.state. Uses optimistic
+// last-write-wins — Supabase's realtime subscription broadcasts the update
+// to every other lobby client. No merge conflict handling; for an MP lobby
+// of 2–4 people this is acceptable.
+async function lobbyWriteState(gameId, lobbyState) {
+  const sb = mpInit();
+  if (!sb || !gameId) return;
+  // Fetch current state to preserve any non-lobby keys the game engine cares about
+  const { data: row } = await sb.from('mp_games').select('state').eq('id', gameId).single();
+  const newState = { ...(row?.state || {}), lobby: lobbyState };
+  await sb.from('mp_games').update({ state: newState }).eq('id', gameId);
+}
+
+// The seat index occupied by the local user in a lobby row. -1 if none.
+function lobbySeatForMe(g, lobbyState) {
+  if (!_authUser) return -1;
+  const seats = lobbyState?.seats || [];
+  for (let i = 0; i < seats.length; i++) {
+    const s = seats[i];
+    if (!s) continue;
+    if (s.authId && s.authId === _authUser.id) return i;
+    if (s.userId && s.userId === _userId) return i;
+  }
+  return -1;
+}
+
+// Am I the host of this lobby?
+function lobbyAmIHost(g) {
+  if (!g) return false;
+  if (_authUser && g.host_auth_id && g.host_auth_id === _authUser.id) return true;
+  return g.host_id === _userId;
+}
+
+// Take an empty seat in the lobby (called on join).
+async function lobbyOccupySeat(gameId, champ) {
+  const sb = mpInit();
+  if (!sb || !gameId) return { ok: false, error: 'No DB' };
+
+  const { data: g } = await sb.from('mp_games').select('*').eq('id', gameId).single();
+  if (!g) return { ok: false, error: 'Game not found' };
+  if (g.status !== 'waiting') return { ok: false, error: 'Game is not open for joining' };
+
+  const lobby = lobbyExtractState(g);
+  const existing = lobbySeatForMe(g, lobby);
+  if (existing >= 0) {
+    // Already seated — just update champion if provided
+    if (champ) { lobby.seats[existing].champ = champ; }
+    await lobbyWriteState(gameId, lobby);
+    return { ok: true, seat: existing };
+  }
+
+  // Find first empty non-host seat
+  const idx = lobby.seats.findIndex((s, i) => i > 0 && !s);
+  if (idx < 0) return { ok: false, error: 'Lobby is full' };
+
+  lobby.seats[idx] = {
+    authId: _authUser?.id || null,
+    userId: _userId,
+    name:   _userName || 'Player',
+    champ:  champ || null,
+    ready:  false,
+    isBot:  false,
+  };
+  await lobbyWriteState(gameId, lobby);
+  return { ok: true, seat: idx };
+}
+
+// Leave the lobby. If the host leaves, the game is marked abandoned.
+async function lobbyLeave(gameId) {
+  const sb = mpInit();
+  if (!sb || !gameId) return;
+  const { data: g } = await sb.from('mp_games').select('*').eq('id', gameId).single();
+  if (!g || g.status !== 'waiting') return;
+
+  if (lobbyAmIHost(g)) {
+    await sb.from('mp_games').update({ status: 'abandoned' }).eq('id', gameId);
+    return;
+  }
+  const lobby = lobbyExtractState(g);
+  const mySeat = lobbySeatForMe(g, lobby);
+  if (mySeat > 0) {
+    lobby.seats[mySeat] = null;
+    await lobbyWriteState(gameId, lobby);
+  }
+}
+
+// Toggle the local player's ready flag.
+async function lobbyToggleReady(gameId) {
+  const sb = mpInit();
+  if (!sb || !gameId) return;
+  const { data: g } = await sb.from('mp_games').select('*').eq('id', gameId).single();
+  if (!g || g.status !== 'waiting') return;
+  const lobby = lobbyExtractState(g);
+  const mySeat = lobbySeatForMe(g, lobby);
+  if (mySeat < 0) return;
+  if (!lobby.seats[mySeat].champ) { showStatus('Pick a champion first', 'error'); return; }
+  lobby.seats[mySeat].ready = !lobby.seats[mySeat].ready;
+  await lobbyWriteState(gameId, lobby);
+}
+
+// Set the local player's champion pick.
+async function lobbyPickChamp(gameId, champId) {
+  const sb = mpInit();
+  if (!sb || !gameId || !champId) return;
+  const { data: g } = await sb.from('mp_games').select('*').eq('id', gameId).single();
+  if (!g || g.status !== 'waiting') return;
+  const lobby = lobbyExtractState(g);
+  const mySeat = lobbySeatForMe(g, lobby);
+  if (mySeat < 0) return;
+  const seat = lobby.seats[mySeat];
+  // If champion actually changed, reset deck selection (custom decks are champ-scoped).
+  if (seat.champ !== champId) {
+    seat.deck = null;    // null = starter deck
+    seat.deckIdx = 0;
+  }
+  seat.champ = champId;
+  // Changing champion auto-unreadies you (so you don't accidentally launch
+  // with a champ you didn't mean to pick)
+  seat.ready = false;
+  await lobbyWriteState(gameId, lobby);
+}
+
+// ── 2v2 team helpers ────────────────────────────────────────────────
+// Team assignments live in lobby.teams as { 0: [seat, seat], 1: [seat, seat] }.
+// Seat team is derived on-the-fly; if unset we default to { 0: [0,1], 1: [2,3] }.
+function lobbyTeamOfSeat(lobby, seatIdx) {
+  const teams = lobby?.teams;
+  if (teams && typeof teams === 'object') {
+    if (teams[0]?.includes(seatIdx)) return 0;
+    if (teams[1]?.includes(seatIdx)) return 1;
+  }
+  // Default split: 0,1 = team 0; 2,3 = team 1
+  return seatIdx < 2 ? 0 : 1;
+}
+
+// Host-only: toggle the given seat's team assignment between team 0 and 1.
+// Writes back to lobby.teams; other clients see it via the realtime UPDATE
+// subscription. No-op if the requested swap would leave a team empty.
+async function lobbyCycleTeam(gameId, seatIdx) {
+  const sb = mpInit();
+  if (!sb || !gameId) return;
+  const { data: g } = await sb.from('mp_games').select('*').eq('id', gameId).single();
+  if (!g || g.status !== 'waiting') return;
+  if (!lobbyAmIHost(g)) return;
+  if ((g.game_mode_type || '1v1') !== '2v2') return;
+
+  const lobby = lobbyExtractState(g);
+  // Normalise teams to explicit arrays we can mutate
+  const cur = [0, 1, 2, 3].map(i => lobbyTeamOfSeat(lobby, i));
+  cur[seatIdx] = cur[seatIdx] === 0 ? 1 : 0;
+  const teamA = []; const teamB = [];
+  cur.forEach((t, i) => { (t === 0 ? teamA : teamB).push(i); });
+  // Reject imbalanced assignments — 2v2 must be 2 per team.
+  if (teamA.length !== 2 || teamB.length !== 2) {
+    showStatus('Teams must stay 2 vs 2 — swap with another seat', 'error');
+    return;
+  }
+  lobby.teams = { 0: teamA, 1: teamB };
+  // Re-ready everyone — the team change is material enough that people
+  // should acknowledge it.
+  lobby.seats.forEach(s => { if (s) s.ready = false; });
+  await lobbyWriteState(gameId, lobby);
+}
+
+// Set the local player's deck pick. idx=0 is the starter deck; 1+ are custom decks
+// for the currently-selected champion (from _userProfile.decks).
+async function lobbyPickDeck(gameId, deckIdx) {
+  const sb = mpInit();
+  if (!sb || !gameId) return;
+  const { data: g } = await sb.from('mp_games').select('*').eq('id', gameId).single();
+  if (!g || g.status !== 'waiting') return;
+  const lobby = lobbyExtractState(g);
+  const mySeat = lobbySeatForMe(g, lobby);
+  if (mySeat < 0) return;
+  const seat = lobby.seats[mySeat];
+  if (!seat.champ) return;   // must pick champion first
+  const customDecks = (_userProfile?.decks ?? []).filter(d => d.championId === seat.champ);
+  const cards = deckIdx === 0 ? null : (customDecks[deckIdx - 1]?.cards || null);
+  seat.deckIdx = deckIdx;
+  seat.deck = cards;   // serialisable (array of card-id strings or full defs)
+  // Changing deck also auto-unreadies so you don't launch with a stale pick.
+  seat.ready = false;
+  await lobbyWriteState(gameId, lobby);
+}
+
+// Returns true if all seated players are ready AND we have enough to start.
+function lobbyAllReady(g, lobbyState) {
+  const seats = (lobbyState?.seats || []).filter(Boolean);
+  const min = lobbyMinSeats(g?.game_mode_type || '1v1');
+  if (seats.length < min) return false;
+  if (seats.some(s => !s.ready || !s.champ)) return false;
+  return true;
+}
+
+// Start/stop the 3s countdown. Called from the lobby render whenever the
+// all-ready condition changes. The countdown is a local timer — each client
+// runs their own copy; the host (and only the host) performs the launch DB
+// writes at t=0.
+function lobbyStartCountdown(gameId) {
+  if (_lobbyCountdownTm) return; // already running
+  _lobbyCountdownMs = performance.now() + 3000;
+  // Tick a UI refresh every 250ms so the countdown number visibly decreases.
+  _lobbyCountdownInt = setInterval(() => {
+    if (!_lobbyGame) { lobbyStopCountdown(); return; }
+    // If anything changed that voids the countdown, the postgres-changes
+    // handler will call lobbyStopCountdown for us.
+    const el = document.getElementById('lobby-countdown');
+    if (el) {
+      const remaining = Math.max(0, Math.ceil((_lobbyCountdownMs - performance.now()) / 1000));
+      el.textContent = remaining > 0 ? `Launching in ${remaining}…` : 'Launching…';
+    }
+  }, 250);
+  _lobbyCountdownTm = setTimeout(async () => {
+    _lobbyCountdownTm = null;
+    clearInterval(_lobbyCountdownInt); _lobbyCountdownInt = null;
+    // Only the host executes the transition.
+    if (_lobbyGame && lobbyAmIHost(_lobbyGame)) {
+      try { await lobbyLaunchGame(gameId); }
+      catch(e) { console.error('[LOBBY] launch failed', e); showStatus('Launch failed: ' + e.message, 'error'); }
+    }
+  }, 3000);
+}
+
+function lobbyStopCountdown() {
+  if (_lobbyCountdownTm) { clearTimeout(_lobbyCountdownTm); _lobbyCountdownTm = null; }
+  if (_lobbyCountdownInt) { clearInterval(_lobbyCountdownInt); _lobbyCountdownInt = null; }
+  _lobbyCountdownMs = 0;
+}
+
+// Host-only. Build the initial game state from the lobby seats, write it to
+// mp_games with status='active'. Other clients pick up the change via their
+// game-row realtime subscription and transition into mpLaunchGame themselves.
+async function lobbyLaunchGame(gameId) {
+  const sb = mpInit();
+  if (!sb || !gameId) return;
+  const { data: g } = await sb.from('mp_games').select('*').eq('id', gameId).single();
+  if (!g || g.status !== 'waiting') return;
+  const lobby = lobbyExtractState(g);
+  const mode = g.game_mode_type || '1v1';
+
+  // Fill empty FFA seats with bots if needed
+  if (mode === 'ffa') {
+    const roster = _userProfile?.roster || Object.values(CHAMPIONS);
+    for (let i = 0; i < lobby.seats.length; i++) {
+      if (!lobby.seats[i]) {
+        const pick = roster[Math.floor(Math.random() * roster.length)];
+        lobby.seats[i] = {
+          authId: null, userId: null, name: `Bot ${i+1}`,
+          champ: pick?.id || 'soren', ready: true, isBot: true,
+        };
+      }
+    }
+  }
+
+  // Determine seating: seat 0 is host, others in order. Pick active seat at random.
+  const seats = lobby.seats;
+  const activeSeat = Math.floor(Math.random() * seats.length);
+
+  // For 1v1, reuse mpBuildInitialState (hands/decks, opening draws).
+  // For 2v2/FFA, the existing engine expects 2 players — this is a known gap;
+  // for now we only launch 1v1 through this path cleanly and surface the others
+  // as "coming soon" in the UI.
+  if (mode === '1v1') {
+    const hostSeat  = seats[0];
+    const guestSeat = seats[1];
+    // Pull decks from each seat's lobby selection (null == starter deck).
+    const hostDeckCards  = hostSeat.deck  || null;
+    const guestDeckCards = guestSeat.deck || null;
+    const initState = mpBuildInitialState(hostSeat.champ, guestSeat.champ, activeSeat, hostDeckCards, guestDeckCards);
+
+    const hostHand  = initState.players[0].hand;
+    const guestHand = initState.players[1].hand;
+    const hostDeck  = initState.players[0].deck;
+    const guestDeck = initState.players[1].deck;
+    const sharedState = mpScrubHands(initState);
+
+    // host_champ / host_deck_* are written for the first time here (lobby
+    // is the source of truth while status='waiting'; once 'active' these
+    // columns become the canonical record for resume / rematch flows).
+    const { error } = await sb.from('mp_games').update({
+      host_champ:      hostSeat.champ,
+      host_deck_id:    hostDeckCards ? 'custom' : 'starter',
+      host_deck_cards: hostDeckCards ? JSON.stringify(hostDeckCards) : null,
+      guest_id:        guestSeat.userId,
+      guest_name:      guestSeat.name,
+      guest_champ:     guestSeat.champ,
+      status:          'active',
+      active_seat:     activeSeat,
+      state:           sharedState,
+      host_hand:       JSON.stringify(hostHand),
+      guest_hand:      JSON.stringify(guestHand),
+      host_deck:       JSON.stringify(hostDeck),
+      guest_deck:      JSON.stringify(guestDeck),
+    }).eq('id', gameId);
+    if (error) throw error;
+    // The host's own game-row subscription will fire with status='active'
+    // and drive the transition via lobbyHandleRemoteGame → mpStartHostGame.
+  } else if (mode === '2v2' || mode === 'ffa') {
+    // ── Multi-seat MP launch (2v2 or FFA) ─────────────────────────────
+    // Board dimensions: prefer board_config.rows/cols (set by host via the
+    // Create tab's board-size options); fall back to the SP-equivalent
+    // defaults from initMultiPlayerGame (FFA=13×13, 2v2=9×11).
+    const cfg = g.board_config || {};
+    const boardRows = cfg.rows || (mode === 'ffa' ? 13 : 9);
+    const boardCols = cfg.cols || (mode === 'ffa' ? 13 : 11);
+
+    // Teams (2v2 only) come from the lobby state. Host assigns each seat
+    // a teamIdx (0 or 1) via the team picker. If unset (shouldn't happen
+    // once lobbyAllReady guards against it) default to 0,1 / 2,3 split.
+    let teams = null;
+    if (mode === '2v2') {
+      const fromLobby = lobby.teams;
+      if (fromLobby && typeof fromLobby === 'object') {
+        teams = fromLobby;
+      } else {
+        teams = { 0: [0, 1], 1: [2, 3] };
+      }
+    }
+
+    const initState = mpBuildMultiInitialState(seats, activeSeat, mode, teams, boardRows, boardCols);
+
+    // Extract each seat's private hand/deck before scrubbing the shared state.
+    const privateHands = initState.players.map(p => p.hand);
+    const privateDecks = initState.players.map(p => p.deck);
+    const sharedState  = mpScrubHands(initState);
+
+    // Build the DB update payload dynamically using the seat helpers so
+    // we write to host_hand/guest_hand/seat2_hand/seat3_hand as needed.
+    const payload = {
+      status:       'active',
+      active_seat:  activeSeat,
+      state:        sharedState,
+      host_champ:       seats[0].champ,
+      host_deck_id:     seats[0].deck ? 'custom' : 'starter',
+      host_deck_cards:  seats[0].deck ? JSON.stringify(seats[0].deck) : null,
+      guest_id:         seats[1]?.userId || null,
+      guest_name:       seats[1]?.name   || null,
+      guest_champ:      seats[1]?.champ  || null,
+    };
+    // Seats 2 and 3 (only used by 2v2/FFA; their columns were added by the
+    // recent schema migration).
+    if (seats[2]) {
+      payload.seat2_id    = seats[2].userId || null;
+      payload.seat2_name  = seats[2].name;
+      payload.seat2_champ = seats[2].champ;
+    }
+    if (seats[3]) {
+      payload.seat3_id    = seats[3].userId || null;
+      payload.seat3_name  = seats[3].name;
+      payload.seat3_champ = seats[3].champ;
+    }
+    // Hands & decks for every seat
+    for (let s = 0; s < seats.length; s++) {
+      payload[seatHandKey(s)] = JSON.stringify(privateHands[s] || []);
+      payload[seatDeckKey(s)] = JSON.stringify(privateDecks[s] || []);
+    }
+
+    const { error } = await sb.from('mp_games').update(payload).eq('id', gameId);
+    if (error) throw error;
+    // Host's realtime subscription will fire with status='active'; each
+    // client (including bots running on the host) transitions via
+    // lobbyHandleRemoteGame.
+  } else {
+    showStatus(`Unknown mode: ${mode}`, 'error');
+  }
+}
+
+// Close any lobby-related resources. Called on leave / nav / game launch.
+function lobbyTeardown() {
+  lobbyStopCountdown();
+  const sb = _sb;
+  if (_lobbyChannel && sb) { try { sb.removeChannel(_lobbyChannel); } catch(e){} }
+  if (_lobbyGameSub && sb) { try { sb.removeChannel(_lobbyGameSub); } catch(e){} }
+  _lobbyChannel = null; _lobbyGameSub = null;
+  _lobbyGameId = null;
+  _lobbyGame = null;
+  _lobbyChatLog = [];
+  document.getElementById('game-lobby-overlay')?.remove();
+}
+
+// Handle a realtime UPDATE of the mp_games row. Either:
+//  - still waiting → re-render lobby
+//  - abandoned    → boot everyone
+//  - active       → transition the local client into the match
+function lobbyHandleRemoteGame(g) {
+  _lobbyGame = g;
+  if (!g) return;
+  if (g.status === 'abandoned') {
+    showStatus('The host left — lobby closed.', 'error');
+    lobbyTeardown();
+    showMultiplayerLobby('mygames');
+    return;
+  }
+  if (g.status === 'active') {
+    // Transition into the match. Route via the mode-appropriate starter.
+    const gameId = g.id;
+    const mode   = g.game_mode_type || '1v1';
+    lobbyTeardown();
+
+    if (mode === '2v2' || mode === 'ffa') {
+      // Multi-seat path — figure out our seat index from the seat columns
+      // (host=0, guest=1, seat2=2, seat3=3). Bots run their logic on the
+      // host, so the host's mpStartMultiSeatGame invocation handles seat 0.
+      let mySeatIdx = -1;
+      for (let s = 0; s < 4; s++) {
+        if (g[seatIdKey(s)] && g[seatIdKey(s)] === _userId) { mySeatIdx = s; break; }
+      }
+      if (mySeatIdx < 0) {
+        // Fall back to host assumption (shouldn't normally hit since lobby
+        // seating writes our id into one of the seat columns at launch).
+        if (lobbyAmIHost(g)) mySeatIdx = 0;
+      }
+      if (mySeatIdx >= 0) {
+        mpStartMultiSeatGame(gameId, mySeatIdx);
+      } else {
+        showStatus('Could not determine your seat — please rejoin the lobby.', 'error');
+      }
+    } else if (lobbyAmIHost(g)) {
+      mpStartHostGame(gameId, g.host_champ, g.guest_champ, g.guest_name);
+    } else {
+      // 1v1 guest — rebuild view from just-written state
+      const sb = mpInit();
+      sb.from('mp_games').select('*').eq('id', gameId).single().then(({ data: gg }) => {
+        if (!gg) return;
+        const myHand  = JSON.parse(gg.guest_hand || '[]');
+        const myDeck  = JSON.parse(gg.guest_deck || '[]');
+        const firstSeat = gg.active_seat ?? 0;
+        mpStartGuestGame(gameId, gg.guest_champ, gg.host_champ, gg.host_name, firstSeat, myHand, myDeck, gg.state);
+      });
+    }
+    return;
+  }
+  // Still waiting — re-render the lobby UI with the new state
+  if (typeof renderGameLobby === 'function') renderGameLobby(g);
+  // Re-evaluate the all-ready / countdown state
+  const lobby = lobbyExtractState(g);
+  if (lobbyAllReady(g, lobby)) lobbyStartCountdown(g.id);
+  else lobbyStopCountdown();
+}
+
+// Open the lobby overlay for the given game id. Safe to call from anywhere
+// (create, join, invite accept). Handles subscription setup and initial fetch.
+async function showGameLobby(gameId) {
+  if (!gameId) return;
+  // If we're already in this lobby, just bring it to front.
+  if (_lobbyGameId === gameId && document.getElementById('game-lobby-overlay')) return;
+  lobbyTeardown();
+
+  const sb = mpInit();
+  if (!sb) { showStatus('Supabase not configured', 'error'); return; }
+
+  _lobbyGameId = gameId;
+
+  // Build the overlay shell immediately (loading state) so there's no blank screen
+  const overlay = document.createElement('div');
+  overlay.id = 'game-lobby-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;background:var(--bg);z-index:2500;overflow-y:auto;padding:16px;';
+  overlay.innerHTML = `<div id="game-lobby-body" style="max-width:880px;margin:0 auto;color:#888;text-align:center;padding:40px;">Loading lobby…</div>`;
+  document.body.appendChild(overlay);
+
+  // Initial fetch
+  const { data: g, error } = await sb.from('mp_games').select('*').eq('id', gameId).single();
+  if (error || !g) {
+    const body = document.getElementById('game-lobby-body');
+    if (body) body.innerHTML = `<div style="color:#e05050;padding:20px;">Lobby not found.</div>
+      <div style="margin-top:16px;"><button class="action-btn" onclick="lobbyTeardown();showLandingScreen();">BACK</button></div>`;
+    return;
+  }
+  _lobbyGame = g;
+
+  // If I'm not yet seated (and I'm not the host), claim a seat.
+  const lobby = lobbyExtractState(g);
+  if (!lobbyAmIHost(g) && lobbySeatForMe(g, lobby) < 0) {
+    const res = await lobbyOccupySeat(gameId, null);
+    if (!res.ok) {
+      const body = document.getElementById('game-lobby-body');
+      if (body) body.innerHTML = `<div style="color:#e05050;padding:20px;">${res.error}</div>
+        <div style="margin-top:16px;"><button class="action-btn" onclick="lobbyTeardown();showLandingScreen();">BACK</button></div>`;
+      return;
+    }
+    // Re-fetch so our render has the occupied seat
+    const { data: g2 } = await sb.from('mp_games').select('*').eq('id', gameId).single();
+    if (g2) _lobbyGame = g2;
+  }
+
+  renderGameLobby(_lobbyGame);
+
+  // Realtime subscription on the game row
+  _lobbyGameSub = sb.channel(`lobby:${gameId}`)
+    .on('postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'mp_games', filter: `id=eq.${gameId}` },
+        (payload) => lobbyHandleRemoteGame(payload.new))
+    .subscribe();
+
+  // Chat broadcast channel
+  _lobbyChannel = sb.channel(`chat:${gameId}`, { config: { broadcast: { self: false } } });
+  _lobbyChannel.on('broadcast', { event: 'msg' }, ({ payload }) => {
+    if (!payload) return;
+    _lobbyChatLog.push({ user: payload.user || 'Player', text: String(payload.text || ''), ts: payload.ts || Date.now() });
+    renderLobbyChat();
+  });
+  _lobbyChannel.subscribe();
+
+  // Trigger the same state eval as if a realtime update came in, so countdown
+  // spins up if everyone was already ready.
+  lobbyHandleRemoteGame(_lobbyGame);
+}
+
+function renderGameLobby(g) {
+  const body = document.getElementById('game-lobby-body');
+  if (!body || !g) return;
+  const lobby = lobbyExtractState(g);
+  const mySeat = lobbySeatForMe(g, lobby);
+  const amHost = lobbyAmIHost(g);
+  const mode   = (g.game_mode_type || '1v1').toUpperCase();
+  const roster = _userProfile?.roster || [];
+  const rarityColor = r => r==='Common'?'#aaa':r==='Uncommon'?'#4ade80':r==='Rare'?'#60a5fa':r==='Epic'?'#c084fc':r==='Legendary'?'#fbbf24':'#ccc';
+  const allReady = lobbyAllReady(g, lobby);
+
+  // Seat cards
+  const is2v2 = (g.game_mode_type === '2v2');
+  const isFFA = (g.game_mode_type === 'ffa');
+  const teamColor = t => t === 0 ? '#60a5fa' : '#e05050';
+  const teamLabel = t => t === 0 ? 'TEAM A'  : 'TEAM B';
+  const seatsHtml = lobby.seats.map((s, i) => {
+    const isMe = (i === mySeat);
+    const label = i === 0 ? 'HOST' : `SEAT ${i+1}`;
+    // Team badge (2v2 only)
+    let teamBadge = '';
+    if (is2v2) {
+      const t = lobbyTeamOfSeat(lobby, i);
+      const col = teamColor(t);
+      const clickAttr = amHost ? `onclick="lobbyCycleTeam('${g.id}',${i})" style="cursor:pointer;"` : 'style="cursor:default;"';
+      teamBadge = `<span ${clickAttr} title="${amHost?'Click to swap team':'Team assignment'}" style="font-size:9px;color:${col};border:1px solid ${col};padding:1px 5px;letter-spacing:.1em;margin-left:6px;">${teamLabel(t)}</span>`;
+    }
+    if (!s) {
+      return `<div class="lobby-seat" style="border:1px dashed var(--border);padding:14px;text-align:center;color:#666;min-height:110px;">
+        <div style="font-size:9px;color:#555;letter-spacing:.15em;margin-bottom:6px;">${label}${teamBadge}</div>
+        <div style="font-family:'Teko',sans-serif;font-size:18px;color:#444;">EMPTY${isFFA?'<div style="font-size:9px;color:#60a5fa;letter-spacing:.12em;margin-top:4px;">→ BOT ON LAUNCH</div>':''}</div>
+      </div>`;
+    }
+    const champ = CHAMPIONS[s.champ] || null;
+    const champColor = champ ? rarityColor(champ.rarity) : '#888';
+    const readyMark = s.ready
+      ? '<span style="color:#4ade80;font-size:10px;letter-spacing:.15em;">✔ READY</span>'
+      : '<span style="color:#e05050;font-size:10px;letter-spacing:.15em;">NOT READY</span>';
+    const botTag = s.isBot ? '<span style="font-size:9px;color:#60a5fa;margin-left:6px;">BOT</span>' : '';
+    const meTag  = isMe ? '<span style="font-size:9px;color:var(--amber);margin-left:6px;">(YOU)</span>' : '';
+    return `<div class="lobby-seat" style="border:1px solid ${isMe?'var(--amber)':'var(--border)'};background:${isMe?'rgba(212,144,58,0.06)':'var(--surface)'};padding:14px;min-height:110px;">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px;">
+        <span style="font-size:9px;color:#666;letter-spacing:.15em;">${label}${teamBadge}</span>
+        ${readyMark}
+      </div>
+      <div style="font-family:'Teko',sans-serif;font-size:20px;color:#ccc;">${(s.name||'Player').replace(/</g,'&lt;')}${meTag}${botTag}</div>
+      <div style="font-size:11px;color:${champColor};margin-top:4px;">${champ ? champ.name : '<em style="color:#555;">No champion selected</em>'}</div>
+    </div>`;
+  }).join('');
+
+  // Mode-specific notice banners (above the seat grid)
+  let modeBannerHtml = '';
+  const filledSeats = lobby.seats.filter(Boolean).length;
+  if (isFFA) {
+    const emptyCount = lobby.seats.length - filledSeats;
+    if (emptyCount > 0) {
+      modeBannerHtml = `<div style="background:rgba(96,165,250,0.08);border:1px solid #60a5fa;padding:8px 10px;margin-bottom:10px;font-size:11px;color:#60a5fa;letter-spacing:.05em;">
+        🤖 FFA: ${emptyCount} empty seat${emptyCount>1?'s':''} will be filled by bots at launch.
+      </div>`;
+    } else {
+      modeBannerHtml = `<div style="background:rgba(74,222,128,0.06);border:1px solid #4ade80;padding:8px 10px;margin-bottom:10px;font-size:11px;color:#4ade80;letter-spacing:.05em;">
+        🏁 FFA: all 4 seats filled — no bots needed.
+      </div>`;
+    }
+  } else if (is2v2) {
+    modeBannerHtml = `<div style="background:rgba(192,132,252,0.06);border:1px solid #c084fc;padding:8px 10px;margin-bottom:10px;font-size:11px;color:#c084fc;letter-spacing:.05em;">
+      ⚔ 2v2: ${amHost ? 'click a team badge to swap a seat between teams.' : 'the host sets team assignments.'}
+    </div>`;
+  }
+
+  // Champion + deck pickers (only for the local player)
+  let champPickerHtml = '';
+  if (mySeat >= 0) {
+    const myChampId = lobby.seats[mySeat].champ;
+    const myDeckIdx = lobby.seats[mySeat].deckIdx ?? 0;
+
+    const champCardsHtml = roster.length ? roster.map(c => {
+      const rc = rarityColor(c.rarity);
+      const selected = (c.id === myChampId);
+      // Selected card: amber glow + checkmark badge + saturated background
+      return `<div onclick="lobbyPickChamp('${g.id}','${c.id}')" class="cs-card"
+        style="position:relative;padding:10px 12px;border:2px solid ${selected?'var(--amber)':rc};cursor:pointer;background:${selected?'rgba(212,144,58,0.14)':'var(--surface)'};box-shadow:${selected?'0 0 12px rgba(212,144,58,0.45)':'none'};transition:box-shadow 0.15s, background 0.15s;">
+        ${selected?'<div style="position:absolute;top:4px;right:6px;color:var(--amber);font-size:14px;line-height:1;">✔</div>':''}
+        <div style="font-size:9px;color:${rc};letter-spacing:.1em;">${c.rarity.toUpperCase()}</div>
+        <div class="cs-champ-name" style="font-size:18px;color:${selected?'var(--amber)':rc};">${c.name}</div>
+        <div class="cs-champ-title" style="font-size:10px;">${c.title || ''}</div>
+        <div style="font-size:9px;color:#888;margin-top:2px;">W:${c.wallLimit} E:${c.energy||3} D:${c.cardDraw} U:${c.ultimateCost}</div>
+      </div>`;
+    }).join('') : '<div style="color:#888;padding:16px;">No roster champions. Visit the Shop or play Gauntlet first.</div>';
+
+    // Deck picker — only shown once a champion is chosen
+    let deckPickerHtml = '';
+    if (myChampId) {
+      const customDecks = (_userProfile?.decks ?? []).filter(d => d.championId === myChampId);
+      const deckOptions = [
+        { name: 'Starter Deck', meta: 'Default · Always available' },
+        ...customDecks.map(d => ({ name: d.name, meta: `${d.cards.length} cards · Custom` })),
+      ];
+      const deckHtml = deckOptions.map((opt, i) => {
+        const selected = (i === myDeckIdx);
+        return `<div onclick="lobbyPickDeck('${g.id}',${i})"
+          style="position:relative;padding:8px 12px;border:2px solid ${selected?'var(--amber)':'var(--border)'};background:${selected?'rgba(212,144,58,0.12)':'var(--surface)'};cursor:pointer;display:flex;justify-content:space-between;align-items:center;gap:10px;transition:border-color 0.15s, background 0.15s;">
+          <span style="font-family:'Teko',sans-serif;font-size:14px;letter-spacing:.05em;color:${selected?'var(--amber)':'#ccc'};">${opt.name.replace(/</g,'&lt;')}</span>
+          <span style="font-size:9px;color:#888;">${opt.meta}</span>
+          ${selected?'<span style="position:absolute;top:4px;right:8px;color:var(--amber);font-size:12px;">✔</span>':''}
+        </div>`;
+      }).join('');
+      deckPickerHtml = `
+        <div class="mp-section-label" style="margin-top:16px;">Your Deck</div>
+        <div style="display:flex;flex-direction:column;gap:6px;margin-bottom:14px;">${deckHtml}</div>
+      `;
+    }
+
+    const readyLocked = !lobby.seats[mySeat].champ;
+    const readyLabel = lobby.seats[mySeat].ready ? '✔ READIED — CLICK TO UNREADY' : 'READY UP';
+    const readyColor = lobby.seats[mySeat].ready ? '#4ade80' : '#fbbf24';
+    champPickerHtml = `
+      <div class="mp-section-label" style="margin-top:20px;">Your Champion</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:8px;margin-bottom:14px;">${champCardsHtml}</div>
+      ${deckPickerHtml}
+      <button class="mp-btn" ${readyLocked?'disabled':''}
+        onclick="lobbyToggleReady('${g.id}')"
+        style="background:${lobby.seats[mySeat].ready?'rgba(74,222,128,0.12)':'rgba(251,191,36,0.12)'};border-color:${readyColor};color:${readyColor};${readyLocked?'opacity:0.4;cursor:not-allowed;':''}">
+        ${readyLabel}
+      </button>
+    `;
+  }
+
+  // Countdown banner
+  const countdownHtml = allReady
+    ? `<div id="lobby-countdown" style="background:rgba(74,222,128,0.08);border:1px solid #4ade80;padding:10px;margin-bottom:12px;text-align:center;color:#4ade80;font-family:'Teko',sans-serif;font-size:22px;letter-spacing:.15em;">Launching in 3…</div>`
+    : '';
+
+  body.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
+      <div>
+        <div style="font-family:'Teko',sans-serif;font-size:28px;color:var(--amber);letter-spacing:.15em;">GAME LOBBY</div>
+        <div style="font-size:10px;color:#888;letter-spacing:.1em;">${mode} · ${g.is_public?'PUBLIC':'PRIVATE'} · ${(g.game_type||'casual').toUpperCase()}</div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;">
+        <span style="font-size:10px;color:#666;">Code: <strong style="color:var(--amber);">${g.id}</strong></span>
+        <button class="action-btn" onclick="lobbyCopyInviteLink('${g.id}',this)" style="font-size:10px;padding:4px 12px;">📋 COPY INVITE</button>
+        <button class="action-btn" onclick="lobbyLeaveAndClose('${g.id}')" style="font-size:10px;padding:4px 12px;">LEAVE</button>
+      </div>
+    </div>
+    ${countdownHtml}
+    <div style="display:grid;grid-template-columns:2fr 1fr;gap:14px;">
+      <div>
+        <div class="mp-section-label">Seats</div>
+        ${modeBannerHtml}
+        <div style="display:grid;grid-template-columns:repeat(${Math.min(lobby.seats.length,2)},1fr);gap:8px;margin-bottom:14px;">${seatsHtml}</div>
+        ${champPickerHtml}
+      </div>
+      <div>
+        <div class="mp-section-label">Chat</div>
+        <div id="lobby-chat-log" style="background:var(--surface2);border:1px solid var(--border);padding:8px;height:220px;overflow-y:auto;font-size:11px;"></div>
+        <div style="display:flex;gap:4px;margin-top:6px;">
+          <input id="lobby-chat-input" class="mp-input" style="flex:1;font-size:11px;" maxlength="200" placeholder="Say something…"
+            onkeydown="if(event.key==='Enter'){lobbySendChat('${g.id}');}">
+          <button class="action-btn" onclick="lobbySendChat('${g.id}')" style="font-size:10px;padding:4px 10px;">SEND</button>
+        </div>
+        <div id="lobby-friends-tray" style="margin-top:12px;"></div>
+      </div>
+    </div>
+  `;
+  renderLobbyChat();
+  renderLobbyFriends(g);
+}
+
+function renderLobbyChat() {
+  const log = document.getElementById('lobby-chat-log');
+  if (!log) return;
+  log.innerHTML = _lobbyChatLog.map(m => {
+    const user = (m.user || 'Player').replace(/</g, '&lt;');
+    const text = (m.text || '').replace(/</g, '&lt;');
+    return `<div style="margin-bottom:3px;"><span style="color:var(--amber);">${user}:</span> <span style="color:#ccc;">${text}</span></div>`;
+  }).join('');
+  log.scrollTop = log.scrollHeight;
+}
+
+async function lobbySendChat(gameId) {
+  const input = document.getElementById('lobby-chat-input');
+  if (!input || !_lobbyChannel) return;
+  const text = input.value.trim();
+  if (!text) return;
+  input.value = '';
+  const msg = { user: _userName || 'Player', text, ts: Date.now() };
+  // Echo locally (channel is configured with self:false)
+  _lobbyChatLog.push(msg);
+  renderLobbyChat();
+  try { await _lobbyChannel.send({ type: 'broadcast', event: 'msg', payload: msg }); } catch(e){}
+}
+
+function lobbyCopyInviteLink(gameId, el) {
+  const url = `${window.location.href.split('?')[0]}?join=${gameId}`;
+  navigator.clipboard?.writeText(url).catch(() => {});
+  if (el) {
+    const orig = el.textContent; el.textContent = '✓ COPIED';
+    setTimeout(() => { if (el) el.textContent = orig; }, 1800);
+  }
+}
+
+async function lobbyLeaveAndClose(gameId) {
+  try { await lobbyLeave(gameId); } catch(e){}
+  lobbyTeardown();
+  showLandingScreen();
+}
+
+// Friends tray (host-only; re-invite button for each friend)
+function renderLobbyFriends(g) {
+  const box = document.getElementById('lobby-friends-tray');
+  if (!box) return;
+  if (!lobbyAmIHost(g)) { box.innerHTML = ''; return; }
+  box.innerHTML = `<div class="mp-section-label" style="margin-top:4px;">Invite Friends</div>
+    <div id="lobby-friends-list" style="display:flex;flex-direction:column;gap:4px;max-height:200px;overflow-y:auto;">
+      <div style="color:#666;font-size:10px;padding:8px;">Loading friends…</div>
+    </div>`;
+  // Defer the actual fetch so the main render isn't blocked
+  loadFriends().then((friends) => {
+    const list = document.getElementById('lobby-friends-list');
+    if (!list) return;
+    const accepted = friends.filter(f => f.status === 'accepted');
+    if (!accepted.length) {
+      list.innerHTML = `<div style="color:#666;font-size:10px;padding:8px;">No friends yet. Add some from the Friends screen.</div>`;
+      return;
+    }
+    list.innerHTML = accepted.map(f => {
+      const safe = (f.username || 'Friend').replace(/</g, '&lt;');
+      return `<div style="display:flex;align-items:center;gap:6px;padding:4px 6px;background:var(--surface2);border:1px solid var(--border);font-size:11px;">
+        <span style="flex:1;color:#ccc;">${safe}</span>
+        <button class="action-btn" onclick="lobbyInviteFriend('${g.id}','${f.userId}','${safe}')" style="font-size:9px;padding:3px 8px;">INVITE</button>
+      </div>`;
+    }).join('');
+  }).catch(() => {});
+}
+
+async function lobbyInviteFriend(gameId, friendAuthId, friendName) {
+  if (!_lobbyGame) return;
+  const payload = {
+    gameId,
+    hostName: _userName || 'Player',
+    hostChamp: _lobbyGame.host_champ,
+    mode: _lobbyGame.game_mode_type || '1v1',
+  };
+  try { await sendGameInvite(friendAuthId, payload); }
+  catch(e) { console.warn('[LOBBY] invite failed', e); }
+  showStatus(`Invite sent to ${friendName}`, 'success');
 }
 
 // ── Start game (host) ────────────────────────────────────────────────
@@ -18469,6 +19254,53 @@ function mpStartGuestGame(gameId, myChamp, oppChamp, oppName, firstSeat, myHand,
   mpLaunchGame(gameId, 1, myChamp, oppChamp, oppName, myHand, sharedState, myDeck, oppHand_guest);
 }
 
+// ── Start game (multi-seat 2v2/FFA, any seat 0..3) ──────────────────
+// Loads the game row, pulls the local player's private hand+deck using the
+// seat helpers, picks a display name for the "opponent" (best-effort for UI),
+// then hands off to mpLaunchGame which is now seat-count-aware.
+async function mpStartMultiSeatGame(gameId, localSeat) {
+  const sb = mpInit();
+  if (!sb) return;
+  const { data: g } = await sb.from('mp_games').select('*').eq('id', gameId).single();
+  if (!g) return;
+
+  closeMpLobby(true);
+  const myHandKey = seatHandKey(localSeat);
+  const myDeckKey = seatDeckKey(localSeat);
+  const myHand = JSON.parse(g[myHandKey] || '[]');
+  const myDeck = JSON.parse(g[myDeckKey] || '[]');
+  const sharedState = g.state;
+
+  // Champion for the local seat — read from shared state so each seat shows
+  // the correct passive / stats immediately. Fall back to seat columns.
+  const sharedMe = sharedState?.players?.[localSeat];
+  const myChamp  = sharedMe?.champion?.id || g[seatChampKey(localSeat)] || 'soren';
+
+  // "Opponent" display name — use the next seat's name for the status bar
+  // (multi-seat UI will surface the full roster via the opponent panel).
+  let oppChamp = null, oppName = null;
+  for (let i = 0; i < sharedState.players.length; i++) {
+    if (i === localSeat) continue;
+    oppChamp = sharedState.players[i]?.champion?.id || g[seatChampKey(i)];
+    oppName  = g[seatNameKey(i)] || sharedState.players[i]?.name || `Seat ${i}`;
+    break;
+  }
+
+  // Warden's Stare (Thorne) in multi-seat currently reveals whichever single
+  // opponent Thorne would have seen in 1v1 — i.e. the first non-local seat.
+  let oppHand = null;
+  if (myChamp === 'thorne') {
+    for (let i = 0; i < sharedState.players.length; i++) {
+      if (i === localSeat) continue;
+      const hk = seatHandKey(i);
+      oppHand = JSON.parse(g[hk] || '[]');
+      break;
+    }
+  }
+
+  mpLaunchGame(gameId, localSeat, myChamp, oppChamp, oppName, myHand, sharedState, myDeck, oppHand);
+}
+
 // ── Resume an existing game ──────────────────────────────────────────
 async function mpResumeGame(gameId) {
   const sb = mpInit();
@@ -18476,6 +19308,14 @@ async function mpResumeGame(gameId) {
   try {
     const { data: g } = await sb.from('mp_games').select('*').eq('id', gameId).single();
     if (!g) { alert('Game not found'); return; }
+
+    // Games still in the lobby route back through showGameLobby rather than
+    // trying to launch the match (which would fail — state isn't seeded yet).
+    if (g.status === 'waiting') {
+      closeMpLobby(true);
+      showGameLobby(gameId);
+      return;
+    }
 
     const iAmHost = g.host_id === _userId;
     const mySeat = iAmHost ? 0 : 1;
@@ -18515,25 +19355,59 @@ function mpLaunchGame(gameId, localSeat, myChampId, oppChampId, oppName, myHand,
   _mp_lastProcessedTurn = -1;
   gameMode = 'mp';
 
-  const oppSeat = 1 - localSeat;
-  const localIsThorne = myChampId === 'thorne';
+  // Detect multi-seat MP games (2v2/FFA). sharedState carries the mode and
+  // teams that were set when the host launched. 1v1 games don't set these.
+  const mpMode       = sharedState._mpMode || '1v1';
+  const mpTeams      = sharedState._mpTeams || null;
+  const isMultiSeat  = mpMode === '2v2' || mpMode === 'ffa';
 
-  // Reconstruct full gameState from shared state + private hand + deck
+  // Restore gameConfig so engine helpers (getNextPlayer, victory checks,
+  // team detection) behave correctly for the mode we're in.
+  if (isMultiSeat) {
+    gameConfig = {
+      playerCount: sharedState.players.length,
+      mode:        mpMode,
+      teams:       mpTeams,
+      goals:       null,
+      _teamSubTurn: 0,
+      _activeTeam:  0,
+    };
+    // Restore board dimensions (set by host in mpBuildMultiInitialState).
+    if (sharedState._mpBoardRows && sharedState._mpBoardCols) {
+      setBoardSize(sharedState._mpBoardRows, sharedState._mpBoardCols);
+    }
+  }
+
+  const localIsThorne = myChampId === 'thorne';
+  // In 1v1 the single opponent is the other seat. In multi-seat games the
+  // "opponent" concept is seat-agnostic; we keep the variable for Thorne's
+  // Warden's Stare which still targets a single seat.
+  const oppSeat = isMultiSeat ? -1 : (1 - localSeat);
+
+  // Restore state — merge shared state with our private hand and deck.
+  // For 1v1 we use the legacy hId/gId path to preserve existing behaviour.
+  // For multi-seat we pull each seat's champion id from the shared state.
   const hId = localSeat === 0 ? myChampId : oppChampId;
   const gId = localSeat === 1 ? myChampId : oppChampId;
 
-  // Restore state — merge shared state with our private hand and deck
   gameState = {
     ...sharedState,
     players: sharedState.players.map((p, i) => {
       const isMe = i === localSeat;
-      // Warden's Stare: if we are Thorne, populate opponent's hand for rendering
-      const resolvedHand = isMe ? myHand : (localIsThorne && oppHand ? oppHand : []);
+      const resolvedHand = isMe
+        ? myHand
+        : (localIsThorne && oppHand && i === (localSeat === 0 ? 1 : 0) ? oppHand : []);
+      let champDef;
+      if (isMultiSeat) {
+        const champId = p.champion?.id || p.championId;
+        champDef = champId ? CHAMPIONS[champId] : p.champion;
+      } else {
+        champDef = CHAMPIONS[i === 0 ? hId : gId];
+      }
       return {
         ...p,
-        champion: { ...CHAMPIONS[i === 0 ? hId : gId] },
+        champion: { ...(champDef || p.champion) },
         hand: resolvedHand,
-        // Real deck for our seat, empty for opponent (they manage theirs)
         deck: isMe ? (myDeck || []) : [],
       };
     }),
@@ -18580,10 +19454,14 @@ function mpUpdatePanelLabels() {
 
 function mpUpdateTurnState() {
   if (gameMode !== 'mp') return;
-  const isMyTurn = gameState.activePlayer === mp_localSeat;
-  const oppName = mp_opponentName || 'Opponent';
-  const myChamp = gameState.players[mp_localSeat]?.champion?.name || '';
-  const oppChamp = gameState.players[1 - mp_localSeat]?.champion?.name || '';
+  const isMyTurn  = gameState.activePlayer === mp_localSeat;
+  const activeSeat = gameState.activePlayer;
+  const myChamp    = gameState.players[mp_localSeat]?.champion?.name || '';
+  // Status line describes whichever seat is currently active — works for any
+  // player count, not just 1v1 where there was only one opponent.
+  const activeName  = gameState.players[activeSeat]?.name
+                    || (activeSeat === 0 ? '?' : (mp_opponentName || 'Opponent'));
+  const activeChamp = gameState.players[activeSeat]?.champion?.name || '';
 
   if (gameState.phase === 'ended' || gameState.winner !== null) {
     const iWon = gameState.winner === mp_localSeat;
@@ -18594,7 +19472,7 @@ function mpUpdateTurnState() {
   if (isMyTurn) {
     showStatus(`⚡ YOUR TURN — ${myChamp}`, 'active');
   } else {
-    showStatus(`⏱ Waiting for ${oppName} (${oppChamp})…`, '');
+    showStatus(`⏱ Waiting for ${activeName} (${activeChamp})…`, '');
   }
 }
 
@@ -18707,17 +19585,19 @@ async function mpHandleRemoteUpdate(row, localSeat, myChampId, oppChampId) {
 
     // Fetch our private hand AND deck (+ opponent hand if we are Thorne — Warden's Stare)
     const localIsThorne_ru = myChampId === 'thorne';
-    const cols = localSeat === 0
-      ? (localIsThorne_ru ? 'host_hand,host_deck,guest_hand' : 'host_hand,host_deck')
-      : (localIsThorne_ru ? 'guest_hand,guest_deck,host_hand' : 'guest_hand,guest_deck');
+    const myHandCol = seatHandKey(localSeat);
+    const myDeckCol = seatDeckKey(localSeat);
+    // Thorne's Warden's Stare reveals the hand of seat (localSeat ^ 1) in 1v1.
+    // In multi-seat games Thorne currently reveals whichever non-local seat
+    // is stored in the opposite legacy slot (host↔guest). This matches pre-
+    // existing behaviour until 2v2/FFA reveal rules are designed.
+    const stareCol = localIsThorne_ru ? seatHandKey(localSeat === 0 ? 1 : 0) : null;
+    const cols = [myHandCol, myDeckCol, stareCol].filter(Boolean).join(',');
     const { data: g } = await _sb.from('mp_games').select(cols).eq('id', mp_gameId).single();
-    const myHandRaw = localSeat === 0 ? g?.host_hand : g?.guest_hand;
-    const myDeckRaw = localSeat === 0 ? g?.host_deck : g?.guest_deck;
-    let myHand = JSON.parse(myHandRaw || '[]');
-    let myDeck = JSON.parse(myDeckRaw || '[]');
+    let myHand = JSON.parse(g?.[myHandCol] || '[]');
+    let myDeck = JSON.parse(g?.[myDeckCol] || '[]');
     // Warden's Stare: opponent's real hand (null if not Thorne)
-    const oppHandRaw_ru = localIsThorne_ru ? (localSeat === 0 ? g?.guest_hand : g?.host_hand) : null;
-    const oppHand_ru = oppHandRaw_ru ? JSON.parse(oppHandRaw_ru) : null;
+    const oppHand_ru = stareCol ? JSON.parse(g?.[stareCol] || '[]') : null;
 
     // ── Draw 1 card at turn start (if below hand size cap) ──
     // On the very first turn of the game, opening hands were already dealt
@@ -18739,11 +19619,9 @@ async function mpHandleRemoteUpdate(row, localSeat, myChampId, oppChampId) {
         const drawn = myDeck.splice(0, 1);
         myHand = [...myHand, ...drawn];
         // Persist updated hand + deck
-        const handKey = localSeat === 0 ? 'host_hand' : 'guest_hand';
-        const deckKey = localSeat === 0 ? 'host_deck' : 'guest_deck';
         await _sb.from('mp_games').update({
-          [handKey]: JSON.stringify(myHand),
-          [deckKey]: JSON.stringify(myDeck),
+          [myHandCol]: JSON.stringify(myHand),
+          [myDeckCol]: JSON.stringify(myDeck),
         }).eq('id', mp_gameId);
       }
     }
@@ -18754,22 +19632,38 @@ async function mpHandleRemoteUpdate(row, localSeat, myChampId, oppChampId) {
     const localUltimateCharge = gameState.players?.[localSeat]?.ultimateCharge ?? 0;
     const localUltimateUsed   = gameState.players?.[localSeat]?.ultimateUsed   ?? false;
     const localUltimateReady  = gameState.players?.[localSeat]?.ultimateReady  ?? false;
+    // Warden's Stare currently reveals the legacy opposite seat. In 1v1 this
+    // is always the only opponent; in multi-seat games it's one of several,
+    // matching pre-existing 1v1 behaviour.
+    const stareSeat = stareCol ? (localSeat === 0 ? 1 : 0) : -1;
     gameState = {
       ...shared,
-      players: shared.players.map((p, i) => ({
-        ...p,
-        champion: { ...CHAMPIONS[i === 0 ? hId : gId] },
-        // Warden's Stare: if we are Thorne, populate opponent's full hand for rendering
-        hand: i === localSeat ? myHand : (localIsThorne_ru && oppHand_ru ? oppHand_ru : []),
-        deck: i === localSeat ? myDeck : [],
-        // Restore our own ultimate state — the shared blob reflects the opponent's push,
-        // which may have stale values for our seat.
-        ...(i === localSeat ? {
-          ultimateCharge: localUltimateCharge,
-          ultimateUsed:   localUltimateUsed,
-          ultimateReady:  localUltimateReady,
-        } : {}),
-      })),
+      players: shared.players.map((p, i) => {
+        // For 1v1 we have direct myChampId/oppChampId via hId/gId; for 2v2/FFA
+        // the shared state already carries each seat's champion id on p.champion.id
+        // (written by the launcher). Fall back to the 1v1 path when only 2 seats.
+        let champDef;
+        if (shared.players.length === 2) {
+          champDef = CHAMPIONS[i === 0 ? hId : gId];
+        } else {
+          const champId = p.champion?.id || p.championId;
+          champDef = champId ? CHAMPIONS[champId] : p.champion;
+        }
+        return {
+          ...p,
+          champion: { ...(champDef || p.champion) },
+          // Warden's Stare: if we are Thorne, populate opponent's full hand for rendering
+          hand: i === localSeat ? myHand : (i === stareSeat && oppHand_ru ? oppHand_ru : []),
+          deck: i === localSeat ? myDeck : [],
+          // Restore our own ultimate state — the shared blob reflects the opponent's push,
+          // which may have stale values for our seat.
+          ...(i === localSeat ? {
+            ultimateCharge: localUltimateCharge,
+            ultimateUsed:   localUltimateUsed,
+            ultimateReady:  localUltimateReady,
+          } : {}),
+        };
+      }),
     };
 
     // Restore our private traps from shared state
@@ -18795,8 +19689,8 @@ async function mpHandleRemoteUpdate(row, localSeat, myChampId, oppChampId) {
       if (!shared._bonusDraws) shared._bonusDraws = [0, 0];
       shared._bonusDraws[localSeat] = 0;
       // Persist updated hand + deck
-      const handKey2 = localSeat === 0 ? 'host_hand' : 'guest_hand';
-      const deckKey2 = localSeat === 0 ? 'host_deck' : 'guest_deck';
+      const handKey2 = seatHandKey(localSeat);
+      const deckKey2 = seatDeckKey(localSeat);
       await _sb.from('mp_games').update({
         [handKey2]: JSON.stringify(myHand),
         [deckKey2]: JSON.stringify(myDeck),
@@ -18959,18 +19853,23 @@ async function mpPushState() {
     };
 
     // Save OUR hand + deck (may have changed from card plays/discards)
-    const myHandKey = mp_localSeat === 0 ? 'host_hand' : 'guest_hand';
-    const myDeckKey = mp_localSeat === 0 ? 'host_deck' : 'guest_deck';
+    const myHandKey = seatHandKey(mp_localSeat);
+    const myDeckKey = seatDeckKey(mp_localSeat);
     update[myHandKey] = JSON.stringify(gameState.players[mp_localSeat].hand);
     update[myDeckKey] = JSON.stringify(gameState.players[mp_localSeat].deck);
 
     // If we modified the opponent's hand this turn (WD2/WD4/WD7/WD12/etc.),
     // also save their updated hand+deck to their private column.
     // Without this, the opponent would load their OLD hand from Supabase.
+    // TODO(2v2/FFA): `_mpOppHandDirty` is a single boolean. When multiple
+    // opponents can have their hands mutated in one turn we should track
+    // this per-seat (e.g. `_mpDirtySeats: Set<seat>`). For now the single
+    // flag is still correct for 1v1 and treats the 1v1 opposite seat as
+    // the only possible target.
     if (gameState._mpOppHandDirty) {
       const oppSeat = 1 - mp_localSeat;
-      const oppHandKey = oppSeat === 0 ? 'host_hand' : 'guest_hand';
-      const oppDeckKey = oppSeat === 0 ? 'host_deck' : 'guest_deck';
+      const oppHandKey = seatHandKey(oppSeat);
+      const oppDeckKey = seatDeckKey(oppSeat);
       update[oppHandKey] = JSON.stringify(gameState.players[oppSeat].hand);
       update[oppDeckKey] = JSON.stringify(gameState.players[oppSeat].deck);
       // Also update _handCounts in shared state so opponent's UI shows correct count
@@ -19222,6 +20121,7 @@ async function authRegister(username, password) {
     stats: { gamesPlayed:0, gamesWon:0, shardsEarned:0, championsGenerated:0 } };
   _userName    = trimmed;
   localStorage.setItem('corridors:userName', trimmed);
+  startUserInbox();
   return _userProfile;
 }
 
@@ -19237,12 +20137,14 @@ async function authLogin(username, password) {
   await loadUserProfile();
   _userName = _userProfile?.username || trimmed;
   localStorage.setItem('corridors:userName', _userName);
+  startUserInbox();
   return _userProfile;
 }
 
 // ── Logout ────────────────────────────────────────────────────────────
 async function authLogout() {
   stopPresenceTracking();
+  stopUserInbox();
   const sb = mpInit();
   if (sb) await sb.auth.signOut();
   _authUser    = null;
@@ -19263,6 +20165,7 @@ async function authRestoreSession() {
   _userName = _userProfile?.username || '';
   localStorage.setItem('corridors:userName', _userName);
   startPresenceTracking();
+  startUserInbox();
   return true;
 }
 
@@ -19556,6 +20459,111 @@ function presenceBeacon() {
   navigator.sendBeacon?.(url, new Blob([body], { type: 'application/json' }));
 }
 
+// ─────────────────────────────────────────────────────────────────────
+// ── User Inbox — realtime broadcast channel for out-of-game pings ──
+// Each logged-in user subscribes to `user:<authUser.id>` on sign-in. Hosts
+// push {type:'broadcast', event:'game_invite', payload:{...}} to invite a
+// friend to an MP game. Nothing is persisted — broadcast is ephemeral, so
+// an invite is "delivered" only while the invitee has the tab open.
+// ─────────────────────────────────────────────────────────────────────
+let _userInboxChannel = null;
+
+function startUserInbox() {
+  if (_userInboxChannel) return;
+  const sb = mpInit();
+  if (!sb || !_authUser) return;
+  const channelName = `user:${_authUser.id}`;
+  _userInboxChannel = sb.channel(channelName, { config: { broadcast: { self: false } } });
+  _userInboxChannel.on('broadcast', { event: 'game_invite' }, ({ payload }) => {
+    if (!payload) return;
+    showInvitePopup(payload);
+  });
+  _userInboxChannel.subscribe((status) => {
+    if (status === 'SUBSCRIBED') console.log('[INBOX] subscribed as', channelName);
+  });
+}
+
+function stopUserInbox() {
+  const sb = _sb;
+  if (_userInboxChannel && sb) {
+    try { sb.removeChannel(_userInboxChannel); } catch(e){}
+  }
+  _userInboxChannel = null;
+}
+
+// Send an invite broadcast to a specific user. The invitee receives a popup
+// only if they're logged in with the tab open (broadcast is ephemeral).
+// payload fields: gameId, hostName, hostChamp, mode (1v1/2v2/ffa).
+async function sendGameInvite(recipientAuthId, payload) {
+  const sb = mpInit();
+  if (!sb || !recipientAuthId || !payload?.gameId) return false;
+  // Open a short-lived channel just to send; we don't need to listen on it.
+  const ch = sb.channel(`user:${recipientAuthId}`);
+  return new Promise((resolve) => {
+    ch.subscribe(async (status) => {
+      if (status !== 'SUBSCRIBED') return;
+      await ch.send({ type: 'broadcast', event: 'game_invite', payload });
+      // Clean up after a beat so Supabase doesn't hold the socket open.
+      setTimeout(() => { try { sb.removeChannel(ch); } catch(e){} resolve(true); }, 300);
+    });
+  });
+}
+
+// Show a toast with JOIN / IGNORE. Stacked in the top-right corner. Multiple
+// invites queue up; ignoring dismisses just that one.
+function showInvitePopup(invite) {
+  const { gameId, hostName, hostChamp, mode } = invite || {};
+  if (!gameId) return;
+
+  let container = document.getElementById('invite-toast-container');
+  if (!container) {
+    container = document.createElement('div');
+    container.id = 'invite-toast-container';
+    // High z-index (5000) so the invite toast always overlays lobby/modal overlays.
+    // Keep below 10000 so dev overlays can still appear on top.
+    container.style.cssText = 'position:fixed;top:16px;right:16px;z-index:5000;display:flex;flex-direction:column;gap:8px;pointer-events:none;';
+    document.body.appendChild(container);
+  }
+
+  const toast = document.createElement('div');
+  toast.style.cssText = 'pointer-events:auto;background:var(--surface);border:1px solid var(--amber);box-shadow:0 4px 16px rgba(212,144,58,0.3);padding:12px 14px;max-width:320px;font-size:12px;color:var(--text);animation:inviteSlideIn 0.25s ease;';
+  const safeName = (hostName || 'A player').replace(/</g, '&lt;');
+  const safeChamp = (hostChamp || '').replace(/</g, '&lt;');
+  const safeMode  = (mode || '1v1').toUpperCase().replace(/</g, '&lt;');
+  toast.innerHTML = `
+    <div style="font-family:'Teko',sans-serif;font-size:18px;color:var(--amber);letter-spacing:.05em;margin-bottom:2px;">⚔ CHALLENGE</div>
+    <div style="margin-bottom:8px;line-height:1.4;">
+      <strong style="color:#ccc;">${safeName}</strong> invites you to a
+      <strong style="color:var(--amber);">${safeMode}</strong> match${safeChamp ? ` as <strong>${safeChamp}</strong>` : ''}.
+    </div>
+    <div style="display:flex;gap:6px;">
+      <button class="action-btn primary" data-join-game="${gameId}" style="font-size:10px;padding:4px 12px;flex:1;">JOIN</button>
+      <button class="action-btn" data-ignore-invite="1" style="font-size:10px;padding:4px 12px;">IGNORE</button>
+    </div>
+  `;
+  const joinBtn   = toast.querySelector('[data-join-game]');
+  const ignoreBtn = toast.querySelector('[data-ignore-invite]');
+  joinBtn.addEventListener('click', () => {
+    toast.remove();
+    acceptGameInvite(gameId);
+  });
+  ignoreBtn.addEventListener('click', () => { toast.remove(); });
+  container.appendChild(toast);
+}
+
+// Invoked when the recipient clicks JOIN on a toast.
+async function acceptGameInvite(gameId) {
+  // Close any open overlays so the lobby is visible.
+  ['profile-overlay','friends-overlay','landing-overlay','mp-lobby-overlay','challenge-invite-overlay']
+    .forEach(id => document.getElementById(id)?.remove());
+  if (typeof showGameLobby === 'function') {
+    showGameLobby(gameId);
+  } else {
+    // Fallback while the lobby is being built
+    showMultiplayerLobby('join', gameId);
+  }
+}
+
 // ── Friend System ───────────────────────────────────────────────────
 let _friendsList = [];
 
@@ -19756,20 +20764,23 @@ async function removeFriend(friendshipId) {
   showFriendsScreen();
 }
 
-async function challengeFriend(friendUserId, friendName) {
-  const sb = mpInit();
-  if (!sb || !_authUser) return;
-  // Create a private game
-  const { data, error } = await sb.from('mp_games').insert({
-    host_id: _userId, host_name: _userName || 'Player',
-    host_champ: 'soren', status: 'waiting',
-    is_public: false, game_type: 'casual',
-  }).select().single();
-  if (error) { showStatus('Failed to create challenge', 'error'); return; }
-  const inviteUrl = window.location.href.split('?')[0] + '?join=' + data.id;
-  showStatus('Challenge created! Share this code with ' + friendName + ': ' + data.id, 'success');
-  // Copy to clipboard
-  navigator.clipboard?.writeText(inviteUrl).catch(() => {});
+// Challenge a friend → stage them as a pending invitee and jump to the MP
+// Create tab. The actual invite broadcast fires in mpCreateGame() once the
+// host finalises champion/deck/game-options and clicks CREATE.
+function challengeFriend(friendUserId, friendName) {
+  if (!_authUser) {
+    showStatus('Sign in required to challenge players', 'error');
+    return;
+  }
+  // Avoid duplicates
+  if (!mp_pendingInvitees.some(i => i.authId === friendUserId)) {
+    mp_pendingInvitees.push({ authId: friendUserId, username: friendName });
+  }
+  // Close any overlays that would hide the MP lobby
+  ['profile-overlay','friends-overlay','challenge-invite-overlay']
+    .forEach(id => document.getElementById(id)?.remove());
+  // Open the Create tab — the pending-invitee chip renders automatically.
+  showMultiplayerLobby('create');
 }
 
 async function showFriendsScreen() {
@@ -21516,7 +22527,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (watchCode) {
       spectateGame(watchCode);
     } else if (inviteCode) {
-      showMultiplayerLobby('join', inviteCode);
+      // ?join= now sends the user straight into the game lobby instead of
+      // the old JOIN tab (champion selection now happens inside the lobby).
+      showGameLobby(inviteCode);
     } else {
       showLandingScreen();
     }
