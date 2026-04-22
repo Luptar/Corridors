@@ -2725,12 +2725,16 @@ const FACTION_COUNTER = {
 };
 
 // Faction AI modifiers
+// Floored wallBonus to >=1 for Pathfinders/Pushers — they used to literally
+// never play wall cards (wallBonus=0 meant walls always lost to moves), which
+// made those factions trivial to beat. They still favor movement, just no
+// longer ignore walls outright.
 const FACTION_AI = {
   Architects:  { moveBonus: 0,  wallBonus: 4,  aggression: 0.7, control: 1.4 },
-  Pathfinders: { moveBonus: 4,  wallBonus: 0,  aggression: 1.6, control: 0.5 },
+  Pathfinders: { moveBonus: 4,  wallBonus: 1,  aggression: 1.6, control: 0.6 },
   Wardens:     { moveBonus: 1,  wallBonus: 2,  aggression: 0.8, control: 1.5 },
   Phantoms:    { moveBonus: 2,  wallBonus: 3,  aggression: 1.1, control: 0.9 },
-  Pushers:     { moveBonus: 3,  wallBonus: 1,  aggression: 1.5, control: 0.6 },
+  Pushers:     { moveBonus: 3,  wallBonus: 2,  aggression: 1.5, control: 0.7 },
   Trappers:    { moveBonus: 2,  wallBonus: 2,  aggression: 1.0, control: 1.2 },
   Chronists:   { moveBonus: 2,  wallBonus: 2,  aggression: 1.2, control: 0.9 },
 };
@@ -4051,6 +4055,30 @@ function buildGauntletAIDeck(stage, faction) {
     while (wallCount + (20 - replaceIdx) < 6 && replaceIdx >= 0 && wallPool.length) {
       if (deck[replaceIdx].type !== 'Wall') deck[replaceIdx] = {...wallPool[Math.floor(Math.random() * wallPool.length)]};
       replaceIdx--;
+    }
+  }
+
+  // ── WALL-BIAS PASS (applies to ALL gauntlet decks, not just bosses) ──
+  // The AI scoring system can only PLAY walls that are in its hand. With
+  // random rarity-weighted draws, some decks ended up with <3 wall cards
+  // total — making the AI a glass cannon that just rushes. Floor: 25% walls
+  // (i.e., at least 5 of 20). Replaces weakest non-wall cards (commons first).
+  const wallPool = pool.filter(c => c.type === 'Wall');
+  if (wallPool.length > 0) {
+    const minWalls = 5;
+    let wallsInDeck = deck.filter(c => c.type === 'Wall').length;
+    if (wallsInDeck < minWalls) {
+      // Replace lowest-rarity non-wall cards with walls
+      const rarityRank = { Common: 0, Uncommon: 1, Rare: 2, Legendary: 3 };
+      const idxs = deck.map((c, i) => ({ c, i }))
+                       .filter(x => x.c.type !== 'Wall')
+                       .sort((a, b) => (rarityRank[a.c.rarity] || 0) - (rarityRank[b.c.rarity] || 0))
+                       .map(x => x.i);
+      for (const idx of idxs) {
+        if (wallsInDeck >= minWalls) break;
+        deck[idx] = {...wallPool[Math.floor(Math.random() * wallPool.length)]};
+        wallsInDeck++;
+      }
     }
   }
 
@@ -7000,10 +7028,10 @@ function addLog(player, type, message) {
 //   dynamicDepth3:  bump to depth-3 when board is wall-heavy
 //   modelOppHand:   account for opponent's specific cards in threat estimation
 const AI_WEIGHTS = {
-  easy:      { me: 10, opp: 4,  wallCands: 12, tubePlay: false, gatePlay: false, selfRemoveDisc: false, lookahead: 1, topN: 0,  openingBook: false, dynamicDepth3: false, modelOppHand: false },
-  medium:    { me: 8,  opp: 10, wallCands: 24, tubePlay: true,  gatePlay: true,  selfRemoveDisc: true,  lookahead: 1, topN: 0,  openingBook: false, dynamicDepth3: false, modelOppHand: false },
-  hard:      { me: 6,  opp: 16, wallCands: 48, tubePlay: true,  gatePlay: true,  selfRemoveDisc: true,  lookahead: 2, topN: 8,  openingBook: true,  dynamicDepth3: false, modelOppHand: false },
-  nightmare: { me: 5,  opp: 18, wallCands: 64, tubePlay: true,  gatePlay: true,  selfRemoveDisc: true,  lookahead: 2, topN: 12, openingBook: true,  dynamicDepth3: true,  modelOppHand: true  },
+  easy:      { me: 9,  opp: 7,  wallCands: 16, tubePlay: false, gatePlay: false, selfRemoveDisc: false, lookahead: 1, topN: 0,  openingBook: false, dynamicDepth3: false, modelOppHand: false },
+  medium:    { me: 7,  opp: 13, wallCands: 32, tubePlay: true,  gatePlay: true,  selfRemoveDisc: true,  lookahead: 1, topN: 0,  openingBook: false, dynamicDepth3: false, modelOppHand: false },
+  hard:      { me: 5,  opp: 18, wallCands: 48, tubePlay: true,  gatePlay: true,  selfRemoveDisc: true,  lookahead: 2, topN: 8,  openingBook: true,  dynamicDepth3: false, modelOppHand: false },
+  nightmare: { me: 4,  opp: 22, wallCands: 64, tubePlay: true,  gatePlay: true,  selfRemoveDisc: true,  lookahead: 2, topN: 12, openingBook: true,  dynamicDepth3: true,  modelOppHand: true  },
 };
 
 // Faction strategy modifiers — how each faction weights move vs wall actions
@@ -7333,16 +7361,18 @@ function countDeniedOppBlockers(wallsBefore, wallsAfter, aiSeat) {
 // a single multiplier; when any signal goes to zero, tube-play self-disables.
 function computeTubeMultiplier(ctx) {
   let m = 1.0;
-  // (a) Lead/lag — only protect when ahead or tied; flip to disruption when behind
+  // (a) Lead/lag — denial is the catch-up tool too, so don't shut down when
+  //     behind. Was 0.4 (effectively off); now 0.8 keeps tube contributing
+  //     even when struggling.
   if      (ctx.leadDelta < -1) m *= 1.6;
   else if (ctx.leadDelta <= 0) m *= 1.1;
-  else                         m *= 0.4;
+  else                         m *= 0.8;
   // (b) Path length — short path = nothing left to protect
   if      (ctx.aiDist <= 2) m *= 0.3;
   else if (ctx.aiDist <= 4) m *= 0.7;
-  // (c) Threat — no opponent walls to deny means tube has no value (HARD ZERO)
-  if (ctx.oppWallTotalThreat === 0) return 0;
-  if (ctx.oppWallsInHand >= 3) m *= 1.4;
+  // (c) Threat — opponent might draw walls next turn; soft-discount not zero
+  if (ctx.oppWallTotalThreat === 0) m *= 0.5;       // was: hard return 0
+  else if (ctx.oppWallsInHand >= 3) m *= 1.4;
   // (d) Phase — early walls have less denial leverage (path not yet committed)
   if      (ctx.phase === 'opening') m *= 0.6;
   else if (ctx.phase === 'late')    m *= 1.2;
@@ -7414,8 +7444,11 @@ function strategy_gate(action, ctx, myDistBefore, myDistAfter) {
   if (myDistAfter === Infinity) return 0;   // not a gate, an orphan
   // Chokepoint value = how much OUR OWN distance grew. Walls that don't
   // affect our path aren't gates (they're pure offense — handled elsewhere).
+  // Threshold lowered to >=1 (was >=2) so smaller gates still contribute
+  // their value when self-removal is in hand. The multiplier handles the
+  // "is it actually worth it" question via readiness × proximity weighting.
   const choke = myDistAfter - myDistBefore;
-  if (choke < 2) return 0;
+  if (choke < 1) return 0;
   const mult = computeGateMultiplier(ctx);
   if (mult <= 0) return 0;
   // 2.0 base × choke × multiplier — magnitude tuned to match wallBonus scale.
@@ -7657,8 +7690,18 @@ function scoreAction(action, walls, aiPos, oppPos) {
     }
   }
 
+  // ── CATCH-UP DISRUPTION MULTIPLIER ─────────────────────────────────
+  // When the AI is behind, racing forward is a losing strategy — only
+  // disruption can flip the game. Triple-weight opp slowdown when behind
+  // by 3+ tiles, 1.3x when behind by any amount. This makes a struggling
+  // AI pivot to defense automatically rather than rushing into walls.
+  const ctxForCatchup = getAITurnContext();
+  const catchupMult = (ctxForCatchup.leadDelta > 2) ? 1.8
+                    : (ctxForCatchup.leadDelta > 0) ? 1.3
+                    : 1.0;
+
   const myGain  = (myDistBefore  - myDistEffective) * aggWeight;
-  const oppLoss = (oppDistAfter  - oppDistBefore) * ctrlWeight;
+  const oppLoss = (oppDistAfter  - oppDistBefore) * ctrlWeight * catchupMult;
   const base    = myGain * W.me + oppLoss * W.opp;
 
   // Rush bonus: when AI is close to goal, aggressively prioritize forward movement.
@@ -7677,7 +7720,20 @@ function scoreAction(action, walls, aiPos, oppPos) {
     return base; // movement gets no bonus
   }
 
-  if (action.type === 'move')    return base + F.moveBonus + rushBonus;
+  if (action.type === 'move') {
+    // ── VERTICAL-GOALWARD MOVE BONUS ────────────────────────────────
+    // When two moves are tied in BFS distance (e.g., one closes a row,
+    // one sidesteps), prefer the one that closes vertical distance to
+    // the goal. Only meaningful for row-objective modes (1v1, 2v2).
+    // FFA's objective is a tile, so both axes matter equally — skip there.
+    let verticalBonus = 0;
+    const obj = aiGetObjective(aiSeat);
+    if (obj.type === 'row' && action.to) {
+      const rowGain = Math.abs(aiPos.row - obj.target) - Math.abs(action.to.row - obj.target);
+      if (rowGain > 0) verticalBonus = rowGain * 2;  // +2 per row closed
+    }
+    return base + F.moveBonus + rushBonus + verticalBonus;
+  }
 
   // Wall actions: stack base wall value with strategy bonuses.
   //   tube     — denies opponent wall placements (self-disables when AI behind)
@@ -8191,25 +8247,34 @@ async function runAI() {
       && getEffectiveEnergyCost(c, pi) <= _aiEnergy) : [];
   for (const card of dispCards) {
 
-    // RC Reconstruction / A3 Reclaim: removes oldest own wall, draws 1.
+    // RC Reconstruction / A3 Reclaim: remove the wall that BEST OPENS our
+    // path (was: oldest wall, ignoring whether it actually helps). This is
+    // the gating-in-action enabler — earlier turns we may have placed walls
+    // as gates; this picks the right one to OPEN now. Phase 2 below uses
+    // the chosen target to recompute movement through the opened gap.
     if (card.id === 'A3' || card.id === 'RC') {
-      const myWalls = st.walls.filter(w => w.owner===pi && !w.isPhantom && !w.permanent && !w._seismicSlam && !w._bossWall)
-                               .sort((a,b) => a.placedOnTurn - b.placedOnTurn);
+      const myWalls = st.walls.filter(w => w.owner===pi && !w.isPhantom && !w.permanent && !w._seismicSlam && !w._bossWall);
       if (!myWalls.length) continue;
-      const target = myWalls[0];
-      const simWalls = st.walls.filter(w => w.id !== target.id);
-      const myDistAfter  = bfsDistanceFor(st.aiPos,  BOARD_SIZE-1, simWalls, pi);
-      const oppDistAfter = bfsDistanceFor(st.oppPos, 0,            simWalls, 0);
-      const myGain  = (bfsDistanceFor(st.aiPos, BOARD_SIZE-1, st.walls, pi) - myDistAfter);
-      const oppGain = (bfsDistanceFor(st.oppPos, 0, st.walls, 0) - oppDistAfter);
-      let s = myGain * 8 - oppGain * 6 - 1;
-      // Big bonus when at wall limit — freeing a slot lets AI place new walls
-      if (st.aiWalls >= st.aiLimit) s += 12;
-      else if (st.aiWalls >= st.aiLimit - 1) s += 6;
-      if (s > bestCardScore) {
+      const _oppSeat = getPriorityTarget(pi);
+      const myDistBefore  = aiBfsToObjective(st.aiPos,  st.walls, pi);
+      const oppDistBefore = aiBfsToObjective(st.oppPos, st.walls, _oppSeat);
+      let bestTarget = null;
+      let bestTargetScore = -Infinity;
+      for (const candidate of myWalls) {
+        const simWalls = st.walls.filter(w => w.id !== candidate.id);
+        const myDistAfter  = aiBfsToObjective(st.aiPos,  simWalls, pi);
+        const oppDistAfter = aiBfsToObjective(st.oppPos, simWalls, _oppSeat);
+        const myGain  = (myDistBefore  - myDistAfter);
+        const oppGain = (oppDistBefore - oppDistAfter);
+        let cs = myGain * 8 - oppGain * 6 - 1;
+        if (st.aiWalls >= st.aiLimit) cs += 12;
+        else if (st.aiWalls >= st.aiLimit - 1) cs += 6;
+        if (cs > bestTargetScore) { bestTargetScore = cs; bestTarget = candidate; }
+      }
+      if (bestTarget && bestTargetScore > bestCardScore) {
         secondBestCardScore = bestCardScore; secondBestCardAction = bestCardAction;
-        bestCardScore = s;
-        bestCardAction = {kind:'disruption', subkind:'reclaim', card};
+        bestCardScore = bestTargetScore;
+        bestCardAction = {kind:'disruption', subkind:'reclaim', card, target: bestTarget};
       }
     }
 
@@ -8691,15 +8756,41 @@ async function runAI() {
   console.log('[AI] Phase 1 complete. bestCardAction:', bestCardAction?.kind, bestCardAction?.subkind || '', bestCardAction?.card?.id || 'none');
   // PHASE 2 — choose the MOVE action
   // ══════════════════════════════════════════════════════════════════
-  // Simulate post-card wall state, then find best move
+  // Simulate post-card wall state, then find best move.
+  //
+  // CRITICAL: this simulation must reflect BOTH wall additions (place wall)
+  // AND wall removals (RC reclaim, B14 punchthrough, AR3 redeploy lift).
+  // Without the removal half, the AI can play RC to open a gate but then
+  // fail to walk through it — phase 2 was finding moves against the OLD
+  // wall set. The "gating in action" combo only works when phase 2 sees
+  // the freshly-opened path.
   let simWallsForMove = st.walls;
-  if (bestCardAction && (bestCardAction.kind === 'wall' || bestCardAction.kind === 'phantom')) {
-    simWallsForMove = [...st.walls, {
-      id:'__premove__', owner:pi,
-      anchor:bestCardAction.anchor, orientation:bestCardAction.orientation, length:bestCardAction.len,
-      isPhantom: bestCardAction.kind === 'phantom',
-      durable:false, durableHits:0, immune:false, temporary:false, turnsRemaining:null, placedOnTurn:0
-    }];
+  if (bestCardAction) {
+    if (bestCardAction.kind === 'wall' || bestCardAction.kind === 'phantom') {
+      simWallsForMove = [...st.walls, {
+        id:'__premove__', owner:pi,
+        anchor:bestCardAction.anchor, orientation:bestCardAction.orientation, length:bestCardAction.len,
+        isPhantom: bestCardAction.kind === 'phantom',
+        durable:false, durableHits:0, immune:false, temporary:false, turnsRemaining:null, placedOnTurn:0
+      }];
+    } else if (bestCardAction.kind === 'disruption' && bestCardAction.target) {
+      const t = bestCardAction.target;
+      const sub = bestCardAction.subkind;
+      // reclaim / punchthrough / undermine remove a wall outright
+      if (sub === 'reclaim' || sub === 'punchthrough' || sub === 'undermine') {
+        simWallsForMove = st.walls.filter(w => w.id !== t.id);
+      }
+      // redeploy: lift target wall, re-place at new anchor
+      else if (sub === 'redeploy' && bestCardAction.anchor) {
+        const without = st.walls.filter(w => w.id !== t.id);
+        simWallsForMove = [...without, {
+          id:'__premove_redeploy__', owner:pi,
+          anchor: bestCardAction.anchor, orientation: bestCardAction.orientation, length: bestCardAction.len,
+          isPhantom: false,
+          durable:false, durableHits:0, immune:false, temporary:false, turnsRemaining:null, placedOnTurn:0
+        }];
+      }
+    }
   }
 
   const simState = {
@@ -8876,18 +8967,26 @@ async function runAI() {
       const sub = bestCardAction.subkind;
 
       if (sub === 'reclaim') {
-        // Execute RC Reconstruction / A3: remove oldest wall, draw 1
-        const myWalls = gameState.walls.filter(w => w.owner===pi && !w.isPhantom && !w.permanent)
-                                       .sort((a,b) => a.placedOnTurn - b.placedOnTurn);
-        if (myWalls.length) {
-          const target = myWalls[0];
+        // Use the target chosen at scoring time (the wall whose removal
+        // best opens the AI's path). Verify it still exists — could have
+        // been destroyed/shrunk by another card between phases. Fall back
+        // to oldest only if the planned target is gone.
+        let target = bestCardAction.target
+                     ? gameState.walls.find(w => w.id === bestCardAction.target.id)
+                     : null;
+        if (!target) {
+          const oldest = gameState.walls.filter(w => w.owner===pi && !w.isPhantom && !w.permanent)
+                                        .sort((a,b) => a.placedOnTurn - b.placedOnTurn);
+          target = oldest[0];
+        }
+        if (target) {
           gameState.walls = gameState.walls.filter(w => w.id !== target.id);
           gameState.players[pi] = {...gameState.players[pi],
             wallsInPlay: Math.max(0, gameState.players[pi].wallsInPlay - 1)};
           discardCard(pi, cardIdx);
           drawCards(pi, 1);
           countCardPlayed(pi);
-          addLog(pi, 'card', 'AI Reconstruction: recycled oldest wall, drew 1');
+          addLog(pi, 'card', 'AI Reconstruction: opened path');
         }
 
       } else if (sub === 'redeploy') {
