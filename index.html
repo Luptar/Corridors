@@ -2759,17 +2759,98 @@ const GAUNTLET_BOSS_STAGES = [4, 8, 12, 15];
 const GAUNTLET_SHOP_FLOORS = [2, 6, 10, 14];
 const GAUNTLET_FFA_FLOORS = [3, 7, 11];
 
-// AI difficulty scaling across the 16-stage gauntlet ladder.
-// Elites are treated as +2 stages effective (matches deck/rarity bump at line ~9205).
-// Bosses use the stage they appear at. FFA races scale the same as regular nodes.
-// This is the SOLE source of truth for gauntlet difficulty — initGauntletGame no
-// longer hardcodes 'hard'; the calling site invokes this and sets aiDifficulty.
+// AI tier in the gauntlet. The AI's INTELLIGENCE is decoupled from its POWER:
+//   - All regular gauntlet opponents use HARD code (smart play, 2-ply lookahead,
+//     opening book, tube/gate strategies).
+//   - Bosses and elites use NIGHTMARE code (HARD plus opp-hand modeling and
+//     depth-3-lite continuation when wall-heavy).
+// The DIFFICULTY PROGRESSION across stages comes from champion RARITY (which
+// drives stats via RARITY_BUDGETS, deck composition via GAUNTLET_AI_DECK_DIST,
+// and additional buffs via AI_CHAMPION_BUFFS_BY_RARITY) — NOT from AI tier.
+// This avoids the "easy AI plays dumb" problem: every opponent plays well;
+// stronger opponents just have better stats and decks.
 function getGauntletDifficulty(stage, nodeType) {
-  const effectiveStage = nodeType === 'elite' ? Math.min(stage + 2, GAUNTLET_STAGES) : stage;
-  if (effectiveStage <= 3)  return 'easy';
-  if (effectiveStage <= 7)  return 'medium';
-  if (effectiveStage <= 11) return 'hard';
-  return 'nightmare';  // stages 12+, including all late bosses (12, 15) and stage-16 final
+  return (nodeType === 'boss' || nodeType === 'elite') ? 'nightmare' : 'hard';
+}
+
+// ── AI CHAMPION BUFFS  (rarity-keyed — AI side only) ─────────────────
+// Design principle: never nerf the player's champion. Instead, give the AI
+// champion ADVANTAGES that scale with the OPPONENT'S RARITY (Common through
+// Legendary). This stacks on top of RARITY_BUDGETS' stat allocation so a
+// Legendary AI opponent has both better base stats AND additional polish.
+//
+// Applied AFTER generateChampion for regular/elite gauntlet matches.
+// NOT applied to bosses — they have hand-crafted stats and would double-buff.
+const AI_CHAMPION_BUFFS_BY_RARITY = {
+  Common:    { wallLimit: 0, cardDraw: 0, energy: 0, ultimateCost:  0 },
+  Uncommon:  { wallLimit: 1, cardDraw: 0, energy: 1, ultimateCost:  0 },
+  Rare:      { wallLimit: 2, cardDraw: 1, energy: 1, ultimateCost: -1 },
+  Epic:      { wallLimit: 4, cardDraw: 1, energy: 2, ultimateCost: -1 },
+  Legendary: { wallLimit: 5, cardDraw: 2, energy: 2, ultimateCost: -2 },
+};
+function applyAIChampionBuff(champ) {
+  const b = AI_CHAMPION_BUFFS_BY_RARITY[champ?.rarity];
+  if (!b) return champ;
+  // Mutate in place (champ is a freshly-generated object, safe to mutate)
+  champ.wallLimit    = (champ.wallLimit   || 0) + b.wallLimit;
+  champ.cardDraw     = Math.min(8, (champ.cardDraw || 1) + b.cardDraw);
+  champ.energy       = Math.min(8, (champ.energy   || 3) + b.energy);
+  champ.ultimateCost = Math.max(2, (champ.ultimateCost || 5) + b.ultimateCost);
+  return champ;
+}
+
+// Pre-placed AI walls for regular/elite gauntlet matches. Bosses have their
+// own preWalls; this is for the rest. Scaled by AI champion RARITY so a
+// Legendary opponent starts with a more substantial maze than a Common one.
+// Walls are AI-owned (count against AI's wall budget), flagged immune +
+// reinforced + permanent so player removal cards can't trivially demolish.
+//
+// Layout: midfield horizontal walls (rows 3-5) staggered across columns to
+// force the player into detours. Coordinates are deliberately conservative
+// — never seal an entire row, never orphan either player's path.
+const AI_PREPLACED_WALL_SETS_BY_RARITY = {
+  Common:    [],
+  Uncommon:  [
+    { anchor: { row: 4, col: 3 }, orientation: 'H', length: 2 },
+  ],
+  Rare:      [
+    { anchor: { row: 4, col: 3 }, orientation: 'H', length: 2 },
+    { anchor: { row: 3, col: 6 }, orientation: 'H', length: 2 },
+  ],
+  Epic:      [
+    { anchor: { row: 4, col: 3 }, orientation: 'H', length: 2 },
+    { anchor: { row: 3, col: 6 }, orientation: 'H', length: 2 },
+    { anchor: { row: 5, col: 5 }, orientation: 'V', length: 2 },
+  ],
+  Legendary: [
+    { anchor: { row: 4, col: 2 }, orientation: 'H', length: 2 },
+    { anchor: { row: 3, col: 5 }, orientation: 'H', length: 2 },
+    { anchor: { row: 5, col: 6 }, orientation: 'V', length: 2 },
+    { anchor: { row: 2, col: 1 }, orientation: 'H', length: 2 },
+  ],
+};
+function applyAIPreplacedWalls(rarity) {
+  const set = AI_PREPLACED_WALL_SETS_BY_RARITY[rarity];
+  if (!set || set.length === 0 || !gameState) return;
+  const aiSeat = 1; // AI is always seat 1 in gauntlet 1v1
+  // Validate each wall is legal in current state before placing — protects
+  // against board sizes that wouldn't fit the layout (boss-board overrides etc.)
+  for (const w of set) {
+    if (!isWallLegal(w.anchor, w.orientation, w.length, gameState.walls,
+                     gameState.players[0].position, gameState.players[aiSeat].position, false)) {
+      console.warn('[AI] Skipped pre-placed wall — not legal:', w);
+      continue;
+    }
+    gameState.walls.push({
+      id: gameState.nextWallId++, owner: aiSeat,
+      anchor: w.anchor, orientation: w.orientation, length: w.length,
+      isPhantom: false, durable: false, durableHits: 0,
+      immune: true, reinforced: true, permanent: true,
+      temporary: false, turnsRemaining: null, placedOnTurn: 0,
+    });
+    // Count against AI's wall budget — they don't get extra free placements
+    gameState.players[aiSeat].wallsInPlay += 1;
+  }
 }
 
 const GAUNTLET_AI_RARITY = {
@@ -4063,12 +4144,39 @@ function buildGauntletAIDeck(stage, faction) {
   // random rarity-weighted draws, some decks ended up with <3 wall cards
   // total — making the AI a glass cannon that just rushes. Floor: 25% walls
   // (i.e., at least 5 of 20). Replaces weakest non-wall cards (commons first).
+  //
+  // DURABLE-WALL PREFERENCE: when filling slots, weight reinforced and
+  // Legendary walls higher than basic walls. The player's removal cards
+  // (RC, B04, B14) make basic walls cheap to clear; durable walls force
+  // them to spend specific tools or work around. Caps at 2 reinforced
+  // walls per deck so we don't homogenize every gauntlet match.
   const wallPool = pool.filter(c => c.type === 'Wall');
   if (wallPool.length > 0) {
     const minWalls = 5;
     let wallsInDeck = deck.filter(c => c.type === 'Wall').length;
+
+    // Weighted picker: reinforced walls 3x, Legendary walls 4x weight
+    // (capped at 2 reinforced per deck to keep variety)
+    function pickWall() {
+      let reinforcedAlready = deck.filter(c => c.type === 'Wall' && c.reinforced).length;
+      const weights = wallPool.map(c => {
+        if (c.reinforced && reinforcedAlready >= 2) return 0;          // cap reached
+        if (c.rarity === 'Legendary') return 4;
+        if (c.reinforced)             return 3;
+        return 1;
+      });
+      const total = weights.reduce((a, b) => a + b, 0);
+      if (total === 0) return wallPool[Math.floor(Math.random() * wallPool.length)];
+      let roll = Math.random() * total;
+      for (let i = 0; i < wallPool.length; i++) {
+        roll -= weights[i];
+        if (roll <= 0) return wallPool[i];
+      }
+      return wallPool[wallPool.length - 1];
+    }
+
     if (wallsInDeck < minWalls) {
-      // Replace lowest-rarity non-wall cards with walls
+      // Replace lowest-rarity non-wall cards with weighted-pick walls
       const rarityRank = { Common: 0, Uncommon: 1, Rare: 2, Legendary: 3 };
       const idxs = deck.map((c, i) => ({ c, i }))
                        .filter(x => x.c.type !== 'Wall')
@@ -4076,7 +4184,7 @@ function buildGauntletAIDeck(stage, faction) {
                        .map(x => x.i);
       for (const idx of idxs) {
         if (wallsInDeck >= minWalls) break;
-        deck[idx] = {...wallPool[Math.floor(Math.random() * wallPool.length)]};
+        deck[idx] = { ...pickWall() };
         wallsInDeck++;
       }
     }
@@ -9974,11 +10082,24 @@ function startGauntletCombat(node) {
                  : (GAUNTLET_AI_RARITY[stage] || 'Common');
   // Reuse pre-generated champion for elites (shown in preview), generate fresh for regular battles
   const aiChamp = (node.type === 'elite' && node._preGeneratedChamp) ? node._preGeneratedChamp : generateChampion(aiRarity);
+  // ── AI CHAMPION BUFF ─────────────────────────────────────────────
+  // Stat polish keyed on champion rarity — Common opponents get nothing,
+  // Legendary opponents get +5 walls, +2 cards, +2 energy, -2 ult cost.
+  // Stacks on top of RARITY_BUDGETS' base allocation. Applied BEFORE
+  // initGauntletGame so createPlayer reads the buffed stats.
+  applyAIChampionBuff(aiChamp);
   const aiDeck = buildGauntletAIDeck(deckStage, aiChamp.faction);
   // Store opponent info for elite card rewards
   _gauntletRun._lastOpponent = { champion: aiChamp, deckIds: aiDeck.map(c => c.id) };
   initGauntletGame(_gauntletRun.champion, aiChamp, _gauntletRun.deck, aiDeck);
+  // AI tier: HARD for regular battles, NIGHTMARE for elites (per getGauntletDifficulty).
   aiDifficulty = getGauntletDifficulty(stage, node.type);
+  // ── AI PRE-PLACED WALLS ──────────────────────────────────────────
+  // Starting walls scale with AI champion rarity. Common opponents get 0,
+  // Legendary opponents get 4. Done AFTER initGauntletGame so gameState
+  // exists and the AI isn't placing into an empty/unbuilt board. Bosses
+  // use their own boardPreWalls (applyBossBoard) so this only fires here.
+  applyAIPreplacedWalls(aiChamp.rarity);
 }
 
 function applyBossBoard(board) {
