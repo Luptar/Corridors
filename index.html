@@ -1613,6 +1613,8 @@
   }
   .diff-btn:hover { border-color: var(--border-hi); color: var(--text-bright); }
   .diff-btn.active { border-color: var(--amber); color: var(--amber); background: rgba(212,144,58,0.08); }
+  /* Nightmare gets a danger-red active state to signal "you asked for it" */
+  .diff-btn.nightmare.active { border-color: var(--danger); color: var(--danger); background: rgba(192,64,64,0.10); }
 
   /* ── Collection & Deck Builder ─────────────────────────────────── */
   .coll-header {
@@ -2753,6 +2755,19 @@ const GAUNTLET_BOSS_STAGES = [4, 8, 12, 15];
 const GAUNTLET_SHOP_FLOORS = [2, 6, 10, 14];
 const GAUNTLET_FFA_FLOORS = [3, 7, 11];
 
+// AI difficulty scaling across the 16-stage gauntlet ladder.
+// Elites are treated as +2 stages effective (matches deck/rarity bump at line ~9205).
+// Bosses use the stage they appear at. FFA races scale the same as regular nodes.
+// This is the SOLE source of truth for gauntlet difficulty — initGauntletGame no
+// longer hardcodes 'hard'; the calling site invokes this and sets aiDifficulty.
+function getGauntletDifficulty(stage, nodeType) {
+  const effectiveStage = nodeType === 'elite' ? Math.min(stage + 2, GAUNTLET_STAGES) : stage;
+  if (effectiveStage <= 3)  return 'easy';
+  if (effectiveStage <= 7)  return 'medium';
+  if (effectiveStage <= 11) return 'hard';
+  return 'nightmare';  // stages 12+, including all late bosses (12, 15) and stage-16 final
+}
+
 const GAUNTLET_AI_RARITY = {
   1:'Common',2:'Common',3:'Common',4:'Uncommon',
   5:'Uncommon',6:'Uncommon',7:'Rare',8:'Rare',
@@ -3715,7 +3730,7 @@ const CARDS = {
   CB: { id:'CB', name:'Corner Block',     faction:'Basic', rarity:'Common',   type:'Wall',
         desc:'Place two 2-tile walls in an L-shape: the second wall must be perpendicular and adjacent to the first.', wallLen:2, special:'cornerPiece', energyCost:1 },
   RC: { id:'RC', name:'Reconstruction',   faction:'Basic', rarity:'Common',   type:'Disruption',
-        desc:'Remove one of your own walls anywhere on the board. Draw 1 card.', energyCost:1 },
+        desc:'Remove one of your own walls anywhere on the board. Draw 1 card.', energyCost:1, selfRemove:true },
   AV: { id:'AV', name:'Advance',          faction:'Basic', rarity:'Uncommon', type:'Movement',
         desc:'Move up to 2 spaces this turn. Cannot pass walls.', overrideSpeed:2, energyCost:2 },
   QS: { id:'QS', name:'Quick Step',       faction:'Basic', rarity:'Common', type:'Movement',
@@ -3729,7 +3744,7 @@ const CARDS = {
   B01:{ id:'B01', name:'Detour',           faction:'Basic', rarity:'Common',   type:'Movement',
         desc:'Move 1 space in any direction (including diagonal). Walls block movement.', overrideSpeed:1, diagonal:true, energyCost:1 },
   B04:{ id:'B04', name:'Salvage Parts',    faction:'Basic', rarity:'Common',   type:'Disruption',
-        desc:'Remove one of your own walls. Place a 1-tile wall at any legal location.', energyCost:1 },
+        desc:'Remove one of your own walls. Place a 1-tile wall at any legal location.', energyCost:1, selfRemove:true },
   B09:{ id:'B09', name:'Brace',            faction:'Basic', rarity:'Rare',     type:'Disruption',
         desc:'Your walls cannot be moved or destroyed by the opponent until start of your next turn.', energyCost:1 },
   B10:{ id:'B10', name:'Flanking Path',    faction:'Basic', rarity:'Uncommon', type:'Movement',
@@ -3741,7 +3756,7 @@ const CARDS = {
   B13:{ id:'B13', name:'Desperation Sprint', faction:'Basic', rarity:'Rare',   type:'Movement',
         desc:'Move up to 3 spaces. Bound next turn — no movement or movement cards allowed (may still play other cards).', overrideSpeed:3, special:'desperation', energyCost:3 },
   B14:{ id:'B14', name:'Deadlock Breaker', faction:'Basic', rarity:'Rare',     type:'Disruption',
-        desc:'Remove any 1 wall from the board (yours or opponent, including reinforced). Cannot target Legendary walls.', energyCost:2 },
+        desc:'Remove any 1 wall from the board (yours or opponent, including reinforced). Cannot target Legendary walls.', energyCost:2, selfRemove:true },
 
   // ── ARCHITECTS ───────────────────────────────────────────────────────
   AR1: { id:'AR1', name:'Reinforced Slab',  faction:'Architects', rarity:'Common',   type:'Wall',
@@ -3924,7 +3939,7 @@ const CARDS = {
   AR16:{ id:'AR16',name:'Foundation Tap',   faction:'Architects', rarity:'Common', type:'Disruption',
          desc:'Gain +1 energy for every 3 walls you currently have in play (rounded down).', energyCost:1 },
   AR17:{ id:'AR17',name:'Demolish for Parts', faction:'Architects', rarity:'Uncommon', type:'Disruption',
-         desc:'Remove one of your own walls. Gain +1 energy this turn.', energyCost:0 },
+         desc:'Remove one of your own walls. Gain +1 energy this turn.', energyCost:0, selfRemove:true },
 
   // Pathfinders energy cards
   PF17:{ id:'PF17',name:'Runner\'s High',  faction:'Pathfinders', rarity:'Common', type:'Movement',
@@ -4055,7 +4070,7 @@ let selectedCard = null;   // {id, idx, length, isPhantom, isDurable} or null
 let hasMoved = false;       // whether champion has moved this turn
 let hasPlayedCard = false;  // whether a card has been played this turn
 let selectedChampionId = null;
-let aiDifficulty = 'medium'; // 'easy' | 'medium' | 'hard'
+let aiDifficulty = 'medium'; // 'easy' | 'medium' | 'hard' | 'nightmare'
 const DIFFICULTY_DEPTH = { easy: 0, medium: 1, hard: 2 };
 
 // ── Game mode: 'idle' | 'sp' (singleplayer) | 'mp' (multiplayer) ──
@@ -4561,7 +4576,7 @@ function initGauntletGame(playerChamp, aiChamp, playerDeckIds, aiDeckCards) {
   mp_isMultiplayer = false;
   mp_gameId = null; mp_localSeat = null; mp_opponentName = null;
   if (mp_subscription && _sb) { _sb.removeChannel(mp_subscription); mp_subscription = null; }
-  aiDifficulty = 'hard';
+  // Note: aiDifficulty is set by the caller (startGauntletCombat) via getGauntletDifficulty().
 
   gameState = {
     players: [
@@ -6971,10 +6986,24 @@ function addLog(player, type, message) {
 //   hard:   fully evaluates every candidate wall, prioritises blocking
 
 // Difficulty base weights
+// AI capability ladder. Higher tiers ENABLE more strategies and deeper search;
+// they don't change personality (faction modifiers do that). Each tier is a strict
+// superset of the one below.
+//   me / opp:       weights for own-progress vs opponent-disruption
+//   wallCands:      number of wall placements evaluated per turn
+//   tubePlay:       enables strategy_tube (deny opponent wall placements)
+//   gatePlay:       enables strategy_gate (wall chokepoints, plan to remove later)
+//   selfRemoveDisc: discount own-path penalty when self-removal is in hand
+//   lookahead:      1 = greedy, 2 = minimax with opponent reply
+//   topN:           candidates re-scored at depth-2 (0 if lookahead === 1)
+//   openingBook:    early-game wall placement bias
+//   dynamicDepth3:  bump to depth-3 when board is wall-heavy
+//   modelOppHand:   account for opponent's specific cards in threat estimation
 const AI_WEIGHTS = {
-  easy:   { me: 10, opp: 4,  wallCands: 12 },
-  medium: { me: 8,  opp: 10, wallCands: 24 },
-  hard:   { me: 6,  opp: 16, wallCands: 64 },
+  easy:      { me: 10, opp: 4,  wallCands: 12, tubePlay: false, gatePlay: false, selfRemoveDisc: false, lookahead: 1, topN: 0,  openingBook: false, dynamicDepth3: false, modelOppHand: false },
+  medium:    { me: 8,  opp: 10, wallCands: 24, tubePlay: true,  gatePlay: true,  selfRemoveDisc: true,  lookahead: 1, topN: 0,  openingBook: false, dynamicDepth3: false, modelOppHand: false },
+  hard:      { me: 6,  opp: 16, wallCands: 48, tubePlay: true,  gatePlay: true,  selfRemoveDisc: true,  lookahead: 2, topN: 8,  openingBook: true,  dynamicDepth3: false, modelOppHand: false },
+  nightmare: { me: 5,  opp: 18, wallCands: 64, tubePlay: true,  gatePlay: true,  selfRemoveDisc: true,  lookahead: 2, topN: 12, openingBook: true,  dynamicDepth3: true,  modelOppHand: true  },
 };
 
 // Faction strategy modifiers — how each faction weights move vs wall actions
@@ -6986,6 +7015,110 @@ function getAIFaction() {
   const seat = gameState?.activePlayer ?? AI_PLAYER;
   return gameState?.players[seat]?.champion?.faction || 'Architects';
 }
+
+// ═════════════════════════════════════════════════════════════════════
+// GAME-MODE ADAPTER LAYER  (the AI's contract with game modes)
+// ═════════════════════════════════════════════════════════════════════
+// Design principle: the AI never branches on `gameConfig.mode`. It asks
+// the active adapter four questions and the adapter handles the dispatch.
+// This is the seam that lets us add new game modes without touching AI
+// strategy code — implement an adapter, register it, the AI inherits
+// every strategy module (tube, gate, disruption, lookahead) for free.
+//
+// Adapter contract (the only methods strategy code may call):
+//   getObjective(pi)          → { type: 'row'|'tile'|'zone', target: ... }
+//                                Describes what this player is trying to reach.
+//   bfsToObjective(pos, walls, pi)  → int distance through walls (Infinity if unreachable)
+//   pathToObjective(pos, walls, pi) → array of intermediate tiles on shortest path
+//                                     (excludes start; tube/gate strategies need this)
+//   getThreats(pi)            → array of seat indices the AI should disrupt
+//
+// All strategy modules (computeStrategicContext, strategy_tube, strategy_gate,
+// future patterns) take a `pi` and call these methods — they MUST NOT call
+// getGoalRow / bfsDistance / mode-checks directly. That's the contract.
+
+// Stateless BFS path reconstructor — generic over goal predicate.
+// Takes walls explicitly (unlike reconstructBFSPath which reads gameState.walls).
+function aiBfsPath(from, walls, isGoalFn, moverPi) {
+  const blocked = buildBlockedEdges(walls, moverPi);
+  const key = p => `${p.row},${p.col}`;
+  const visited = new Map();
+  visited.set(key(from), null);
+  const queue = [from];
+  const dirs = [{r:-1,c:0},{r:1,c:0},{r:0,c:1},{r:0,c:-1}];
+  while (queue.length) {
+    const cur = queue.shift();
+    if (isGoalFn(cur)) {
+      const path = [];
+      let node = cur;
+      while (node && !(node.row === from.row && node.col === from.col)) {
+        path.unshift(node);
+        node = visited.get(key(node));
+      }
+      return path; // includes goal tile, excludes start
+    }
+    for (const d of dirs) {
+      const nb = {row: cur.row + d.r, col: cur.col + d.c};
+      if (nb.row < 0 || nb.row >= BOARD_SIZE || nb.col < 0 || nb.col >= BOARD_SIZE) continue;
+      const k = key(nb);
+      if (visited.has(k)) continue;
+      if (isEdgeBlocked(cur, nb, blocked)) continue;
+      visited.set(k, cur);
+      queue.push(nb);
+    }
+  }
+  return [];
+}
+
+// FFA objective: reach center tile of board.
+function _ffaCenter() {
+  return { row: Math.floor(BOARD_ROWS / 2), col: Math.floor(BOARD_COLS / 2) };
+}
+
+const GameModeAdapters = {
+  '1v1': {
+    getObjective: (pi) => ({ type: 'row', target: getGoalRow(pi) }),
+    bfsToObjective: (pos, walls, pi) => bfsDistanceFor(pos, getGoalRow(pi), walls, pi),
+    pathToObjective: (pos, walls, pi) => {
+      const goal = getGoalRow(pi);
+      return aiBfsPath(pos, walls, (t) => t.row === goal, pi);
+    },
+    getThreats: (pi) => [getFirstOpponent(pi)],
+  },
+  '2v2': {
+    getObjective: (pi) => ({ type: 'row', target: getGoalRow(pi) }),
+    bfsToObjective: (pos, walls, pi) => bfsDistanceFor(pos, getGoalRow(pi), walls, pi),
+    pathToObjective: (pos, walls, pi) => {
+      const goal = getGoalRow(pi);
+      return aiBfsPath(pos, walls, (t) => t.row === goal, pi);
+    },
+    getThreats: (pi) => getOpponents(pi),
+  },
+  'ffa': {
+    getObjective: (pi) => ({ type: 'tile', target: _ffaCenter() }),
+    bfsToObjective: (pos, walls, pi) => {
+      const c = _ffaCenter();
+      const path = aiBfsPath(pos, walls, (t) => t.row === c.row && t.col === c.col, pi);
+      return path.length === 0 && !(pos.row === c.row && pos.col === c.col) ? Infinity : path.length;
+    },
+    pathToObjective: (pos, walls, pi) => {
+      const c = _ffaCenter();
+      return aiBfsPath(pos, walls, (t) => t.row === c.row && t.col === c.col, pi);
+    },
+    getThreats: (pi) => getOpponents(pi),
+  },
+};
+
+function getActiveAdapter() {
+  return GameModeAdapters[gameConfig.mode] || GameModeAdapters['1v1'];
+}
+
+// Convenience wrappers — these are what strategy modules actually call.
+// Keeps the call sites tidy and gives us one chokepoint to add logging / caching later.
+function aiGetObjective(pi)             { return getActiveAdapter().getObjective(pi); }
+function aiBfsToObjective(pos, walls, pi)  { return getActiveAdapter().bfsToObjective(pos, walls, pi); }
+function aiPathToObjective(pos, walls, pi) { return getActiveAdapter().pathToObjective(pos, walls, pi); }
+function aiGetThreats(pi)               { return getActiveAdapter().getThreats(pi); }
 
 // bfsDistanceFor: BFS from a position accounting for phantom walls from the mover's perspective
 function bfsDistanceFor(from, goalRow, walls, moverPi) {
@@ -7008,6 +7141,438 @@ function bfsDistanceFor(from, goalRow, walls, moverPi) {
     }
   }
   return Infinity;
+}
+
+// ═════════════════════════════════════════════════════════════════════
+// STRATEGIC CONTEXT  (computed once per turn, read by all strategies)
+// ═════════════════════════════════════════════════════════════════════
+// The context object is a snapshot of "what the AI knows about now":
+// distances to objective, lead/lag vs threats, resources in hand and deck,
+// and faction modifiers. Strategy modules read from it instead of recomputing
+// — that's how each turn's behavior stays fluid without repeated BFS work.
+//
+// Lifetime: cleared at the start of every runAI() call. Lazily computed on
+// first read within a turn. Mid-turn invalidation isn't needed yet because
+// no strategy module mutates the fields it reads.
+
+let _aiTurnCtx = null;
+function invalidateAITurnContext() { _aiTurnCtx = null; }
+
+// Returns true if a card lets us remove our own walls (RC, B04, B14, AR17 today).
+// Uses the `selfRemove: true` tag on card definitions — adding new self-removal
+// cards just requires tagging them, no AI code change.
+function _isSelfRemoveCard(card) {
+  return card && card.selfRemove === true;
+}
+
+// Returns true if a card lets us pass through walls without removing them
+// (Pathfinder Wind Sprint, Wall Vault, Vaulting Strike, Unstoppable Charge).
+function _isWallBypassCard(card) {
+  return card && (card.ownWallsPassthrough === true || card.tunnelThrough === true);
+}
+
+// Faction-level base weights for strategy modules. These are PERSONALITY
+// modifiers — the dynamic context multipliers (computed below) do most of
+// the work. Pathfinders/Pushers get low tube/gate weights because they have
+// movement tools that bypass walls; investing in walls is less efficient
+// for them.
+const FACTION_TUBE_BASE = {
+  Architects: 1.4, Wardens: 1.2, Trappers: 1.1, Chronists: 1.0,
+  Phantoms: 1.0,
+  Pathfinders: 0.4, Pushers: 0.4,
+};
+const FACTION_GATE_BASE = {
+  Architects: 1.5, Wardens: 1.1, Trappers: 1.0, Chronists: 1.0,
+  Phantoms: 0.9,
+  Pathfinders: 0.5, Pushers: 0.5,
+};
+
+function computeStrategicContext(aiSeat) {
+  const me = gameState.players[aiSeat];
+  const oppSeat = getPriorityTarget(aiSeat);
+  const opp = gameState.players[oppSeat];
+  const walls = gameState.walls;
+
+  // Distances + path through the adapter — mode-blind.
+  const aiDist  = aiBfsToObjective(me.position, walls, aiSeat);
+  const oppDist = aiBfsToObjective(opp.position, walls, oppSeat);
+  const aiPath  = aiPathToObjective(me.position, walls, aiSeat);
+
+  // Self-pass capability: removal cards in hand (deployable now) vs in deck
+  // (eventually deployable). Hand count drives the gate-strategy "readiness"
+  // multiplier; total count tells the AI it's safe to commit to gating.
+  const handAndDeck = [...(me.hand || []), ...(me.deck || [])];
+  const selfRemoveInHand = (me.hand || []).filter(_isSelfRemoveCard).length;
+  const selfRemoveCount  = handAndDeck.filter(_isSelfRemoveCard).length;
+  const wallBypassInHand = (me.hand || []).filter(_isWallBypassCard).length;
+  const wallBypassCount  = handAndDeck.filter(_isWallBypassCard).length;
+  const instantGateInHand = (me.hand || []).some(c => c?.special === 'emergencyBarrier');
+
+  // Threat model: opponent's wall capacity. If they can't place walls, the
+  // tube-denial strategy has nothing to deny — strategy_tube returns 0.
+  const oppWallsAvailable = Math.max(0, (opp.wallLimitCurrent || 0) - (opp.wallsInPlay || 0));
+  const oppWallsInHand    = (opp.hand || []).filter(c => c?.type === 'Wall').length;
+  const oppWallTotalThreat = oppWallsAvailable + oppWallsInHand;
+
+  // Opponent hand awareness (nightmare-only signal — modelOppHand flag).
+  // Counts the opponent's "rush" tools (movement cards that close distance fast)
+  // and their "anti-wall" tools (cards that destroy our walls). Higher counts
+  // mean: be more disruptive (rush threat) and prefer reinforced/durable walls
+  // (anti-wall threat). Always populated; modules read conditionally on flag.
+  const oppMoveThreatsInHand = (opp.hand || []).filter(c =>
+    c?.type === 'Movement' && (c.overrideSpeed || 0) >= 2
+  ).length;
+  const oppAntiWallInHand = (opp.hand || []).filter(c =>
+    c?.selfRemove === true || c?.special === 'wallShrink' || c?.id === 'B14'
+  ).length;
+
+  // Phase — opening/mid/late. Used by strategy modules to gate themselves
+  // (e.g., gating near goal is mostly a late-game pattern).
+  const turn = gameState.turnNumber || 1;
+  const phase = turn <= 4 ? 'opening' : turn <= 12 ? 'mid' : 'late';
+
+  // Lead/lag vs primary threat. Negative = AI is closer to objective than opp.
+  // Drives strategy_tube weighting (only valuable when ahead or near-tied).
+  const leadDelta = aiDist - oppDist;
+
+  return {
+    aiSeat, oppSeat,
+    aiPos: me.position, oppPos: opp.position,
+    aiDist, oppDist, leadDelta,
+    aiPath,                                   // intermediate tiles to objective
+    selfRemoveInHand, selfRemoveCount,
+    wallBypassInHand, wallBypassCount,
+    instantGateInHand,
+    oppWallsAvailable, oppWallsInHand, oppWallTotalThreat,
+    oppMoveThreatsInHand, oppAntiWallInHand,
+    turn, phase,
+    factionTubeBase: FACTION_TUBE_BASE[getAIFaction()] ?? 1.0,
+    factionGateBase: FACTION_GATE_BASE[getAIFaction()] ?? 1.0,
+    weights: AI_WEIGHTS[aiDifficulty] || AI_WEIGHTS.medium,
+  };
+}
+
+// Cached accessor — strategy modules call this, not computeStrategicContext directly.
+function getAITurnContext() {
+  if (_aiTurnCtx === null) {
+    _aiTurnCtx = computeStrategicContext(gameState.activePlayer);
+  }
+  return _aiTurnCtx;
+}
+
+// ═════════════════════════════════════════════════════════════════════
+// STRATEGY MODULE: TUBE-PLAY  (deny opponent wall placements on AI's path)
+// ═════════════════════════════════════════════════════════════════════
+// "Tube-play" means placing walls along your own corridor so that opponent
+// walls which would have blocked you are now ILLEGAL (would orphan a player
+// from their goal, violating the path-exists rule). Each AI wall that
+// achieves this is doubly valuable: it marginally slows the opponent AND
+// permanently shrinks the opponent's set of useful future walls.
+//
+// Counts opponent wall placements that:
+//   (a) Would have been LEGAL in wallsBefore
+//   (b) Would have BLOCKED the AI (within reach of the AI's path)
+//   (c) Are now ILLEGAL in wallsAfter
+// Returns the count.
+//
+// Performance note: bounded by enumerating only candidates within 1 tile
+// of the AI's wall placement (where denials physically can occur). On a
+// 9x9 board this is typically 8-20 candidates, each costing 2 isWallLegal
+// calls (~1ms total per wall action evaluated).
+function countDeniedOppBlockers(wallsBefore, wallsAfter, aiSeat) {
+  const me = gameState.players[aiSeat];
+  const oppSeat = getPriorityTarget(aiSeat);
+  const opp = gameState.players[oppSeat];
+  if (!me || !opp) return 0;
+
+  // Find the wall(s) we just placed — that's where denial happens
+  const beforeIds = new Set(wallsBefore.map(w => w.id));
+  const newWalls = wallsAfter.filter(w => !beforeIds.has(w.id));
+  if (newWalls.length === 0) return 0;
+
+  // Build candidate opponent wall set near our placement
+  const seen = new Set();
+  const candidates = [];
+  for (const nw of newWalls) {
+    for (let dr = -1; dr <= 1; dr++) {
+      for (let dc = -1; dc <= 1; dc++) {
+        const r = nw.anchor.row + dr, c = nw.anchor.col + dc;
+        for (const orient of ['H', 'V']) {
+          for (let len = 1; len <= 2; len++) {
+            const k = `${r},${c},${orient},${len}`;
+            if (seen.has(k)) continue;
+            seen.add(k);
+            // Bounds check (wallInBounds equivalent — H walls span cols, V walls span rows)
+            if (r < 0 || c < 0) continue;
+            if (orient === 'H' && (r > BOARD_SIZE - 2 || c > BOARD_SIZE - len)) continue;
+            if (orient === 'V' && (r > BOARD_SIZE - len || c > BOARD_SIZE - 2)) continue;
+            candidates.push({ anchor: { row: r, col: c }, orientation: orient, length: len });
+          }
+        }
+      }
+    }
+  }
+
+  let denied = 0;
+  for (const cand of candidates) {
+    // Was this opponent wall LEGAL before our placement?
+    const wasLegal = isWallLegal(cand.anchor, cand.orientation, cand.length,
+                                 wallsBefore, opp.position, me.position, false);
+    if (!wasLegal) continue;
+    // Is it now ILLEGAL after our placement?
+    const stillLegal = isWallLegal(cand.anchor, cand.orientation, cand.length,
+                                   wallsAfter, opp.position, me.position, false);
+    if (!stillLegal) denied++;
+  }
+  return denied;
+}
+
+// Dynamic multiplier — the FLUIDITY mechanism. Tube-play is only valuable
+// when the AI is ahead/tied AND has path left to protect AND the opponent
+// has walls available to deny. This function turns those four signals into
+// a single multiplier; when any signal goes to zero, tube-play self-disables.
+function computeTubeMultiplier(ctx) {
+  let m = 1.0;
+  // (a) Lead/lag — only protect when ahead or tied; flip to disruption when behind
+  if      (ctx.leadDelta < -1) m *= 1.6;
+  else if (ctx.leadDelta <= 0) m *= 1.1;
+  else                         m *= 0.4;
+  // (b) Path length — short path = nothing left to protect
+  if      (ctx.aiDist <= 2) m *= 0.3;
+  else if (ctx.aiDist <= 4) m *= 0.7;
+  // (c) Threat — no opponent walls to deny means tube has no value (HARD ZERO)
+  if (ctx.oppWallTotalThreat === 0) return 0;
+  if (ctx.oppWallsInHand >= 3) m *= 1.4;
+  // (d) Phase — early walls have less denial leverage (path not yet committed)
+  if      (ctx.phase === 'opening') m *= 0.6;
+  else if (ctx.phase === 'late')    m *= 1.2;
+  return m * ctx.factionTubeBase;
+}
+
+// Top-level strategy entry. Returns the bonus to add to a wall action's score.
+// Returns 0 if tube-play is disabled at the current difficulty or if the
+// dynamic multiplier collapses to zero.
+function strategy_tube(action, wallsBefore, wallsAfter, ctx) {
+  if (action.type !== 'wall' && action.type !== 'phantom') return 0;
+  if (!ctx.weights.tubePlay) return 0;
+  const denied = countDeniedOppBlockers(wallsBefore, wallsAfter, ctx.aiSeat);
+  if (denied === 0) return 0;
+  const mult = computeTubeMultiplier(ctx);
+  if (mult <= 0) return 0;
+  // Each denial is worth ~3 base points × multiplier × difficulty's opp-weight.
+  // The 3.0 keeps tube bonuses comparable in magnitude to disruption bonuses.
+  return denied * 3.0 * mult;
+}
+
+// ═════════════════════════════════════════════════════════════════════
+// STRATEGY MODULE: GATE-PLAY  (wall a chokepoint, plan to clear it later)
+// ═════════════════════════════════════════════════════════════════════
+// "Gate-play" means deliberately walling a chokepoint that hurts the AI's
+// own path because the AI holds removal/bypass cards. The wall blocks the
+// opponent now; the AI clears it on a later turn when ready to advance.
+// Most powerful near the goal (the player's example: gate the goal-row,
+// open it on the winning turn).
+//
+// CHOKEPOINT VALUE  =  how much this wall extends the AI's own BFS.
+// The bigger the chokepoint, the more it blocks the opponent (since they
+// must reroute too) AND the more leverage the gate provides.
+//
+// The gate strategy is gated (pun intended) on:
+//   - selfRemove or wall-bypass capability (otherwise can't reopen)
+//   - readiness (in HAND > in DECK; deployable next turn matters)
+//   - proximity to goal (gating near finish is the key insight)
+//   - lead/lag (gates favor the racing leader)
+//   - phase (rarely worth gating in opening turns)
+function computeGateMultiplier(ctx) {
+  let m = 1.0;
+  // (a) Readiness: removal/bypass in HAND is dramatically more valuable than
+  //     in deck — we can clear the gate next turn instead of "eventually."
+  if      (ctx.selfRemoveInHand > 0)  m *= 1.5;
+  else if (ctx.wallBypassInHand > 0)  m *= 1.2;
+  else if (ctx.selfRemoveCount > 0)   m *= 0.7;
+  else if (ctx.wallBypassCount > 0)   m *= 0.5;
+  else                                 return 0;  // no way to reopen → no gate
+  // (b) Proximity to goal — the user's specific example: gating the finish
+  if      (ctx.aiDist <= 2) m *= 2.0;
+  else if (ctx.aiDist <= 4) m *= 1.5;
+  else if (ctx.aiDist <= 6) m *= 1.0;
+  else                      m *= 0.6;
+  // (c) Lead/lag — gating is most valuable when ahead/tied (you're racing)
+  if   (ctx.leadDelta <= 0) m *= 1.2;
+  else                      m *= 0.7;
+  // (d) Phase — rarely worth gating in opening turns
+  if (ctx.phase === 'opening') m *= 0.5;
+  return m * ctx.factionGateBase;
+}
+
+// Top-level strategy entry. Takes precomputed AI distances (already done by
+// scoreAction) — chokepointValue is just `myDistAfter - myDistBefore` for
+// the AI itself. No extra BFS needed.
+function strategy_gate(action, ctx, myDistBefore, myDistAfter) {
+  if (action.type !== 'wall') return 0;     // phantoms don't physically block
+  if (!ctx.weights.gatePlay) return 0;
+  if (myDistAfter === Infinity) return 0;   // not a gate, an orphan
+  // Chokepoint value = how much OUR OWN distance grew. Walls that don't
+  // affect our path aren't gates (they're pure offense — handled elsewhere).
+  const choke = myDistAfter - myDistBefore;
+  if (choke < 2) return 0;
+  const mult = computeGateMultiplier(ctx);
+  if (mult <= 0) return 0;
+  // 2.0 base × choke × multiplier — magnitude tuned to match wallBonus scale.
+  return choke * 2.0 * mult;
+}
+
+// ═════════════════════════════════════════════════════════════════════
+// LAYER 2 LOOKAHEAD  (2-ply minimax for hard / nightmare)
+// ═════════════════════════════════════════════════════════════════════
+// 1-ply scoring picks the move that looks best NOW. That walks into traps:
+// the AI happily takes "best move" without noticing the opponent will block
+// it on the next turn. Layer 2 adds a single ply of opponent simulation:
+// after the AI's candidate action, model the opponent's best greedy reply,
+// then re-evaluate the resulting position.
+//
+// The opponent is modeled as greedy-BFS (no card logic — we don't know
+// what's in their hand). They pick the better of:
+//   (1) Their best forward move
+//   (2) Their best wall placement to slow the AI (sampled from AI's path)
+//
+// Cost: ~O(path × 8) BFS calls per simulated reply. With top-2 candidates
+// re-scored, that's ~50ms additional per turn at hard/nightmare. Comfortably
+// inside the 5s turn budget.
+
+// Dynamic weight on the lookahead correction. When the board is open (few
+// walls), the opponent has many possible responses and our prediction is
+// noisy — trust 1-ply more. When the board is tight, opponent options are
+// constrained and prediction is reliable — trust lookahead more.
+function computeLookaheadWeight(ctx) {
+  const wallCount = (gameState.walls || []).filter(w => !w.isPhantom).length;
+  if (wallCount >= 8) return 0.8;
+  if (wallCount >= 4) return 0.6;
+  return 0.35;
+}
+
+// Models the opponent's best greedy reply to the AI having just acted.
+// Returns { walls, aiPos, oppPos, aiDistAfter, oppDistAfter } describing
+// the position after the opponent's turn.
+function simulateOpponentReply(walls, aiPos, oppPos, aiSeat) {
+  const oppSeat = getPriorityTarget(aiSeat);
+  const opp = gameState.players[oppSeat];
+  if (!opp) return { walls, aiPos, oppPos, aiDistAfter: Infinity, oppDistAfter: Infinity };
+
+  const aiDistBefore  = aiBfsToObjective(aiPos,  walls, aiSeat);
+  const oppDistBefore = aiBfsToObjective(oppPos, walls, oppSeat);
+
+  // ── OPTION A: Opponent moves toward their objective ──
+  let bestMovePos = oppPos;
+  let bestMoveDist = oppDistBefore;
+  const blocked = buildBlockedEdges(walls, oppSeat);
+  const dirs = [{r:-1,c:0},{r:1,c:0},{r:0,c:1},{r:0,c:-1}];
+  for (const d of dirs) {
+    const nb = { row: oppPos.row + d.r, col: oppPos.col + d.c };
+    if (nb.row < 0 || nb.row >= BOARD_SIZE || nb.col < 0 || nb.col >= BOARD_SIZE) continue;
+    if (isEdgeBlocked(oppPos, nb, blocked)) continue;
+    const dist = aiBfsToObjective(nb, walls, oppSeat);
+    if (dist < bestMoveDist) { bestMoveDist = dist; bestMovePos = nb; }
+  }
+
+  // ── OPTION B: Opponent walls the AI's path ──
+  // Sample candidates near the AI's first 5 path tiles only (cost cap).
+  const aiPath = aiPathToObjective(aiPos, walls, aiSeat);
+  let bestWallSet = walls;
+  let bestWallAiDist = aiDistBefore;
+  const seen = new Set();
+  for (const t of aiPath.slice(0, 5)) {
+    for (let dr = -1; dr <= 0; dr++) {
+      for (let dc = -1; dc <= 0; dc++) {
+        for (const orient of ['H', 'V']) {
+          const r = t.row + dr, c = t.col + dc;
+          const k = `${r},${c},${orient}`;
+          if (seen.has(k)) continue;
+          seen.add(k);
+          if (r < 0 || c < 0) continue;
+          if (orient === 'H' && (r > BOARD_SIZE - 2 || c > BOARD_SIZE - 2)) continue;
+          if (orient === 'V' && (r > BOARD_SIZE - 2 || c > BOARD_SIZE - 2)) continue;
+          if (!isWallLegal({ row: r, col: c }, orient, 2, walls, oppPos, aiPos, false)) continue;
+          const wTest = [...walls, {
+            id: '__sim_opp__', owner: oppSeat,
+            anchor: { row: r, col: c }, orientation: orient, length: 2,
+            isPhantom: false, durable: false, durableHits: 0,
+            immune: false, temporary: false, turnsRemaining: null, placedOnTurn: 0,
+          }];
+          const aiDistAfter = aiBfsToObjective(aiPos, wTest, aiSeat);
+          if (aiDistAfter > bestWallAiDist) {
+            bestWallAiDist = aiDistAfter;
+            bestWallSet = wTest;
+          }
+        }
+      }
+    }
+  }
+
+  // Opponent picks whichever helps them MORE. Their value: their advance + AI's slowdown.
+  const moveValue = (oppDistBefore - bestMoveDist) * 1.0;             // their progress
+  const wallValue = (bestWallAiDist - aiDistBefore) * 0.8;            // our slowdown (slight discount: opp wall is also their action cost)
+  if (wallValue > moveValue && wallValue > 0) {
+    return { walls: bestWallSet, aiPos, oppPos,
+             aiDistAfter: bestWallAiDist, oppDistAfter: oppDistBefore };
+  }
+  return { walls, aiPos, oppPos: bestMovePos,
+           aiDistAfter: aiDistBefore, oppDistAfter: bestMoveDist };
+}
+
+// Apply 2-ply lookahead correction to a candidate card action.
+// Returns the corrected score. Only meaningful for wall/phantom actions —
+// move actions get back the original score (their reply value is already
+// well-estimated by the 1-ply scorer).
+function applyDepth2Lookahead(action, baseScore, st, ctx) {
+  // Only re-score wall/phantom — these are the actions the opponent most
+  // commonly counters with a wall, which is what 2-ply catches.
+  if (!action || (action.kind !== 'wall' && action.kind !== 'phantom')) return baseScore;
+
+  // Apply the AI's action to a simulated wall set
+  const simWalls = [...st.walls, {
+    id: '__sim_d2__', owner: ctx.aiSeat,
+    anchor: action.anchor, orientation: action.orientation, length: action.len,
+    isPhantom: action.kind === 'phantom',
+    durable: false, durableHits: 0,
+    immune: false, temporary: false, turnsRemaining: null, placedOnTurn: 0,
+  }];
+
+  // Now simulate the opponent's reply
+  const reply = simulateOpponentReply(simWalls, ctx.aiPos, ctx.oppPos, ctx.aiSeat);
+
+  // Positional value AFTER opponent's reply: the difference between opp's
+  // distance and AI's distance. Bigger = better for AI.
+  const positional = (reply.oppDistAfter - reply.aiDistAfter);
+  const beta = computeLookaheadWeight(ctx);
+
+  // ── DEPTH-3 LITE CONTINUATION ─────────────────────────────────────
+  // For nightmare on wall-heavy boards: also evaluate the AI's natural
+  // forward move after opponent's reply. This catches "opponent's reply
+  // looks bad, BUT my next move recovers most of it" cases. It's a cheap
+  // partial depth-3: we model only the AI's best 1-step move (not card),
+  // adding 4 BFS calls per re-rank candidate. Total cost: negligible.
+  let continuationGain = 0;
+  const wallCount = simWalls.filter(w => !w.isPhantom).length;
+  if (ctx.weights.dynamicDepth3 && wallCount >= 8 && reply.aiDistAfter !== Infinity) {
+    const dirs = [{r:-1,c:0},{r:1,c:0},{r:0,c:1},{r:0,c:-1}];
+    const blocked = buildBlockedEdges(reply.walls, ctx.aiSeat);
+    let bestDist = reply.aiDistAfter;
+    for (const d of dirs) {
+      const nb = { row: reply.aiPos.row + d.r, col: reply.aiPos.col + d.c };
+      if (nb.row < 0 || nb.row >= BOARD_SIZE || nb.col < 0 || nb.col >= BOARD_SIZE) continue;
+      if (isEdgeBlocked(reply.aiPos, nb, blocked)) continue;
+      const d2 = aiBfsToObjective(nb, reply.walls, ctx.aiSeat);
+      if (d2 < bestDist) bestDist = d2;
+    }
+    // How much we recover by walking forward = continuation upside
+    continuationGain = (reply.aiDistAfter - bestDist) * 0.5;
+  }
+
+  // Penalize the action proportional to how much the opponent's reply
+  // erodes our position. Positional is signed: positive = AI still ahead,
+  // negative = opponent's reply put us behind.
+  return baseScore + positional * beta + continuationGain;
 }
 
 function scoreAction(action, walls, aiPos, oppPos) {
@@ -7077,7 +7642,22 @@ function scoreAction(action, walls, aiPos, oppPos) {
   const aggWeight = blocking ? 0.2 : F.aggression;
   const ctrlWeight = blocking ? 2.5 : F.control;
 
-  const myGain  = (myDistBefore  - myDistAfter)  * aggWeight;
+  // ── SELF-REMOVAL DISCOUNT ──────────────────────────────────────────
+  // When we hold a self-removal card in hand, walls that hurt our own
+  // path are RECOVERABLE — we can clear the wall next turn. Cap the
+  // self-cost at +1 (the cost of using the removal card next turn).
+  // This is what makes the AI willing to wall its own goal-row corridor
+  // because it knows it has RC/B04/AR17 ready to open the gate.
+  // Phantom walls don't physically block, so no discount needed there.
+  let myDistEffective = myDistAfter;
+  if (action.type === 'wall' && W.selfRemoveDisc) {
+    const ctxForDisc = getAITurnContext();
+    if (ctxForDisc.selfRemoveInHand > 0 && myDistAfter > myDistBefore) {
+      myDistEffective = Math.min(myDistAfter, myDistBefore + 1);
+    }
+  }
+
+  const myGain  = (myDistBefore  - myDistEffective) * aggWeight;
   const oppLoss = (oppDistAfter  - oppDistBefore) * ctrlWeight;
   const base    = myGain * W.me + oppLoss * W.opp;
 
@@ -7098,9 +7678,58 @@ function scoreAction(action, walls, aiPos, oppPos) {
   }
 
   if (action.type === 'move')    return base + F.moveBonus + rushBonus;
-  if (action.type === 'wall')    return base + F.wallBonus;
-  if (action.type === 'phantom') return base + F.wallBonus * 0.8;
+
+  // Wall actions: stack base wall value with strategy bonuses.
+  //   tube     — denies opponent wall placements (self-disables when AI behind)
+  //   gate     — wall a chokepoint we can later open (self-disables on no removal)
+  //   opening  — early-game placement preference for midfield-near-opponent
+  //   threat   — extra wall value when opp holds rush cards in hand (nightmare)
+  // All bonuses self-disable through context flags / multipliers, so this single
+  // hook works at every difficulty.
+  if (action.type === 'wall') {
+    const ctx = getAITurnContext();
+    const tubeBonus = strategy_tube(action, walls, newWalls, ctx);
+    const gateBonus = strategy_gate(action, ctx, myDistBefore, myDistAfter);
+    const openingBonus = computeOpeningBookBonus(action, ctx);
+    const threatBonus  = computeRushThreatBonus(ctx);
+    return base + F.wallBonus + tubeBonus + gateBonus + openingBonus + threatBonus;
+  }
+  if (action.type === 'phantom') {
+    const ctx = getAITurnContext();
+    const tubeBonus = strategy_tube(action, walls, newWalls, ctx) * 0.8;
+    const openingBonus = computeOpeningBookBonus(action, ctx) * 0.8;
+    return base + F.wallBonus * 0.8 + tubeBonus + openingBonus;
+  }
   return base + scoreDisruptionContext(oppDistBefore, walls);
+}
+
+// Opening-book bonus: in opening turns, slightly prefer wall placements that
+// occupy midfield rows (between AI and opponent goals) within ±2 cols of the
+// opponent's column. This gives the AI sound opening principles instead of
+// random first moves. Self-disables when openingBook flag is off, when past
+// turn 3, or when the wall is far from the relevant midfield zone.
+function computeOpeningBookBonus(action, ctx) {
+  if (!ctx.weights.openingBook) return 0;
+  if (ctx.turn > 3) return 0;
+  if (!action.anchor) return 0;
+  const oppPos = ctx.oppPos;
+  const myMidRow = Math.floor((ctx.aiPos.row + oppPos.row) / 2);
+  // Bonus if wall is in midfield row band and roughly in opp's column lane
+  const rowDist = Math.abs(action.anchor.row - myMidRow);
+  const colDist = Math.abs(action.anchor.col - oppPos.col);
+  if (rowDist > 1 || colDist > 2) return 0;
+  return 4 - rowDist - (colDist * 0.5);  // +4 best, +2 worst within band
+}
+
+// Rush-threat bonus: when modelOppHand is on and the opponent holds movement
+// cards that close distance fast (>= 2 speed), increase wall value to slow
+// them down preemptively. This is the nightmare-only signal that makes the
+// AI react to specific opponent loadouts, not just current board state.
+function computeRushThreatBonus(ctx) {
+  if (!ctx.weights.modelOppHand) return 0;
+  if (ctx.oppMoveThreatsInHand === 0) return 0;
+  // Each rush card in opp hand = +2 to wall actions, capped at +6
+  return Math.min(ctx.oppMoveThreatsInHand * 2, 6);
 }
 
 // Contextual disruption scoring — replaces flat base-only disruption score
@@ -7135,7 +7764,35 @@ function generateWallCandidates(oppPos, length) {
   const candidates = [];
   const pi = gameState.activePlayer;
 
-  if (aiDifficulty === 'hard') {
+  // ── Tube-play seeding ────────────────────────────────────────────
+  // When tubePlay is enabled, also enumerate anchors along the AI's projected
+  // path so strategy_tube has placements to score. Without this, the existing
+  // opponent-focused candidate generator would never propose tube walls and
+  // the strategy would silently never fire. These tube candidates are added
+  // BEFORE the opponent-focused ones (and survive trim because shuffle()
+  // randomizes selection). On 'easy' we skip this entirely.
+  if (W.tubePlay) {
+    const me = gameState.players[pi];
+    const path = aiPathToObjective(me.position, gameState.walls, pi);
+    for (const t of path) {
+      // For each path tile, enumerate H/V wall anchors at the corner positions
+      // adjacent to the tile (these are the placements that pin the corridor).
+      for (let dr = -1; dr <= 0; dr++) {
+        for (let dc = -1; dc <= 0; dc++) {
+          const r = t.row + dr, c = t.col + dc;
+          if (r < 0 || c < 0) continue;
+          if (r <= BOARD_SIZE - 2 && c <= BOARD_SIZE - length) {
+            candidates.push({ anchor: { row: r, col: c }, orientation: 'H' });
+          }
+          if (r <= BOARD_SIZE - length && c <= BOARD_SIZE - 2) {
+            candidates.push({ anchor: { row: r, col: c }, orientation: 'V' });
+          }
+        }
+      }
+    }
+  }
+
+  if (aiDifficulty === 'hard' || aiDifficulty === 'nightmare') {
     // Full board sweep — every legal anchor position
     for (let r = 0; r <= BOARD_SIZE - 2; r++) {
       for (let c = 0; c <= BOARD_SIZE - length; c++) {
@@ -7341,6 +7998,10 @@ async function runAI() {
   // Mark any walls the AI was adjacent to at start of turn (they survived = real)
   markProbedWalls();
 
+  // Reset the per-turn strategic context cache. It will be lazily rebuilt by
+  // the first scoreAction / strategy module that calls getAITurnContext().
+  invalidateAITurnContext();
+
   const pi        = aiSeat;
   const aiFaction = gameState.players[pi].champion.faction;
 
@@ -7388,7 +8049,7 @@ async function runAI() {
   // ── A: Wall cards (real placement) ────────────────────────────────
   // Early-game wall bonus: On Hard, turns 1-3, prioritize wall placement to
   // build defensive infrastructure before speed factions can rush the goal.
-  const _earlyWallBonus = (aiDifficulty === 'hard' && gameState.turnNumber <= 3) ? 15 : 0;
+  const _earlyWallBonus = ((aiDifficulty === 'hard' || aiDifficulty === 'nightmare') && gameState.turnNumber <= 3) ? 15 : 0;
   const _aiEnergy = gameState.players[pi].energyCurrent;
   if (st.aiWalls < st.aiLimit && !_aiCardPhaseBlocked && _aiEmbargoType !== 'Wall') {
     const wallCards = st.aiHand.filter(c =>
@@ -7996,9 +8657,30 @@ async function runAI() {
     }
   }
 
+  // ── LAYER 2 LOOKAHEAD: re-rank top candidates by 2-ply minimax ───
+  // For hard/nightmare only, after the 1-ply scorer has identified the top
+  // two card actions, simulate opponent's best reply to each and pick the
+  // one that survives the reply better. This catches the "AI walks into a
+  // prepared wall" failure mode without paying for full minimax search.
+  // top-N=2 here is the compromise that doesn't require refactoring the
+  // entire card-selection loop into a candidate pool.
+  const _W = AI_WEIGHTS[aiDifficulty];
+  if (_W && _W.lookahead >= 2 && bestCardAction !== null && secondBestCardAction !== null) {
+    const ctxLA = getAITurnContext();
+    const bestRescored   = applyDepth2Lookahead(bestCardAction,   bestCardScore,   st, ctxLA);
+    const secondRescored = applyDepth2Lookahead(secondBestCardAction, secondBestCardScore, st, ctxLA);
+    if (secondRescored > bestRescored) {
+      console.log('[AI] Lookahead swap: second-best (rescored', secondRescored.toFixed(2),
+                  ') beats best (rescored', bestRescored.toFixed(2), ')');
+      bestCardAction = secondBestCardAction;
+      bestCardScore  = secondRescored;
+    }
+  }
+
   // ── Difficulty: maybe downgrade card action to 2nd best ──────────
-  // hard: always picks best. medium: 75% best / 25% 2nd. easy: 50/50.
-  if (aiDifficulty !== 'hard' && secondBestCardAction !== null) {
+  // hard/nightmare: always pick the (post-lookahead) best.
+  // medium: 75% best / 25% 2nd. easy: 50/50.
+  if (aiDifficulty !== 'hard' && aiDifficulty !== 'nightmare' && secondBestCardAction !== null) {
     const threshold = aiDifficulty === 'medium' ? 0.75 : 0.50;
     if (Math.random() >= threshold) {
       bestCardAction = secondBestCardAction;
@@ -8045,8 +8727,8 @@ async function runAI() {
   }
 
   // ── Difficulty: maybe downgrade move to 2nd best ──────────────────
-  // hard: always picks best. medium: 75% best / 25% 2nd. easy: 50/50.
-  if (aiDifficulty !== 'hard' && secondBestMoveDest !== null) {
+  // hard/nightmare: always picks best. medium: 75% best / 25% 2nd. easy: 50/50.
+  if (aiDifficulty !== 'hard' && aiDifficulty !== 'nightmare' && secondBestMoveDest !== null) {
     const threshold = aiDifficulty === 'medium' ? 0.75 : 0.50;
     if (Math.random() >= threshold) {
       bestMoveDest = secondBestMoveDest;
@@ -9182,7 +9864,7 @@ function startGauntletCombat(node) {
     };
     const bossDeck = b.deck.map(id => ({...CARDS[id]})).filter(Boolean);
     initGauntletGame(_gauntletRun.champion, bossChamp, _gauntletRun.deck, bossDeck);
-    aiDifficulty = 'hard';
+    aiDifficulty = getGauntletDifficulty(stage, 'boss');
     applyBossBoard({ preWalls: b.preWalls });
     return;
   }
@@ -9197,6 +9879,7 @@ function startGauntletCombat(node) {
   // Store opponent info for elite card rewards
   _gauntletRun._lastOpponent = { champion: aiChamp, deckIds: aiDeck.map(c => c.id) };
   initGauntletGame(_gauntletRun.champion, aiChamp, _gauntletRun.deck, aiDeck);
+  aiDifficulty = getGauntletDifficulty(stage, node.type);
 }
 
 function applyBossBoard(board) {
@@ -9838,6 +10521,9 @@ function startGauntletFFA() {
     decks: [_gauntletRun.deck, null, null, null],
     teams: null,
   });
+
+  // Apply gauntlet-stage difficulty to FFA bots (overrides the exhibition-set default)
+  aiDifficulty = getGauntletDifficulty(stage, 'ffa_race');
 
   // Store gauntlet context AFTER init so the flag is on the new gameState
   gameState._gauntletFFAReturn = true;
@@ -10662,6 +11348,7 @@ function showChampionSelect() {
         <button class="diff-btn" id="diff-easy"   onclick="setDifficulty('easy')">EASY</button>
         <button class="diff-btn active" id="diff-medium" onclick="setDifficulty('medium')">MEDIUM</button>
         <button class="diff-btn" id="diff-hard"   onclick="setDifficulty('hard')">HARD</button>
+        <button class="diff-btn nightmare" id="diff-nightmare" onclick="setDifficulty('nightmare')">NIGHTMARE</button>
       </div>
       <button id="cs-confirm" onclick="confirmChampionSelect()" disabled style="
         padding:14px 48px;background:transparent;border:1px solid var(--amber);
@@ -10709,9 +11396,12 @@ function setExhibitionMode(mode) {
 
 function setDifficulty(level) {
   aiDifficulty = level;
-  ['easy', 'medium', 'hard'].forEach(l => {
+  ['easy', 'medium', 'hard', 'nightmare'].forEach(l => {
     const el = document.getElementById('diff-' + l);
-    if (el) el.className = 'diff-btn' + (l === level ? ' active' : '');
+    if (!el) return;
+    // Preserve the 'nightmare' modifier class so its red active state still applies
+    const base = 'diff-btn' + (l === 'nightmare' ? ' nightmare' : '');
+    el.className = base + (l === level ? ' active' : '');
   });
 }
 
