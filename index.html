@@ -4485,6 +4485,7 @@ function createPlayer(index, championIdOrObj, faction, deckCards, overridePos) {
     energyCarryOver: 0,
     exile: [],
     spacesMoved: 0,
+    aiPortfolio: null,  // CTPP plan portfolio (lazy-initialized per AI turn)
   };
 }
 
@@ -4845,8 +4846,17 @@ function getLegalMoves(state, pIdx, overrideSpeed, tunnelThrough, diagonal, ownW
     if (hasMartialLaw) speed = Math.max(0, speed - 1);
   }
   const opPos = opponent.position;
-  // Build set of all other player positions for collision detection
-  const otherPosSet = new Set(otherPlayers.map(p => `${p.position.row},${p.position.col}`));
+  // Build set of all other player positions for collision detection.
+  // In FFA, EXCLUDE players who have already finished — their pawn is still
+  // sitting on the goal tile, but logically they've left the race. Without
+  // this exclusion, remaining AIs can never step onto the center tile to
+  // claim 2nd/3rd place because the winner's pawn blocks it.
+  const finishedSet = state._ffaFinished;
+  const otherPosSet = new Set(
+    otherPlayers
+      .filter(p => !(finishedSet && finishedSet.has(p.index)))
+      .map(p => `${p.position.row},${p.position.col}`)
+  );
   const key = p => `${p.row},${p.col}`;
 
   const visited = new Set([key(pos)]);
@@ -7135,8 +7145,11 @@ function addLog(player, type, message) {
 //   openingBook:    early-game wall placement bias
 //   dynamicDepth3:  bump to depth-3 when board is wall-heavy
 //   modelOppHand:   account for opponent's specific cards in threat estimation
+// Easy now uses what used to be Hard's greedy settings (per design). Medium/
+// Hard/Nightmare also get CTPP on top — Easy stays pure greedy with these
+// upgraded weights so the full difficulty ladder gets stronger overall.
 const AI_WEIGHTS = {
-  easy:      { me: 9,  opp: 7,  wallCands: 16, tubePlay: false, gatePlay: false, selfRemoveDisc: false, lookahead: 1, topN: 0,  openingBook: false, dynamicDepth3: false, modelOppHand: false },
+  easy:      { me: 5,  opp: 18, wallCands: 48, tubePlay: true,  gatePlay: true,  selfRemoveDisc: true,  lookahead: 2, topN: 8,  openingBook: true,  dynamicDepth3: false, modelOppHand: false },
   medium:    { me: 7,  opp: 13, wallCands: 32, tubePlay: true,  gatePlay: true,  selfRemoveDisc: true,  lookahead: 1, topN: 0,  openingBook: false, dynamicDepth3: false, modelOppHand: false },
   hard:      { me: 5,  opp: 18, wallCands: 48, tubePlay: true,  gatePlay: true,  selfRemoveDisc: true,  lookahead: 2, topN: 8,  openingBook: true,  dynamicDepth3: false, modelOppHand: false },
   nightmare: { me: 4,  opp: 22, wallCands: 64, tubePlay: true,  gatePlay: true,  selfRemoveDisc: true,  lookahead: 2, topN: 12, openingBook: true,  dynamicDepth3: true,  modelOppHand: true  },
@@ -8126,6 +8139,1612 @@ function markProbedWalls() {
   }
 }
 
+// ═════════════════════════════════════════════════════════════════════════
+// CTPP — Contingency-Tree Portfolio Planning (scaffolding, Milestone 0)
+// ─────────────────────────────────────────────────────────────────────────
+// All behavior gated behind window._ctppEnabled (default false). Existing
+// AI runs unchanged until the flag is flipped. Stubs here will be fleshed
+// out across Milestones 1–7. Do NOT add real scoring logic in this section
+// without gating by _ctppEnabled.
+// ═════════════════════════════════════════════════════════════════════════
+
+// Feature flags (safe defaults: both off). Set from console / test harness.
+window._ctppEnabled  = window._ctppEnabled  === true;  // master toggle
+window._ctppTestMode = window._ctppTestMode === true;  // seeded RNG + AI-vs-AI
+
+// Difficulty tiers — Easy uses current greedy AI; Medium/Hard/Nightmare
+// route through CTPP once lifecycle is live (Milestone 1+).
+const CTPP_DIFFICULTY_TIERS = {
+  easy:      { useCtpp: false, portfolioSize: 0, lookahead: 0, deckMode: 'none',          softmaxTemp: Infinity },
+  medium:    { useCtpp: true,  portfolioSize: 2, lookahead: 3, deckMode: 'probabilistic', softmaxTemp: 1.5 },
+  hard:      { useCtpp: true,  portfolioSize: 3, lookahead: 4, deckMode: 'exact',         softmaxTemp: 0.75 },
+  nightmare: { useCtpp: true,  portfolioSize: 5, lookahead: 5, deckMode: 'exact',         softmaxTemp: 0.25 },
+};
+
+function ctppGetTier() {
+  const d = (typeof aiDifficulty === 'string' ? aiDifficulty : 'hard');
+  return CTPP_DIFFICULTY_TIERS[d] || CTPP_DIFFICULTY_TIERS.hard;
+}
+
+// ─── CTPP tuning constants ─────────────────────────────────────────────
+// Score-augmentation weights: how much plan endorsement adds to greedy score.
+// Calibrated so that full endorsement (weight 1.0) is comparable to "one tile
+// of progress" — strong enough to break ties between equally good moves but
+// not overwhelm the greedy heuristic on obviously-better options.
+//
+// Raising CTPP_MOVE_WEIGHT makes the plan "dominant" over the greedy scorer;
+// lowering it makes CTPP a gentle nudge. 3.0 currently lets the plan beat a
+// 1-tile progress tie but not a 2+ tile advantage.
+const CTPP_MOVE_WEIGHT   = 3.0;   // Phase 2 move scoring + Phase 3b energy loop
+// Phase 4 distance-recalc is measured in tiles; this is the tile-equivalent
+// bias a fully-endorsed move gets. 1.5 means CTPP overrules greedy ties and
+// 1-tile differences but not larger gaps.
+const CTPP_PHASE4_WEIGHT = 1.5;
+// Game rule constant — matches `performDraw()` cards-per-turn. If the game
+// ever changes draw-per-turn, update this.
+const CTPP_DRAWS_PER_TURN = 2;
+
+// ── Group A: Plan generation / portfolio ─────────────────────────────────
+function ctppInitPortfolio(pi) {
+  gameState.players[pi].aiPortfolio = {
+    plans: [],
+    primaryId: null,
+    lastUpdatedTurn: -1,
+    archetypeQuota: { Rush: 1, Gate: 1, Tunnel: 1, Siege: 1, PhantomBait: 1, Scramble: 0 },
+    deckProjection: null,
+  };
+  return gameState.players[pi].aiPortfolio;
+}
+
+function ctppResetPortfolio(pi) {
+  if (gameState?.players?.[pi]) gameState.players[pi].aiPortfolio = null;
+}
+
+// Deck projection — snapshot of hand + deck state.
+//   mode 'exact'         : keeps full ordered deck array (Hard/Nightmare)
+//   mode 'probabilistic' : keeps only card counts (Medium — fog-of-war order)
+function ctppBuildDeckProjection(pi, mode) {
+  const p = gameState.players[pi];
+  if (!p) return null;
+  const hand = (p.hand || []).map(c => c?.id).filter(Boolean);
+  const deckOrder = (p.deck || []).map(c => c?.id).filter(Boolean);
+  const deckCounts = {};
+  for (const id of deckOrder) deckCounts[id] = (deckCounts[id] || 0) + 1;
+  return {
+    mode: mode || 'exact',
+    handSnapshot:   hand,
+    exactOrder:     mode === 'exact' ? deckOrder : null,
+    deckCounts,
+    deckSize:       deckOrder.length,
+    lastDeckLength: deckOrder.length,
+    drawsPerTurn:   CTPP_DRAWS_PER_TURN,
+    probCache:      new Map(),
+    builtOnTurn:    gameState.turnNumber,
+  };
+}
+
+// Ability projection — when is each champion ability available?
+// Passives are always-on; ultimates have charge-based cooldowns.
+function ctppBuildAbilityProjection(pi) {
+  const me = gameState.players[pi];
+  const champ = me?.champion;
+  if (!champ) return null;
+
+  const cost = champ.ultimateCost || 3;
+  const charge = me.ultimateCharge || 0;
+  const ready = me.ultimateReady === true;
+  const used = me.ultimateUsed === true;
+  // Each turn start gains ~1 charge. If used this turn, can't use again until reset + recharge.
+  const turnsUntilReady = ready ? 0
+    : (used ? cost + 1 : Math.max(1, cost - charge));
+
+  return {
+    champId: champ.id,
+    faction: champ.faction,
+    passive: {
+      name: champ.passive?.name || null,
+      // Tags matter for archetype biasing.
+      wallDiscount:    champ.id === 'magnus',        // Master Mason
+      doubleMove:      champ.id === 'soren',         // Fleetfoot (2x moves/turn)
+      blockAdjMove:    champ.id === 'thorne',        // Lockdown Aura
+      phantomTrail:    champ.id === 'nyx',           // Illusory Trail
+      pushOnMove:      champ.id === 'pushaman',      // Chad Aura
+      safeOnOwnTraps:  champ.id === 'shade',         // Trapsmith
+      discardDraw:     champ.id === 'vex',           // Echo Chamber
+    },
+    ultimate: {
+      name: champ.ultimate?.name || null,
+      type: champ.ultimate?.type || null,            // scramble/movement/refill/stealth/etc.
+      ready, used, charge, cost, turnsUntilReady,
+      // Known-useful ult types
+      isScramble: champ.id === 'thorne',             // Total Reordering
+      isStealth:  champ.id === 'nyx',                // Veil of Shadows
+      isBreach:   champ.id === 'pushaman',           // Breach (burst move)
+      isRefill:   champ.id === 'magnus',             // Living Blueprint
+    },
+  };
+}
+
+// ─── CTPP archetype helpers ───────────────────────────────────────────────
+
+// Scan hand+deck for the best card matching a predicate. Returns the one that
+// arrives earliest (exact) or has highest probability (probabilistic).
+function _ctppFindCard(pi, predicate) {
+  const me = gameState.players[pi];
+  if (!me) return null;
+  const port = me.aiPortfolio;
+  const tier = ctppGetTier();
+  const mode = tier?.deckMode === 'probabilistic' ? 'probabilistic' : 'exact';
+  const proj = port?.deckProjection || ctppBuildDeckProjection(pi, mode);
+
+  // Check hand first — known cards, prob 1.0.
+  for (const c of (me.hand || [])) {
+    if (c && predicate(c)) {
+      return { cardId: c.id, card: c, arrivalTurn: gameState.turnNumber, arrivalProb: 1.0, inHand: true };
+    }
+  }
+  // Scan deck — in probabilistic mode, multiple copies of the same id share
+  // the same arrival info, so dedupe by id to avoid redundant cache lookups.
+  const seen = new Set();
+  let best = null;
+  for (let i = 0; i < (me.deck || []).length; i++) {
+    const c = me.deck[i];
+    if (!c || !predicate(c)) continue;
+    if (seen.has(c.id)) continue;
+    seen.add(c.id);
+    const info = ctppCardArrivalInfo(c.id, gameState.turnNumber, proj, [], me.deck.map(x => x?.id).filter(Boolean));
+    if (!best || info.arrivalTurn < best.arrivalTurn ||
+        (info.arrivalTurn === best.arrivalTurn && info.arrivalProb > best.arrivalProb)) {
+      best = { cardId: c.id, card: c, arrivalTurn: info.arrivalTurn, arrivalProb: info.arrivalProb, inHand: false };
+    }
+  }
+  return best;
+}
+
+// Predicates for common card roles. Card schema uses `type: 'Wall'|'Movement'|
+// 'Disruption'` (capitalized) and `phantom: true` for phantom walls.
+const _ctppIsWallCard        = (c) => c && c.type === 'Wall' && c.phantom !== true;
+const _ctppIsPhantomWallCard = (c) => c && c.type === 'Wall' && c.phantom === true;
+const _ctppIsSelfRemoveCard  = (c) => c && c.selfRemove === true;
+const _ctppIsBypassCard      = (c) => c && (c.ownWallsPassthrough === true || c.tunnelThrough === true);
+const _ctppIsMovementCard    = (c) => c && c.type === 'Movement';
+
+// Count cards matching a predicate in hand+deck combined. Used for feasibility.
+function _ctppCountCards(pi, predicate) {
+  const me = gameState.players[pi];
+  if (!me) return 0;
+  let n = 0;
+  for (const c of (me.hand || [])) if (c && predicate(c)) n++;
+  for (const c of (me.deck || [])) if (c && predicate(c)) n++;
+  return n;
+}
+
+// Find the most impactful wall-anchor candidates for opponent-disruption walls.
+// Returns up to `topK` candidates ordered by how much they inflate opp distance
+// without breaking path-connectivity (isWallLegal handles that). Horizontal only
+// for simplicity in M3 — V walls add in M3 polish.
+function _ctppFindSiegeWalls(pi, opp, topK = 5, length = 2) {
+  const me = gameState.players[pi];
+  if (!me || !opp) return [];
+  const walls = gameState.walls;
+  const candidates = [];
+  const oppBaseDist = bfsDistanceFor(opp.position, getGoalRow(opp.index), walls, opp.index);
+  if (!Number.isFinite(oppBaseDist)) return [];
+
+  // Walls ahead of opponent (between opp and its goal).
+  const oppGoal = getGoalRow(opp.index);
+  const rowDir = oppGoal > opp.position.row ? 1 : -1;
+  const rowLo = Math.min(opp.position.row, oppGoal);
+  const rowHi = Math.max(opp.position.row, oppGoal);
+  for (let r = rowLo + 1; r <= rowHi; r++) {
+    for (let c = 0; c < BOARD_SIZE - length + 1; c++) {
+      const anchor = { row: r, col: c };
+      for (const orient of ['H', 'V']) {
+        if (!wallInBounds(anchor, orient, length)) continue;
+        if (!isWallLegal(anchor, orient, length, walls,
+                          gameState.players[0].position,
+                          gameState.players[gameState.players.length - 1].position,
+                          false)) continue;
+        const simWalls = [...walls, {
+          id: '__sim__', owner: pi, anchor, orientation: orient,
+          length, isPhantom: false, reinforced: false,
+        }];
+        const newOppDist = bfsDistanceFor(opp.position, oppGoal, simWalls, opp.index);
+        const newMyDist  = bfsDistanceFor(me.position, getGoalRow(pi), simWalls, pi);
+        const myBaseDist = bfsDistanceFor(me.position, getGoalRow(pi), walls, pi);
+        const oppGain = newOppDist - oppBaseDist;
+        const myLoss  = Math.max(0, newMyDist - myBaseDist);
+        // Score: inflate opp path strongly, but don't hurt own path much.
+        const score = oppGain * 3 - myLoss * 2;
+        if (oppGain > 0) candidates.push({ anchor, orient, length, score, oppGain, myLoss });
+      }
+    }
+  }
+  candidates.sort((a, b) => b.score - a.score);
+  return candidates.slice(0, topK);
+}
+
+// Faction → archetype affinity. Multiplicative bonus when scoring candidate plans.
+const CTPP_FACTION_ARCHETYPE_BIAS = {
+  Architects:  { Rush: 0.9, Gate: 1.3, Tunnel: 0.8, Siege: 1.3, PhantomBait: 0.7, Scramble: 1.0 },
+  Pathfinders: { Rush: 1.3, Gate: 0.8, Tunnel: 1.3, Siege: 0.8, PhantomBait: 0.7, Scramble: 1.0 },
+  Wardens:     { Rush: 0.9, Gate: 1.1, Tunnel: 0.8, Siege: 1.2, PhantomBait: 0.7, Scramble: 1.4 },
+  Phantoms:    { Rush: 0.9, Gate: 1.1, Tunnel: 0.9, Siege: 0.9, PhantomBait: 1.4, Scramble: 1.0 },
+  Pushers:     { Rush: 1.2, Gate: 0.9, Tunnel: 0.9, Siege: 1.2, PhantomBait: 0.7, Scramble: 1.0 },
+  Trappers:    { Rush: 0.8, Gate: 1.2, Tunnel: 0.8, Siege: 1.2, PhantomBait: 0.7, Scramble: 1.0 },
+  Chronists:   { Rush: 1.0, Gate: 1.0, Tunnel: 1.0, Siege: 1.0, PhantomBait: 1.0, Scramble: 1.0 },
+};
+
+// Score a candidate plan — lower expectedWinTurn is better. Faction bias
+// applies as a divisor (favored archetype → better score). Confidence also
+// divides: uncertain plans (probabilistic mode) score lower so Medium prefers
+// plans that depend on cards already in hand. At Nightmare, expectedMargin
+// (opp - me win turn) adds a large bonus/penalty — losing the race = -20.
+function _ctppScoreCandidatePlan(plan, pi) {
+  if (!plan) return -Infinity;
+  const me = gameState.players[pi];
+  const faction = me?.champion?.faction;
+  const bias = CTPP_FACTION_ARCHETYPE_BIAS[faction]?.[plan.archetype] || 1.0;
+  const winTurn = plan.metrics?.expectedWinTurn ?? 99;
+  const confidence = plan.confidence ?? 1.0;
+  let score = -winTurn * (1 / bias) / Math.max(0.1, confidence);
+
+  if (aiDifficulty === 'nightmare' && plan.metrics?.expectedMargin !== null
+      && plan.metrics?.expectedMargin !== undefined) {
+    const margin = plan.metrics.expectedMargin;
+    if (margin < 0)      score -= 20;       // AI loses the race — catastrophic
+    else if (margin < 2) score -= 5;        // tight race — still concerning
+    else                 score += margin * 0.5; // comfortable lead
+  }
+  return score;
+}
+
+// Generate candidates across all archetypes, score them, return sorted list.
+// M6: Nightmare layer applies opp-disruption modeling before scoring, so
+// plans vulnerable to opp resources get demoted vs. robust alternatives.
+function ctppGenerateAllCandidates(pi, ctx) {
+  const generators = [
+    ctppGenRushPlan, ctppGenGatePlan, ctppGenTunnelPlan,
+    ctppGenSiegePlan, ctppGenPhantomBaitPlan, ctppGenScramblePlan,
+  ];
+  const candidates = [];
+  for (const gen of generators) {
+    try {
+      const p = gen(pi, ctx);
+      if (p) candidates.push(p);
+    } catch (e) {
+      console.warn('[CTPP] generator threw:', e.message);
+    }
+  }
+
+  // M6: Nightmare opponent modeling — refine metrics per plan.
+  if (aiDifficulty === 'nightmare') {
+    for (const plan of candidates) {
+      const sim = ctppSimulateOpponentAgainstPlan(plan, pi);
+      plan.metrics.expectedOppWinTurn = sim.oppWinTurn;
+      plan.metrics.expectedWinTurn   += sim.disruption;
+      plan.metrics.expectedMargin     = sim.oppWinTurn - plan.metrics.expectedWinTurn;
+      plan.oppModel = {
+        disruption: sim.disruption,
+        oppWallCards: sim.oppWallCards,
+        oppRemovalCards: sim.oppRemovalCards,
+      };
+      // Scramble bonus: if opp has a big lead and we can invalidate their plans.
+      if (plan.archetype === 'Scramble' && sim.oppWinTurn < gameState.turnNumber + 4) {
+        plan.metrics.expectedMargin += 3; // scrambling a near-winning opp is massive
+      }
+    }
+  }
+
+  for (const p of candidates) p._candidateScore = _ctppScoreCandidatePlan(p, pi);
+  candidates.sort((a, b) => b._candidateScore - a._candidateScore);
+  return candidates;
+}
+
+// Softmax selection: higher-scored candidates are preferred, but lower-scored
+// ones can still win. Temperature controls randomness:
+//   temp → 0       : deterministic (always picks best)
+//   temp → infinity: uniform random
+// Returns the picked candidate (or null if list is empty).
+function _ctppSoftmaxPick(candidates, temperature) {
+  if (!candidates || candidates.length === 0) return null;
+  if (candidates.length === 1) return candidates[0];
+  const temp = Math.max(0.01, temperature || 0.5);
+
+  const scores = candidates.map(c => c._candidateScore ?? 0);
+  const maxScore = Math.max(...scores);
+  const exps = scores.map(s => Math.exp((s - maxScore) / temp));
+  const total = exps.reduce((a, b) => a + b, 0);
+  if (!Number.isFinite(total) || total <= 0) return candidates[0];
+
+  let r = Math.random() * total;
+  for (let i = 0; i < candidates.length; i++) {
+    r -= exps[i];
+    if (r <= 0) return candidates[i];
+  }
+  return candidates[candidates.length - 1];
+}
+
+// M4: fill portfolio up to tier.portfolioSize with archetype-diverse candidates,
+// then softmax-pick the primary. Retains existing plans on partial re-fill
+// (e.g., after a PRUNE); top-ups only add archetypes not already present.
+function ctppExpandPortfolio(pi, ctx) {
+  const port = gameState.players[pi].aiPortfolio;
+  if (!port) return;
+  const tier = ctppGetTier();
+  const targetSize = tier.portfolioSize || 1;
+  if (port.plans.length >= targetSize) return;
+
+  const candidates = ctppGenerateAllCandidates(pi, ctx);
+  if (candidates.length === 0) return;
+
+  // Enforce archetype diversity — prefer new archetypes over duplicates.
+  const existing = new Set(port.plans.map(p => p.archetype));
+  const diverse = candidates.filter(c => !existing.has(c.archetype));
+  const slotsLeft = targetSize - port.plans.length;
+
+  // Fill diverse slots first. If not enough diverse candidates, allow duplicates
+  // by topping up from the remaining pool (unlikely with only one gen per archetype,
+  // but safe for future multi-seed generators).
+  const picks = diverse.slice(0, slotsLeft);
+  if (picks.length < slotsLeft) {
+    const extras = candidates.filter(c => !picks.includes(c)).slice(0, slotsLeft - picks.length);
+    picks.push(...extras);
+  }
+
+  for (const plan of picks) {
+    port.plans.push(plan);
+    if (window.CtppHarness?.telemetry) {
+      window.CtppHarness.telemetry.recordLifecycleEvent({
+        turn: gameState.turnNumber, event: 'create',
+        planId: plan.id, archetype: plan.archetype,
+      });
+    }
+  }
+
+  // If we lack a valid primary, softmax-pick from the portfolio.
+  if (!port.primaryId || !port.plans.find(p => p.id === port.primaryId)) {
+    const primary = _ctppSoftmaxPick(port.plans, tier.softmaxTemp);
+    if (primary) port.primaryId = primary.id;
+  }
+}
+
+function ctppGenRushPlan(pi, ctx) {
+  const me = gameState.players[pi];
+  if (!me) return null;
+
+  // aiBfsPath returns the path EXCLUDING the start cell. Prepend current
+  // position so path[0] = start, path[1] = first step, etc. This aligns
+  // with ctppIsPlanStillValid's "at start of turn N, AI should be at path[N-createdTurn]" model.
+  const raw = aiPathToObjective(me.position, gameState.walls, pi);
+  if (!raw || raw.length < 1) return null; // no path or already at goal
+  const path = [{ row: me.position.row, col: me.position.col }, ...raw.map(p => ({ row: p.row, col: p.col }))];
+
+  const curTurn = gameState.turnNumber;
+  const tier    = ctppGetTier();
+  const limit   = Math.min(tier.lookahead, path.length - 1);
+  const timetable = [];
+
+  for (let i = 0; i < limit; i++) {
+    const step = path[i + 1]; // first step at i=0 is path[1]
+    timetable.push({
+      turn: curTurn + i,
+      role: (i === 0 ? 'setup' : (i === limit - 1 ? 'payoff' : 'deploy')),
+      action: { kind: 'move', to: { row: step.row, col: step.col } },
+      expectedCard: null,
+      criticality: 'hard',
+      plannedPos: { row: step.row, col: step.col },
+    });
+  }
+
+  return {
+    id: `Rush_p${pi}_T${curTurn}`,
+    archetype: 'Rush',
+    createdTurn: curTurn,
+    health: 1.0,
+    confidence: 1.0,
+    endorsedActions: {}, // actionKey -> weight (populated each turn by ctppEndorseAction)
+    timetable,
+    path,
+    sharedPrefix: [],
+    dependencies: [],
+    metrics: {
+      expectedWinTurn: curTurn + (path.length - 1),
+      expectedOppWinTurn: null,
+      expectedMargin: 0,
+      riskVariance: 0,
+    },
+  };
+}
+
+// Gate: place wall near own approach to slow opponent, self-remove when passing.
+// Feasibility: needs a wall card + a selfRemove card in hand+deck.
+function ctppGenGatePlan(pi, ctx) {
+  const me = gameState.players[pi];
+  if (!me) return null;
+  if (_ctppCountCards(pi, _ctppIsWallCard) === 0) return null;
+  if (_ctppCountCards(pi, _ctppIsSelfRemoveCard) === 0) return null;
+
+  const wallCard = _ctppFindCard(pi, _ctppIsWallCard);
+  const removeCard = _ctppFindCard(pi, _ctppIsSelfRemoveCard);
+  if (!wallCard || !removeCard) return null;
+
+  // Need the wall before the remove — Gate sequence only works if wall arrives first.
+  if (wallCard.arrivalTurn > removeCard.arrivalTurn) return null;
+
+  // Path from AI to goal — wall is placed on this path at a future step.
+  const raw = aiPathToObjective(me.position, gameState.walls, pi);
+  if (!raw || raw.length < 3) return null;
+  const path = [{ row: me.position.row, col: me.position.col },
+                ...raw.map(p => ({ row: p.row, col: p.col }))];
+
+  // Wall anchor: 2 steps ahead of AI on the path, horizontal, length = wallCard wallLen
+  const wallStep = path[Math.min(2, path.length - 1)];
+  const wallLen = wallCard.card?.wallLen || 2;
+  // Try horizontal wall that crosses this row just ahead of AI. Anchor left of step.
+  const anchor = { row: wallStep.row, col: Math.max(0, Math.min(BOARD_SIZE - wallLen, wallStep.col - 1)) };
+  const orient = 'H';
+  if (!wallInBounds(anchor, orient, wallLen) ||
+      !isWallLegal(anchor, orient, wallLen, gameState.walls,
+                    gameState.players[0].position,
+                    gameState.players[gameState.players.length - 1].position,
+                    false)) {
+    return null;
+  }
+
+  const curTurn = gameState.turnNumber;
+  const tier = ctppGetTier();
+  const wallTurn = Math.max(curTurn, wallCard.arrivalTurn);
+  const removeTurn = Math.max(wallTurn + 2, removeCard.arrivalTurn);
+
+  const timetable = [];
+  for (let t = curTurn, i = 0; t < curTurn + tier.lookahead && i < path.length - 1; t++, i++) {
+    if (t === wallTurn) {
+      timetable.push({
+        turn: t, role: 'setup',
+        action: { kind: 'wall', anchor, orientation: orient, length: wallLen, cardId: wallCard.cardId },
+        expectedCard: { id: wallCard.cardId, arrivalTurn: wallCard.arrivalTurn, arrivalProb: 1.0 },
+        criticality: 'hard',
+      });
+    } else if (t === removeTurn) {
+      timetable.push({
+        turn: t, role: 'payoff',
+        action: { kind: 'play_card', cardId: removeCard.cardId, target: 'own_wall', anchor },
+        expectedCard: { id: removeCard.cardId, arrivalTurn: removeCard.arrivalTurn, arrivalProb: 1.0 },
+        criticality: 'hard',
+      });
+    } else if (i + 1 < path.length) {
+      const step = path[i + 1];
+      timetable.push({
+        turn: t, role: (i === 0 ? 'setup' : 'deploy'),
+        action: { kind: 'move', to: { row: step.row, col: step.col } },
+        expectedCard: null, criticality: 'soft',
+        plannedPos: { row: step.row, col: step.col },
+      });
+    }
+  }
+
+  const gatePlan = {
+    id: `Gate_p${pi}_T${curTurn}`,
+    archetype: 'Gate',
+    createdTurn: curTurn,
+    health: 1.0, confidence: 1.0,
+    endorsedActions: {},
+    timetable, path,
+    gateWall: { anchor, orient, length: wallLen, cardId: wallCard.cardId, placedTurn: wallTurn, removeCardId: removeCard.cardId, removeTurn },
+    dependencies: [
+      { type: 'cardArrival', cardId: wallCard.cardId, byTurn: wallTurn, prob: wallCard.arrivalProb ?? 1.0 },
+      { type: 'cardArrival', cardId: removeCard.cardId, byTurn: removeTurn, prob: removeCard.arrivalProb ?? 1.0 },
+    ],
+    metrics: {
+      expectedWinTurn: curTurn + (path.length - 1) + 1, // +1 for the wall-placement turn
+      expectedOppWinTurn: null,
+      expectedMargin: 0, riskVariance: 0,
+    },
+  };
+  gatePlan.confidence = ctppComputePlanConfidence(gatePlan);
+  return gatePlan;
+}
+
+// Tunnel: Rush-like path that uses a bypass card to walk through walls.
+// Feasibility: needs a bypass card (WS/PF5/PF8/PF15) in hand+deck.
+function ctppGenTunnelPlan(pi, ctx) {
+  const me = gameState.players[pi];
+  if (!me) return null;
+  if (_ctppCountCards(pi, _ctppIsBypassCard) === 0) return null;
+  const bypass = _ctppFindCard(pi, _ctppIsBypassCard);
+  if (!bypass) return null;
+
+  const raw = aiPathToObjective(me.position, gameState.walls, pi);
+  if (!raw || raw.length < 2) return null;
+  const path = [{ row: me.position.row, col: me.position.col }, ...raw.map(p => ({ row: p.row, col: p.col }))];
+
+  const curTurn = gameState.turnNumber;
+  const tier = ctppGetTier();
+  const limit = Math.min(tier.lookahead, path.length - 1);
+  const playTurn = Math.max(curTurn, bypass.arrivalTurn);
+
+  const timetable = [];
+  for (let i = 0; i < limit; i++) {
+    const step = path[i + 1];
+    const t = curTurn + i;
+    if (t === playTurn) {
+      timetable.push({
+        turn: t, role: 'payoff',
+        action: { kind: 'play_card', cardId: bypass.cardId, followUpMove: step },
+        expectedCard: { id: bypass.cardId, arrivalTurn: bypass.arrivalTurn, arrivalProb: 1.0 },
+        criticality: 'hard',
+      });
+    } else {
+      timetable.push({
+        turn: t, role: (i === 0 ? 'setup' : (i === limit - 1 ? 'payoff' : 'deploy')),
+        action: { kind: 'move', to: { row: step.row, col: step.col } },
+        expectedCard: null, criticality: 'soft',
+        plannedPos: { row: step.row, col: step.col },
+      });
+    }
+  }
+
+  const tunnelPlan = {
+    id: `Tunnel_p${pi}_T${curTurn}`,
+    archetype: 'Tunnel',
+    createdTurn: curTurn,
+    health: 1.0, confidence: 1.0,
+    endorsedActions: {}, timetable, path,
+    bypassCard: { id: bypass.cardId, playTurn },
+    dependencies: [{ type: 'cardArrival', cardId: bypass.cardId, byTurn: playTurn, prob: bypass.arrivalProb ?? 1.0 }],
+    metrics: {
+      expectedWinTurn: curTurn + (path.length - 1),
+      expectedOppWinTurn: null, expectedMargin: 0, riskVariance: 0,
+    },
+  };
+  tunnelPlan.confidence = ctppComputePlanConfidence(tunnelPlan);
+  return tunnelPlan;
+}
+
+// Siege: stack 2-3 walls to inflate opp path; win the race by attrition.
+// Feasibility: need at least 2 wall cards in hand+deck + wallLimit headroom.
+function ctppGenSiegePlan(pi, ctx) {
+  const me = gameState.players[pi];
+  if (!me) return null;
+  const wallsAvail = _ctppCountCards(pi, _ctppIsWallCard);
+  if (wallsAvail < 2) return null;
+  if ((me.wallLimitCurrent || 0) - (me.wallsInPlay || 0) < 2) return null;
+
+  const opp = gameState.players[getFirstOpponent(pi)];
+  if (!opp) return null;
+
+  const siegeCands = _ctppFindSiegeWalls(pi, opp, 3, 2);
+  if (siegeCands.length === 0) return null;
+
+  // Need wall cards arriving on the turns we plan to place.
+  const wallsNeeded = Math.min(siegeCands.length, Math.max(2, wallsAvail));
+  const curTurn = gameState.turnNumber;
+  const tier = ctppGetTier();
+
+  // Path for the AI (they still advance between wall placements).
+  const raw = aiPathToObjective(me.position, gameState.walls, pi);
+  if (!raw || raw.length < 2) return null;
+  const path = [{ row: me.position.row, col: me.position.col }, ...raw.map(p => ({ row: p.row, col: p.col }))];
+
+  // Schedule walls on turns 0, 1, 2 of the plan; moves on the rest.
+  const timetable = [];
+  let placedIdx = 0;
+  for (let i = 0; i < tier.lookahead; i++) {
+    const t = curTurn + i;
+    if (placedIdx < wallsNeeded) {
+      const wc = _ctppFindCard(pi, _ctppIsWallCard);
+      if (wc && wc.arrivalTurn <= t) {
+        const cand = siegeCands[placedIdx];
+        timetable.push({
+          turn: t, role: (placedIdx === 0 ? 'setup' : 'deploy'),
+          action: { kind: 'wall', anchor: cand.anchor, orientation: cand.orient, length: cand.length, cardId: wc.cardId },
+          expectedCard: { id: wc.cardId, arrivalTurn: wc.arrivalTurn, arrivalProb: 1.0 },
+          criticality: 'hard',
+        });
+        placedIdx++;
+        continue;
+      }
+    }
+    // Default: a move
+    const step = path[Math.min(i, path.length - 1)];
+    timetable.push({
+      turn: t, role: (i === tier.lookahead - 1 ? 'payoff' : 'deploy'),
+      action: { kind: 'move', to: { row: step.row, col: step.col } },
+      expectedCard: null, criticality: 'soft',
+      plannedPos: { row: step.row, col: step.col },
+    });
+  }
+
+  return {
+    id: `Siege_p${pi}_T${curTurn}`,
+    archetype: 'Siege',
+    createdTurn: curTurn,
+    health: 1.0, confidence: 1.0,
+    endorsedActions: {}, timetable, path,
+    siegeWalls: siegeCands.slice(0, wallsNeeded),
+    dependencies: siegeCands.slice(0, wallsNeeded).map((c, i) => ({
+      type: 'wallSlot', byTurn: curTurn + i, prob: 1.0,
+    })),
+    metrics: {
+      expectedWinTurn: curTurn + (path.length - 1) + wallsNeeded,
+      expectedOppWinTurn: null, expectedMargin: 0, riskVariance: 0,
+    },
+  };
+}
+
+// PhantomBait: use phantom walls as cheap disruption + bait.
+// Feasibility: has phantom wall cards (PH1 etc) — typically Phantom faction only.
+function ctppGenPhantomBaitPlan(pi, ctx) {
+  const me = gameState.players[pi];
+  if (!me) return null;
+  if (_ctppCountCards(pi, _ctppIsPhantomWallCard) < 2) return null;
+
+  const opp = gameState.players[getFirstOpponent(pi)];
+  if (!opp) return null;
+  const cands = _ctppFindSiegeWalls(pi, opp, 2, 2);
+  if (cands.length === 0) return null;
+
+  const curTurn = gameState.turnNumber;
+  const tier = ctppGetTier();
+  const raw = aiPathToObjective(me.position, gameState.walls, pi);
+  if (!raw || raw.length < 2) return null;
+  const path = [{ row: me.position.row, col: me.position.col }, ...raw.map(p => ({ row: p.row, col: p.col }))];
+
+  const timetable = [];
+  let phIdx = 0;
+  for (let i = 0; i < tier.lookahead; i++) {
+    const t = curTurn + i;
+    if (phIdx < cands.length) {
+      const pc = _ctppFindCard(pi, _ctppIsPhantomWallCard);
+      if (pc && pc.arrivalTurn <= t) {
+        const cand = cands[phIdx];
+        timetable.push({
+          turn: t, role: (phIdx === 0 ? 'setup' : 'deploy'),
+          action: { kind: 'phantom', anchor: cand.anchor, orientation: cand.orient, length: cand.length, cardId: pc.cardId },
+          expectedCard: { id: pc.cardId, arrivalTurn: pc.arrivalTurn, arrivalProb: 1.0 },
+          criticality: 'soft',
+        });
+        phIdx++;
+        continue;
+      }
+    }
+    const step = path[Math.min(i, path.length - 1)];
+    timetable.push({
+      turn: t, role: 'deploy',
+      action: { kind: 'move', to: { row: step.row, col: step.col } },
+      expectedCard: null, criticality: 'soft',
+      plannedPos: { row: step.row, col: step.col },
+    });
+  }
+
+  return {
+    id: `PhantomBait_p${pi}_T${curTurn}`,
+    archetype: 'PhantomBait',
+    createdTurn: curTurn,
+    health: 1.0, confidence: 1.0,
+    endorsedActions: {}, timetable, path,
+    phantomAnchors: cands,
+    dependencies: [],
+    metrics: {
+      expectedWinTurn: curTurn + (path.length - 1) + cands.length,
+      expectedOppWinTurn: null, expectedMargin: 0, riskVariance: 0,
+    },
+  };
+}
+
+// Scramble: time Thorne's Total Reordering to disrupt opp's committed plan.
+// Feasibility: champion is Thorne + ult is within 3 turns of ready.
+function ctppGenScramblePlan(pi, ctx) {
+  const me = gameState.players[pi];
+  if (!me) return null;
+  const ab = ctppBuildAbilityProjection(pi);
+  if (!ab?.ultimate?.isScramble) return null;
+  if (ab.ultimate.turnsUntilReady > 3) return null;
+
+  const raw = aiPathToObjective(me.position, gameState.walls, pi);
+  if (!raw || raw.length < 2) return null;
+  const path = [{ row: me.position.row, col: me.position.col }, ...raw.map(p => ({ row: p.row, col: p.col }))];
+
+  const curTurn = gameState.turnNumber;
+  const tier = ctppGetTier();
+  const ultTurn = curTurn + ab.ultimate.turnsUntilReady;
+
+  const timetable = [];
+  for (let i = 0; i < tier.lookahead; i++) {
+    const t = curTurn + i;
+    if (t === ultTurn) {
+      timetable.push({
+        turn: t, role: 'payoff',
+        action: { kind: 'ultimate', name: 'Total Reordering' },
+        expectedCard: null, criticality: 'hard',
+      });
+    } else {
+      const step = path[Math.min(i, path.length - 1)];
+      timetable.push({
+        turn: t, role: (i === 0 ? 'setup' : 'deploy'),
+        action: { kind: 'move', to: { row: step.row, col: step.col } },
+        expectedCard: null, criticality: 'soft',
+        plannedPos: { row: step.row, col: step.col },
+      });
+    }
+  }
+
+  return {
+    id: `Scramble_p${pi}_T${curTurn}`,
+    archetype: 'Scramble',
+    createdTurn: curTurn,
+    health: 1.0, confidence: 1.0,
+    endorsedActions: {}, timetable, path,
+    ultTurn,
+    dependencies: [{ type: 'ultimateReady', byTurn: ultTurn, prob: 1.0 }],
+    metrics: {
+      expectedWinTurn: curTurn + (path.length - 1),
+      expectedOppWinTurn: null, expectedMargin: 0, riskVariance: 0,
+    },
+  };
+}
+
+function ctppPlanFromTemplate() { return null; /* Kept for future refactor */ }
+
+// ── Group B: Plan evaluation ─────────────────────────────────────────────
+// M2: health is a continuous 0..1 score. Plans survive minor disruptions
+// through ctppAdaptPlan (re-route). Plans below health 0.1 are pruned.
+
+// ─── Hysteresis thresholds — these numbers define CTPP's "stickiness." ───
+// The architectural goal (per user's original request): stop the AI from
+// thrashing between plans each turn. Raising these values makes the AI more
+// committed (less responsive to disruption); lowering makes it more reactive.
+//
+// PRUNE: below this health, plan is considered dead and removed. 0.1 is low
+// enough that adaptation has many chances before give-up.
+const CTPP_HEALTH_PRUNE_THRESHOLD  = 0.1;
+// ADAPT: if health drops below this but above PRUNE, re-route the path
+// instead of discarding the plan. 0.5 is generous — minor disruptions trigger
+// adaptation, major ones skip to prune.
+const CTPP_HEALTH_ADAPT_THRESHOLD  = 0.5;
+// SWITCH: primary below this force-switches to a healthier backup. Equivalent
+// to "catastrophic" — between ADAPT and SWITCH, the plan is unhealthy but
+// still the best option.
+const CTPP_HEALTH_SWITCH_THRESHOLD = 0.3;
+// HYSTERESIS_MARGIN: even if a backup outscores primary, only switch when
+// the gap exceeds 20%. This is the core oscillation-prevention mechanism.
+// Raising to 1.5 = much stickier; 1.0 = no hysteresis (thrashes like pre-M2).
+const CTPP_HYSTERESIS_MARGIN       = 1.2;
+// ADAPT_DECAY: each adaptation lowers health by this factor. Prevents a
+// plan from being adapted forever. At 0.85, after 4 adapts health ≈ 0.52.
+const CTPP_ADAPT_DECAY             = 0.85;
+// MAX_ADAPTS: hard cap on adaptations per plan lifetime.
+const CTPP_MAX_ADAPTS              = 4;
+
+function ctppEvaluatePlan(plan, ctx) {
+  if (!plan) return;
+  // Metrics populated at creation / adaptation time. No-op here — actual
+  // health computation happens in ctppRunLifecycle via ctppComputePlanHealth.
+}
+
+function ctppComputePlanHealth(plan, pi) {
+  if (!plan || !plan.path) return 0;
+  const me = gameState.players[pi];
+  if (!me) return 0;
+
+  // Already at goal → perfect health (plan succeeded)
+  if (typeof isGoalReached === 'function' && isGoalReached(pi, me.position)) return 1.0;
+
+  // Path viability check — common to all path-based archetypes.
+  const currentPath = aiPathToObjective(me.position, gameState.walls, pi);
+  if (!currentPath || currentPath.length === 0) return 0;
+
+  const idx = gameState.turnNumber - plan.createdTurn;
+  const originalRemaining = Math.max(1, (plan.path.length - 1) - idx);
+  const currentRemaining  = currentPath.length;
+  const extraSteps = Math.max(0, currentRemaining - originalRemaining);
+  let health = Math.exp(-extraSteps / 3);
+
+  // Archetype-specific dependency penalties
+  if (plan.archetype === 'Gate' && plan.gateWall) {
+    const gw = plan.gateWall;
+    // If placed wall was reinforced/seized/removed against our will, plan is hurt.
+    if (gw.placedTurn <= gameState.turnNumber) {
+      const exists = gameState.walls.some(w =>
+        w.anchor?.row === gw.anchor.row && w.anchor?.col === gw.anchor.col &&
+        w.orientation === gw.orient && w.owner === pi);
+      if (!exists) health *= 0.5; // wall gone — removal card may now be useless
+    }
+    // If remove card no longer in hand+deck, dead.
+    if (!_ctppFindCard(pi, (c) => c.id === gw.removeCardId)) health *= 0.2;
+  }
+
+  if (plan.archetype === 'Tunnel' && plan.bypassCard) {
+    // If bypass card missing from hand+deck, plan is largely dead.
+    if (!_ctppFindCard(pi, (c) => c.id === plan.bypassCard.id)) health *= 0.1;
+  }
+
+  if (plan.archetype === 'Siege' && plan.siegeWalls) {
+    // If wall limit is exceeded or no more wall cards, decay.
+    const slotsLeft = (me.wallLimitCurrent || 0) - (me.wallsInPlay || 0);
+    if (slotsLeft <= 0) health *= 0.5;
+    if (_ctppCountCards(pi, _ctppIsWallCard) === 0 && (me.wallsInPlay || 0) < plan.siegeWalls.length) health *= 0.3;
+  }
+
+  if (plan.archetype === 'Scramble' && plan.ultTurn != null) {
+    // If ult used/not ready and we're past target turn, dead.
+    if (gameState.turnNumber > plan.ultTurn && !me.ultimateReady) health *= 0.1;
+  }
+
+  // Common decay
+  health *= Math.pow(CTPP_ADAPT_DECAY, plan.adaptCount || 0);
+  const stuck = plan.stuckTurns || 0;
+  if (stuck >= 2) health *= Math.max(0.1, 1 - (stuck - 1) * 0.2);
+
+  return Math.max(0, Math.min(1, health));
+}
+
+// Product of dependency arrival probabilities. Exact mode → 1.0 (known cards).
+// Probabilistic mode → can be fractional, making the plan less trustworthy.
+function ctppComputePlanConfidence(plan) {
+  if (!plan || !plan.dependencies || plan.dependencies.length === 0) return 1.0;
+  let c = 1.0;
+  for (const d of plan.dependencies) {
+    const p = d.prob ?? 1.0;
+    c *= Math.max(0.01, p);
+  }
+  return Math.max(0, Math.min(1, c));
+}
+
+// Re-route a plan's path from the AI's current position, preserving the plan's
+// identity (id, createdTurn, archetype). This is the key M2 insight: instead of
+// pruning and regenerating when disrupted, adapt so the same strategic commitment
+// continues. Returns true if adaptation succeeded.
+function ctppAdaptPlan(plan, pi) {
+  if (!plan) return false;
+  const me = gameState.players[pi];
+  if (!me) return false;
+  if ((plan.adaptCount || 0) >= CTPP_MAX_ADAPTS) return false;
+
+  const raw = aiPathToObjective(me.position, gameState.walls, pi);
+  if (!raw || raw.length === 0) return false;
+
+  const curTurn  = gameState.turnNumber;
+  const tier     = ctppGetTier();
+  const newRoute = [{ row: me.position.row, col: me.position.col },
+                    ...raw.map(p => ({ row: p.row, col: p.col }))];
+
+  const idx = curTurn - plan.createdTurn;
+  const prefix = plan.path.slice(0, Math.max(0, idx));
+  plan.path = [...prefix, ...newRoute];
+
+  // Rebuild timetable — preserve non-move commitments (walls, cards, ults) where
+  // possible by re-inserting them on their scheduled turns.
+  const limit = Math.min(tier.lookahead, newRoute.length - 1);
+  const preserved = (plan.timetable || []).filter(e =>
+    e.turn >= curTurn && e.action && e.action.kind !== 'move'
+  );
+  plan.timetable = [];
+  for (let i = 0; i < limit; i++) {
+    const t = curTurn + i;
+    const commitment = preserved.find(e => e.turn === t);
+    if (commitment) {
+      plan.timetable.push(commitment);
+    } else {
+      const step = newRoute[i + 1];
+      if (step) {
+        plan.timetable.push({
+          turn: t,
+          role: (i === 0 ? 'setup' : (i === limit - 1 ? 'payoff' : 'deploy')),
+          action: { kind: 'move', to: { row: step.row, col: step.col } },
+          expectedCard: null, criticality: 'soft',
+          plannedPos: { row: step.row, col: step.col },
+        });
+      }
+    }
+  }
+  plan.metrics.expectedWinTurn = curTurn + newRoute.length - 1;
+  plan.adaptCount = (plan.adaptCount || 0) + 1;
+  plan.lastAdaptedOn = curTurn;
+  return true;
+}
+
+// Populate plan.endorsedActions for the CURRENT turn. Uses plan.path (the
+// authoritative route) rather than the timetable — plans can outlive their
+// initial lookahead window (timetable covers only tier.lookahead turns, but
+// plans are re-evaluated / adapted for however long they stay healthy).
+function ctppEndorseAction(plan, currentTurn, pi) {
+  if (!plan) return;
+  plan.endorsedActions = {};
+
+  // 1. Timetable entry for the current turn (wall/card/ultimate commitments).
+  const entry = (plan.timetable || []).find(e => e.turn === currentTurn);
+  if (entry && entry.action) {
+    const a = entry.action;
+    if (a.kind === 'wall') {
+      plan.endorsedActions[`wall:${a.anchor.row},${a.anchor.col}:${a.orientation}:${a.length}`] = 1.0;
+      plan.endorsedActions[`card:${a.cardId}`] = 0.8;
+    } else if (a.kind === 'phantom') {
+      plan.endorsedActions[`phantom:${a.anchor.row},${a.anchor.col}:${a.orientation}:${a.length}`] = 1.0;
+      plan.endorsedActions[`card:${a.cardId}`] = 0.8;
+    } else if (a.kind === 'play_card') {
+      plan.endorsedActions[`card:${a.cardId}`] = 1.0;
+      // Follow-up move hint
+      if (a.followUpMove) {
+        plan.endorsedActions[`move:${a.followUpMove.row},${a.followUpMove.col}`] = 0.6;
+      }
+    } else if (a.kind === 'ultimate') {
+      plan.endorsedActions[`ultimate`] = 1.0;
+    } else if (a.kind === 'move' && a.to) {
+      plan.endorsedActions[`move:${a.to.row},${a.to.col}`] = 1.0;
+    }
+  }
+
+  // 2. Path-based move endorsement — always populated so CTPP guides movement
+  //    even when the current turn's timetable slot is a non-move action.
+  if (plan.path) {
+    const idx = currentTurn - plan.createdTurn;
+    const target = plan.path[idx + 1];
+    if (target && !plan.endorsedActions[`move:${target.row},${target.col}`]) {
+      // Don't overwrite a timetable-set move endorsement; only fill if empty.
+      plan.endorsedActions[`move:${target.row},${target.col}`] = 0.9;
+    }
+    const after = plan.path[idx + 2];
+    if (after && !plan.endorsedActions[`move:${after.row},${after.col}`]) {
+      plan.endorsedActions[`move:${after.row},${after.col}`] = 0.4;
+    }
+  }
+}
+
+// Estimate opponent's disruption of this plan and their own win timeline.
+// Returns { disruption, oppWinTurn, oppWallCards, oppRemovalCards }.
+// Only meaningful at Nightmare (which has deep deck peek + modelOppHand).
+// Medium/Hard use "worst-case" assumption (implicit via plan health decay).
+function ctppSimulateOpponentAgainstPlan(plan, pi) {
+  const empty = { disruption: 0, oppWinTurn: 99, oppWallCards: 0, oppRemovalCards: 0, reinforcedCount: 0 };
+  if (!plan) return empty;
+  const me = gameState.players[pi];
+  const opp = gameState.players[getFirstOpponent(pi)];
+  if (!me || !opp) return empty;
+
+  // Opponent resource accounting (all known at Nightmare — full deck peek).
+  const oppAll = [...(opp.hand || []), ...(opp.deck || [])].filter(Boolean);
+  const oppWallCards    = oppAll.filter(c => c.type === 'Wall' && c.phantom !== true).length;
+  const oppReinforced   = oppAll.filter(c => c.reinforced === true).length;
+  const oppRemovalCards = oppAll.filter(c => c.selfRemove === true || c.id?.startsWith('WD')).length;
+  const oppMovementFast = oppAll.filter(c => c.type === 'Movement' && (c.overrideSpeed || 0) >= 3).length;
+
+  // Opp's own progress race
+  const oppGoal = getGoalRow(opp.index);
+  const oppDist = bfsDistanceFor(opp.position, oppGoal, gameState.walls, opp.index);
+  const oppPace = Math.max(1, 1 + oppMovementFast * 0.3);  // rough: more fast-move cards → quicker
+  const oppWinTurn = gameState.turnNumber + Math.ceil(oppDist / oppPace);
+
+  // Archetype-specific vulnerability: how much opp's resources can slow the plan.
+  const remainingTurns = Math.max(1, (plan.metrics?.expectedWinTurn || 10) - gameState.turnNumber);
+  const oppWallPlaysInWindow = Math.min(oppWallCards, Math.ceil(remainingTurns / 2));
+  let disruption = 0;
+
+  if (plan.archetype === 'Rush' || plan.archetype === 'Tunnel') {
+    // Each opp wall added to my path ≈ 1.2 extra turns (BFS re-routes cost).
+    // Tunnel cards mitigate partially — half-credit if plan has bypassCard.
+    const mitigation = plan.archetype === 'Tunnel' ? 0.5 : 1.0;
+    disruption += oppWallPlaysInWindow * 1.2 * mitigation;
+  } else if (plan.archetype === 'Gate') {
+    // Gate is vulnerable if opp can reinforce/seize the wall before I self-remove.
+    // Reinforced-wall cards let opp upgrade their OWN walls; doesn't block my Gate.
+    // But WD removal cards could destroy my gate.
+    disruption += Math.min(4, oppRemovalCards * 1.5);
+    // Opp walls in my approach path add distance
+    disruption += oppWallPlaysInWindow * 0.8;
+  } else if (plan.archetype === 'Siege') {
+    // Siege is vulnerable to opp's wall-removal cards destroying my stack.
+    disruption += Math.min(3, oppRemovalCards);
+  } else if (plan.archetype === 'PhantomBait') {
+    // Phantoms auto-remove on crossing; opp wasting anti-wall cards on them is bonus.
+    // Net effect: low disruption (phantoms are disposable).
+    disruption += 0.5;
+  } else if (plan.archetype === 'Scramble') {
+    // Scramble FLIPS opp's disruption back on them — scrambled walls help me too.
+    // No disruption; bonus to margin computed separately.
+    disruption += 0;
+  }
+
+  return { disruption, oppWinTurn, oppWallCards, oppRemovalCards, reinforcedCount: oppReinforced };
+}
+
+// ── Group C: Plan lifecycle ──────────────────────────────────────────────
+
+// Per-plan per-turn update: track progress (stuck-turn counter).
+// Called at top of lifecycle before health computation.
+function ctppUpdatePlan(plan, pi) {
+  if (!plan) return;
+  const me = gameState.players[pi];
+  if (!me) return;
+  const lastPos = plan.lastPositionSeen;
+  if (lastPos && lastPos.row === me.position.row && lastPos.col === me.position.col) {
+    plan.stuckTurns = (plan.stuckTurns || 0) + 1;
+  } else {
+    plan.stuckTurns = 0;
+  }
+  plan.lastPositionSeen = { row: me.position.row, col: me.position.col };
+}
+
+// Remove plans with health < CTPP_HEALTH_PRUNE_THRESHOLD.
+// If the primary was pruned, clears primaryId; caller must pick a new primary.
+// Returns the list of pruned plans so telemetry can log them.
+function ctppPrunePortfolio(portfolio) {
+  if (!portfolio || !portfolio.plans) return [];
+  const dead = portfolio.plans.filter(p => (p.health ?? 1) < CTPP_HEALTH_PRUNE_THRESHOLD);
+  if (dead.length === 0) return [];
+  portfolio.plans = portfolio.plans.filter(p => (p.health ?? 1) >= CTPP_HEALTH_PRUNE_THRESHOLD);
+  if (portfolio.primaryId && !portfolio.plans.find(p => p.id === portfolio.primaryId)) {
+    portfolio.primaryId = portfolio.plans[0]?.id || null;
+  }
+  return dead;
+}
+
+// Hysteresis-based primary selection. Returns:
+//   - null  → keep current primary
+//   - plan  → switch to this plan
+// Switch only when: (a) primary health is catastrophic (<0.3) AND a backup exists,
+// or (b) a backup's score exceeds primary's by CTPP_HYSTERESIS_MARGIN (20%).
+function ctppShouldSwitchPrimary(portfolio) {
+  if (!portfolio || !portfolio.plans || portfolio.plans.length === 0) return null;
+  const primary = portfolio.plans.find(p => p.id === portfolio.primaryId);
+  if (!primary) return portfolio.plans[0] || null;
+
+  let bestBackup = null, bestScore = -Infinity;
+  for (const p of portfolio.plans) {
+    if (p === primary) continue;
+    const score = (p.health ?? 1) * (p.confidence ?? 1);
+    if (score > bestScore) { bestScore = score; bestBackup = p; }
+  }
+  if (!bestBackup) return null;
+
+  const primaryScore = (primary.health ?? 1) * (primary.confidence ?? 1);
+  if (primary.health < CTPP_HEALTH_SWITCH_THRESHOLD) return bestBackup;
+  if (bestScore > primaryScore * CTPP_HYSTERESIS_MARGIN) return bestBackup;
+  return null;
+}
+
+// Top-level per-turn orchestrator.
+// M2 flow: UPDATE (progress tracking) → HEALTH → ADAPT (if salvageable) → PRUNE →
+//          EXPAND → COMMITMENT (hysteresis) → ENDORSE.
+// Runs at Hard only until M5 (probabilistic mode opens Medium).
+function ctppRunLifecycle(pi, ctx) {
+  if (!window._ctppEnabled) return null;
+  if (gameMode === 'tutorial') return null;
+  const tier = ctppGetTier();
+  if (!tier.useCtpp) return null;
+
+  // M6 gate: all CTPP-eligible tiers (Medium, Hard, Nightmare). Easy falls
+  // through to greedy.
+  if (aiDifficulty === 'easy') return null;
+
+  const port = gameState.players[pi].aiPortfolio;
+  if (!port) return null;
+  const curTurn = gameState.turnNumber;
+
+  // Refresh deck projection (snapshot current hand+deck).
+  port.deckProjection = ctppBuildDeckProjection(pi, tier.deckMode);
+
+  // UPDATE: track progress per plan (stuck-turn counter).
+  for (const plan of port.plans) ctppUpdatePlan(plan, pi);
+
+  // HEALTH + ADAPT: compute health per plan. If salvageable (0.1 ≤ h < 0.5),
+  // attempt adaptation; otherwise use raw health.
+  for (const plan of port.plans) {
+    const h = ctppComputePlanHealth(plan, pi);
+    if (h >= CTPP_HEALTH_PRUNE_THRESHOLD && h < CTPP_HEALTH_ADAPT_THRESHOLD) {
+      if (ctppAdaptPlan(plan, pi)) {
+        plan.health = ctppComputePlanHealth(plan, pi);
+        if (window.CtppHarness?.telemetry) {
+          window.CtppHarness.telemetry.recordLifecycleEvent({
+            turn: curTurn, event: 'adapt', planId: plan.id,
+            archetype: plan.archetype,
+          });
+        }
+      } else {
+        plan.health = h;
+      }
+    } else {
+      plan.health = h;
+    }
+  }
+
+  // PRUNE dead plans.
+  const dead = ctppPrunePortfolio(port);
+  for (const d of dead) {
+    if (window.CtppHarness?.telemetry) {
+      window.CtppHarness.telemetry.recordLifecycleEvent({
+        turn: curTurn, event: 'prune', planId: d.id,
+        archetype: d.archetype, reason: 'low_health',
+      });
+    }
+  }
+
+  // EXPAND if portfolio is empty (or below quota — M4 tightens this).
+  if (port.plans.length === 0) ctppExpandPortfolio(pi, ctx);
+
+  // COMMITMENT CHECK (hysteresis).
+  const switchTo = ctppShouldSwitchPrimary(port);
+  if (switchTo && switchTo.id !== port.primaryId) {
+    const fromId = port.primaryId;
+    const fromPlan = port.plans.find(p => p.id === fromId);
+    port.primaryId = switchTo.id;
+    if (window.CtppHarness?.telemetry) {
+      window.CtppHarness.telemetry.recordCommitmentSwitch({
+        turn: curTurn, fromId, toId: switchTo.id,
+        reason: (fromPlan?.health ?? 1) < CTPP_HEALTH_SWITCH_THRESHOLD
+                ? 'health_drop' : 'margin_beat',
+      });
+    }
+  }
+
+  // ENDORSE all living plans. ctppScoreActionAcrossPlans weights each plan's
+  // endorsement by health × confidence, so backups contribute proportionally.
+  // This is the shared-prefix insight: moves endorsed by multiple plans (likely
+  // early-game "advance forward" moves) accumulate the most bonus.
+  for (const plan of port.plans) {
+    ctppEvaluatePlan(plan, ctx);
+    ctppEndorseAction(plan, curTurn, pi);
+  }
+  const primary = port.plans.find(p => p.id === port.primaryId) || port.plans[0] || null;
+
+  port.lastUpdatedTurn = curTurn;
+
+  if (window.CtppHarness?.telemetry) {
+    window.CtppHarness.telemetry.recordTurn({
+      turn: curTurn, seat: pi,
+      primaryPlanId: primary?.id || null,
+      archetype: primary?.archetype || null,
+      health: primary?.health ?? 0,
+      confidence: primary?.confidence ?? 0,
+      adaptCount: primary?.adaptCount || 0,
+      stuckTurns: primary?.stuckTurns || 0,
+    });
+  }
+
+  return primary;
+}
+
+// ── Group D: Action selection ────────────────────────────────────────────
+// Weighted sum across all living plans: plan.health × plan.confidence × endorsement.
+// Returns 0 if no portfolio or no endorsing plan — caller can always add unchanged.
+function ctppScoreActionAcrossPlans(actionKey, portfolio) {
+  if (!portfolio || !portfolio.plans || portfolio.plans.length === 0) return 0;
+  let total = 0;
+  for (const plan of portfolio.plans) {
+    const e = plan.endorsedActions?.[actionKey];
+    if (e) total += (plan.health ?? 1) * (plan.confidence ?? 1) * e;
+  }
+  return total;
+}
+
+// M3 Phase 1 override: if the primary plan's current-turn commitment is a
+// wall or phantom placement, verify the card+placement are still legal and
+// return an action descriptor that Phase 3's executor understands. Returns
+// null if no commitment applies or it's infeasible (fall through to greedy).
+function ctppBuildPhase1Override(pi) {
+  if (!window._ctppEnabled) return null;
+  const tier = ctppGetTier();
+  if (!tier.useCtpp) return null;
+  if (aiDifficulty !== 'hard' && aiDifficulty !== 'medium' && aiDifficulty !== 'nightmare') return null;
+
+  const me = gameState.players[pi];
+  if (!me) return null;
+  const port = me.aiPortfolio;
+  if (!port) return null;
+  const primary = port.plans.find(p => p.id === port.primaryId);
+  if (!primary) return null;
+
+  const entry = (primary.timetable || []).find(e => e.turn === gameState.turnNumber);
+  if (!entry?.action) return null;
+  const a = entry.action;
+
+  if (a.kind === 'wall' || a.kind === 'phantom') {
+    const card = (me.hand || []).find(c => c?.id === a.cardId);
+    if (!card) return null;
+    if ((card.energyCost || 0) > (me.energyCurrent || 0)) return null;
+    const isPhantom = (a.kind === 'phantom');
+    if (!isPhantom && !_ctppIsWallCard(card)) return null;
+    if (isPhantom && !_ctppIsPhantomWallCard(card)) return null;
+    if (!wallInBounds(a.anchor, a.orientation, a.length)) return null;
+    const p0 = gameState.players[0]?.position;
+    const p1 = gameState.players[gameState.players.length - 1]?.position;
+    if (!isWallLegal(a.anchor, a.orientation, a.length, gameState.walls, p0, p1, isPhantom)) return null;
+    return { kind: a.kind, anchor: a.anchor, orientation: a.orientation, len: a.length, card };
+  }
+  return null;
+}
+
+function ctppProposeAction()   { return null; /* M4+ uses endorsement-driven selection */ }
+function ctppSoftmaxSelect(candidates, temperature) { return _ctppSoftmaxPick(candidates, temperature); }
+function ctppRegisterOutcome() { /* Milestone 2+ — timetable advancement */ }
+
+// M7: return earliest future turn a card is committed to in any living plan.
+// Used by the energy loop to avoid playing cards that the plan needs LATER
+// — e.g., playing RC on turn 1 when Gate plan schedules RC for turn 3.
+// Returns Infinity if the card isn't committed.
+function ctppGetCardFutureCommitment(portfolio, cardId, currentTurn) {
+  if (!portfolio?.plans || !cardId) return Infinity;
+  let minTurn = Infinity;
+  for (const plan of portfolio.plans) {
+    for (const entry of (plan.timetable || [])) {
+      if (entry.turn <= currentTurn) continue;
+      const a = entry.action;
+      if (!a) continue;
+      // Explicit card plays AND wall/phantom placements that require a specific card
+      if ((a.kind === 'play_card' && a.cardId === cardId) ||
+          ((a.kind === 'wall' || a.kind === 'phantom') && a.cardId === cardId)) {
+        if (entry.turn < minTurn) minTurn = entry.turn;
+      }
+    }
+  }
+  return minTurn;
+}
+
+// ── Group E: Deck projection ─────────────────────────────────────────────
+// Unified backend for "when will card X arrive?" — M1 exact-mode only.
+// Returns { arrivalTurn, arrivalProb } where arrivalTurn is the turn the
+// card is first available in hand, and arrivalProb is 1.0 in exact mode.
+function ctppCardArrivalInfo(cardId, fromTurn, proj, hand, deck) {
+  if (!cardId) return { arrivalTurn: Infinity, arrivalProb: 0 };
+  const handArr = hand || proj?.handSnapshot || [];
+
+  // Hand beats all — already drawn, prob 1.0.
+  if (handArr.includes(cardId)) return { arrivalTurn: fromTurn, arrivalProb: 1.0 };
+
+  if (proj?.mode === 'exact') {
+    const deckArr = deck || proj?.exactOrder || [];
+    const idx = deckArr.indexOf(cardId);
+    if (idx < 0) return { arrivalTurn: Infinity, arrivalProb: 0 };
+    const drawsPerTurn = proj?.drawsPerTurn || CTPP_DRAWS_PER_TURN;
+    const turnsAhead = Math.ceil((idx + 1) / drawsPerTurn);
+    return { arrivalTurn: fromTurn + turnsAhead, arrivalProb: 1.0 };
+  }
+
+  if (proj?.mode === 'probabilistic') {
+    const K = proj.deckCounts?.[cardId] || 0;
+    if (K === 0) return { arrivalTurn: Infinity, arrivalProb: 0 };
+    const D = proj.deckSize || 0;
+    if (D === 0) return { arrivalTurn: Infinity, arrivalProb: 0 };
+    const drawsPerTurn = proj.drawsPerTurn || CTPP_DRAWS_PER_TURN;
+    const cacheKey = `${cardId}@${fromTurn}`;
+    if (proj.probCache?.has(cacheKey)) return proj.probCache.get(cacheKey);
+
+    // Scan forward turns, find the smallest T where P(drawn) ≥ 0.5 — that's
+    // our "expected arrival turn." Return the probability at that turn.
+    let expectedT = null;
+    let expectedP = 0;
+    const maxTurns = Math.ceil(D / drawsPerTurn);
+    for (let k = 1; k <= maxTurns; k++) {
+      const n = drawsPerTurn * k;
+      const p = ctppHypergeometricArrivalProb(K, D, n);
+      if (p >= 0.5 && expectedT === null) {
+        expectedT = fromTurn + k;
+        expectedP = p;
+      }
+      if (p >= 0.999) {
+        const result = { arrivalTurn: expectedT ?? (fromTurn + k), arrivalProb: expectedP || p };
+        proj.probCache?.set(cacheKey, result);
+        return result;
+      }
+    }
+    // Card exists in deck but prob never reached 0.5 — return last-turn prob.
+    const finalN = drawsPerTurn * maxTurns;
+    const finalP = ctppHypergeometricArrivalProb(K, D, finalN);
+    const result = {
+      arrivalTurn: expectedT ?? (fromTurn + maxTurns),
+      arrivalProb: expectedP || finalP,
+    };
+    proj.probCache?.set(cacheKey, result);
+    return result;
+  }
+
+  return { arrivalTurn: Infinity, arrivalProb: 0 };
+}
+// Hypergeometric CDF: probability of drawing ≥1 of K target cards in n draws
+// from a deck of D cards (without replacement). Log-space arithmetic avoids
+// overflow on large decks. Symbolically:
+//   P(at least 1) = 1 - Π[i=0..n-1] ((D - K - i) / (D - i))
+function ctppHypergeometricArrivalProb(K, D, n) {
+  if (K <= 0 || D <= 0 || n <= 0) return 0;
+  if (n >= D) return 1; // drawing the whole deck — guaranteed if any exist
+  if (K >= D) return 1; // all cards match
+  let logP = 0;
+  for (let i = 0; i < n; i++) {
+    const num = D - K - i;
+    const den = D - i;
+    if (num <= 0) return 1;
+    logP += Math.log(num / den);
+  }
+  return Math.max(0, Math.min(1, 1 - Math.exp(logP)));
+}
+function ctppInvalidateProjection(pi, reason) {
+  const p = gameState?.players?.[pi]?.aiPortfolio;
+  if (p) p.deckProjection = null;
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+// CTPP Dev Overlay (Milestone 0.5)
+// ─────────────────────────────────────────────────────────────────────────
+// Toggle with Ctrl+Shift+P. Hidden by default. Renders live from
+// gameState.players[*].aiPortfolio so Milestone 1+ plans appear automatically.
+// Self-contained: injects its own DOM + CSS on page load.
+// ═════════════════════════════════════════════════════════════════════════
+let _ctppOverlayPollId = null;
+let _ctppOverlayEl     = null;
+
+function ctppOverlayInit() {
+  if (_ctppOverlayEl) return;
+
+  // Styles
+  const style = document.createElement('style');
+  style.textContent = `
+    #ctpp-overlay {
+      position: fixed; top: 12px; right: 12px; width: 380px; max-height: 90vh;
+      background: rgba(10,14,20,0.96); color: #d8e6f2; border: 1px solid #2a4560;
+      border-radius: 6px; font: 11px/1.4 Consolas, "Courier New", monospace;
+      z-index: 99999; display: none; overflow-y: auto; padding: 8px;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.6);
+    }
+    #ctpp-overlay.visible { display: block; }
+    #ctpp-overlay h3 { margin: 0 0 6px 0; font-size: 12px; color: #7fd4ff;
+      border-bottom: 1px solid #2a4560; padding-bottom: 4px; display: flex;
+      justify-content: space-between; align-items: center; }
+    #ctpp-overlay .ctpp-close { cursor: pointer; color: #888; font-size: 14px; }
+    #ctpp-overlay .ctpp-close:hover { color: #fff; }
+    #ctpp-overlay .ctpp-seat { margin-bottom: 10px; padding: 6px;
+      background: rgba(30,50,70,0.4); border-radius: 4px; }
+    #ctpp-overlay .ctpp-seat-hdr { color: #ffb864; font-weight: bold; margin-bottom: 4px; }
+    #ctpp-overlay .ctpp-primary { color: #9fd89f; margin: 4px 0; }
+    #ctpp-overlay .ctpp-backup { color: #a0a8b4; margin: 2px 0 2px 8px; font-size: 10px; }
+    #ctpp-overlay .ctpp-timetable { margin: 4px 0 4px 8px; }
+    #ctpp-overlay .ctpp-tt-entry { color: #c0c8d4; margin: 1px 0; }
+    #ctpp-overlay .ctpp-tt-entry.role-payoff { color: #ffd98a; }
+    #ctpp-overlay .ctpp-tt-entry.role-setup { color: #a0c8ff; }
+    #ctpp-overlay .ctpp-empty { color: #667; font-style: italic; }
+    #ctpp-overlay .ctpp-bar { display: inline-block; width: 40px; height: 6px;
+      background: #1a2838; border-radius: 2px; vertical-align: middle;
+      margin-left: 4px; overflow: hidden; }
+    #ctpp-overlay .ctpp-bar-fill { height: 100%; background: #5fb35f; }
+    #ctpp-overlay .ctpp-bar-fill.low { background: #d98a3a; }
+    #ctpp-overlay .ctpp-bar-fill.crit { background: #d94040; }
+    #ctpp-overlay .ctpp-section { margin-top: 8px; padding-top: 6px;
+      border-top: 1px solid #2a4560; }
+    #ctpp-overlay .ctpp-section-hdr { color: #7fd4ff; font-weight: bold;
+      font-size: 10px; margin-bottom: 4px; text-transform: uppercase; }
+    #ctpp-overlay .ctpp-log-entry { color: #a0a8b4; font-size: 10px; margin: 1px 0; }
+    #ctpp-overlay .ctpp-flags { color: #888; font-size: 10px; margin-top: 4px; }
+    #ctpp-overlay .ctpp-flag-on { color: #9fd89f; }
+    #ctpp-overlay .ctpp-flag-off { color: #d94040; }
+  `;
+  document.head.appendChild(style);
+
+  // Panel
+  const el = document.createElement('div');
+  el.id = 'ctpp-overlay';
+  el.innerHTML = '<h3>CTPP Dev Overlay <span class="ctpp-close" title="Close (Ctrl+Shift+P)">×</span></h3><div id="ctpp-overlay-body"></div>';
+  document.body.appendChild(el);
+  _ctppOverlayEl = el;
+
+  el.querySelector('.ctpp-close').addEventListener('click', ctppOverlayHide);
+
+  // Keybind (Ctrl+Shift+P)
+  document.addEventListener('keydown', (ev) => {
+    if (ev.ctrlKey && ev.shiftKey && (ev.key === 'P' || ev.key === 'p')) {
+      ev.preventDefault();
+      ctppOverlayToggle();
+    }
+  });
+}
+
+function ctppOverlayToggle() {
+  if (!_ctppOverlayEl) ctppOverlayInit();
+  if (_ctppOverlayEl.classList.contains('visible')) ctppOverlayHide();
+  else ctppOverlayShow();
+}
+
+function ctppOverlayShow() {
+  if (!_ctppOverlayEl) ctppOverlayInit();
+  _ctppOverlayEl.classList.add('visible');
+  ctppOverlayRender();
+  if (!_ctppOverlayPollId) _ctppOverlayPollId = setInterval(ctppOverlayRender, 750);
+}
+
+function ctppOverlayHide() {
+  if (_ctppOverlayEl) _ctppOverlayEl.classList.remove('visible');
+  if (_ctppOverlayPollId) { clearInterval(_ctppOverlayPollId); _ctppOverlayPollId = null; }
+}
+
+function _ctppHealthBar(val) {
+  const v = Math.max(0, Math.min(1, val || 0));
+  const cls = v < 0.2 ? 'crit' : (v < 0.5 ? 'low' : '');
+  return `<span class="ctpp-bar"><span class="ctpp-bar-fill ${cls}" style="width:${(v*100).toFixed(0)}%"></span></span>`;
+}
+
+function _ctppFormatTimetableEntry(e) {
+  const role = e.role || '?';
+  const turn = (typeof e.turn === 'number') ? `T${e.turn}` : '?';
+  const action = e.action?.kind || '?';
+  const card = e.expectedCard?.id ? ` [${e.expectedCard.id}${e.expectedCard.arrivalProb < 1 ? '@' + (e.expectedCard.arrivalProb*100).toFixed(0) + '%' : ''}]` : '';
+  return `<div class="ctpp-tt-entry role-${role}">${turn} ${role}: ${action}${card}</div>`;
+}
+
+function _ctppRenderPlan(p, isPrimary) {
+  const cls = isPrimary ? 'ctpp-primary' : 'ctpp-backup';
+  const tag = isPrimary ? '▶ PRIMARY' : '• backup';
+  const tt = (p.timetable || []).map(_ctppFormatTimetableEntry).join('');
+  const health = _ctppHealthBar(p.health);
+  const conf = _ctppHealthBar(p.confidence);
+  const winTurn = p.metrics?.expectedWinTurn != null
+    ? (typeof p.metrics.expectedWinTurn === 'number' ? p.metrics.expectedWinTurn.toFixed(1).replace(/\.0$/, '') : p.metrics.expectedWinTurn)
+    : '?';
+
+  // M7: show opp margin + disruption estimate at Nightmare.
+  let nightmareLine = '';
+  if (p.oppModel) {
+    const margin = p.metrics?.expectedMargin;
+    const marginStr = margin != null ? (margin >= 0 ? `+${margin.toFixed(1)}` : margin.toFixed(1)) : '?';
+    const marginColor = margin != null && margin < 0 ? '#d94040' : '#9fd89f';
+    nightmareLine = `<br><span style="color:${marginColor}">margin ${marginStr}</span>` +
+                    ` &nbsp;<span style="color:#a0a8b4">oppDisrupt ${p.oppModel.disruption.toFixed(1)}</span>` +
+                    ` <span style="color:#888">(opp walls:${p.oppModel.oppWallCards}, rem:${p.oppModel.oppRemovalCards})</span>`;
+  }
+
+  return `<div class="${cls}">${tag} ${p.archetype || '?'} #${p.id || '?'}
+    <br>health ${health} ${(p.health ?? 1).toFixed(2)}
+    &nbsp;conf ${conf} ${(p.confidence ?? 1).toFixed(2)}
+    &nbsp;win@T${winTurn}${nightmareLine}
+    <div class="ctpp-timetable">${tt || '<span class="ctpp-empty">(empty timetable)</span>'}</div>
+  </div>`;
+}
+
+function _ctppRenderSeat(pi) {
+  const pl = gameState?.players?.[pi];
+  if (!pl) return '';
+  const champ = pl.champion?.name || '?';
+  const port = pl.aiPortfolio;
+  const diff = (typeof aiDifficulty === 'string') ? aiDifficulty : '?';
+  let body = `<div class="ctpp-seat-hdr">Seat ${pi} — ${champ} (${diff})</div>`;
+
+  if (!port) {
+    body += '<div class="ctpp-empty">No portfolio initialized yet</div>';
+  } else if (!port.plans || port.plans.length === 0) {
+    body += '<div class="ctpp-empty">Portfolio empty (0 plans)</div>';
+  } else {
+    const primary = port.plans.find(p => p.id === port.primaryId) || port.plans[0];
+    body += _ctppRenderPlan(primary, true);
+    const backups = port.plans.filter(p => p !== primary);
+    for (const p of backups) body += _ctppRenderPlan(p, false);
+  }
+  return `<div class="ctpp-seat">${body}</div>`;
+}
+
+function ctppOverlayRender() {
+  if (!_ctppOverlayEl || !_ctppOverlayEl.classList.contains('visible')) return;
+  const body = _ctppOverlayEl.querySelector('#ctpp-overlay-body');
+  if (!body) return;
+
+  const flagHtml = `<div class="ctpp-flags">
+    CTPP: <span class="ctpp-flag-${window._ctppEnabled ? 'on">ON' : 'off">OFF'}</span>
+    &nbsp;| Test: <span class="ctpp-flag-${window._ctppTestMode ? 'on">ON' : 'off">OFF'}</span>
+    &nbsp;| Turn ${gameState?.turnNumber ?? '?'}
+  </div>`;
+
+  let seatsHtml = '';
+  if (gameState?.players) {
+    for (let i = 0; i < gameState.players.length; i++) {
+      if (typeof isHumanSeat === 'function' && isHumanSeat(i)) continue;
+      seatsHtml += _ctppRenderSeat(i);
+    }
+    if (!seatsHtml) seatsHtml = '<div class="ctpp-empty">No AI seats in current game</div>';
+  } else {
+    seatsHtml = '<div class="ctpp-empty">Game not started</div>';
+  }
+
+  // Commitment switches (last 10) and lifecycle events (last 20) — pulled
+  // from the harness telemetry if loaded, otherwise skipped.
+  let telemetryHtml = '';
+  const tel = window.CtppHarness?.telemetry;
+  if (tel) {
+    const recentSwitches = (tel.commitmentSwitches || []).slice(-10).reverse();
+    const recentLifecycle = (tel.planLifecycle || []).slice(-20).reverse();
+    if (recentSwitches.length || recentLifecycle.length) {
+      telemetryHtml += '<div class="ctpp-section"><div class="ctpp-section-hdr">Commitment switches</div>';
+      telemetryHtml += recentSwitches.length
+        ? recentSwitches.map(s => `<div class="ctpp-log-entry">T${s.turn}: ${s.fromId || '∅'} → ${s.toId} (${s.reason || '?'})</div>`).join('')
+        : '<div class="ctpp-empty">(none)</div>';
+      telemetryHtml += '</div>';
+      telemetryHtml += '<div class="ctpp-section"><div class="ctpp-section-hdr">Lifecycle</div>';
+      telemetryHtml += recentLifecycle.length
+        ? recentLifecycle.map(e => `<div class="ctpp-log-entry">T${e.turn} ${e.event}: ${e.archetype || '?'} ${e.planId || ''}</div>`).join('')
+        : '<div class="ctpp-empty">(none)</div>';
+      telemetryHtml += '</div>';
+    }
+  }
+
+  body.innerHTML = flagHtml + seatsHtml + telemetryHtml;
+}
+
+// Auto-init on DOM ready (safe: panel stays hidden until toggled)
+if (typeof document !== 'undefined') {
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', ctppOverlayInit);
+  } else {
+    ctppOverlayInit();
+  }
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+// Keyboard controls — WASD for movement, 1–9 for hand card selection
+// ─────────────────────────────────────────────────────────────────────────
+// Movement is a two-press flow (matches the click UX):
+//   1st WASD press:  enters move mode (same as clicking MOVE button)
+//   2nd WASD press:  executes move in that direction (1-step or 2-step jump)
+// Directions are absolute (W=up / N, S=down / S, A=left / W, D=right / E).
+// Guards: active seat must match localSeat, phase must be 'action', no typing
+// in an input field, no Ctrl/Alt/Meta modifiers.
+// ═════════════════════════════════════════════════════════════════════════
+function initKeyboardControls() {
+  document.addEventListener('keydown', (ev) => {
+    if (ev.ctrlKey || ev.altKey || ev.metaKey) return;
+    const tag = ev.target?.tagName?.toLowerCase();
+    if (tag === 'input' || tag === 'textarea' || ev.target?.isContentEditable) return;
+    if (!gameState || !gameState.players) return;
+
+    const mySeat = (typeof localSeat === 'number') ? localSeat : 0;
+    if (gameState.activePlayer !== mySeat) return;
+    if (gameState.phase !== 'action') return;
+    if (typeof isHumanSeat === 'function' && !isHumanSeat(mySeat)) return;
+
+    const key = ev.key.toLowerCase();
+
+    // Number keys 1–9 → select the card at hand[0..8]
+    if (/^[1-9]$/.test(key)) {
+      const idx = parseInt(key, 10) - 1;
+      const hand = gameState.players[mySeat].hand || [];
+      if (idx < hand.length && typeof selectCard === 'function') {
+        ev.preventDefault();
+        selectCard(hand[idx].id, idx);
+      }
+      return;
+    }
+
+    // WASD → movement
+    if (key === 'w' || key === 'a' || key === 's' || key === 'd') {
+      ev.preventDefault();
+      if (uiMode !== 'move') {
+        // First press: enter move mode (equivalent to clicking the MOVE button).
+        if (typeof enterMoveMode === 'function') enterMoveMode();
+        return;
+      }
+      // Second press: execute move in this direction. Try 1-step first, then
+      // 2-step (jump over adjacent opponent). Silently ignore illegal presses.
+      const pos = gameState.players[mySeat].position;
+      if (!pos) return;
+      const dr = key === 'w' ? -1 : key === 's' ? 1 : 0;
+      const dc = key === 'a' ? -1 : key === 'd' ? 1 : 0;
+      const legal = (typeof getLegalMoves === 'function') ? getLegalMoves(gameState, mySeat) : [];
+      const step1 = { row: pos.row + dr,     col: pos.col + dc };
+      const step2 = { row: pos.row + dr * 2, col: pos.col + dc * 2 };
+      const found = legal.find(m => m.row === step1.row && m.col === step1.col)
+                 || legal.find(m => m.row === step2.row && m.col === step2.col);
+      if (found && typeof executeMove === 'function') executeMove(found);
+    }
+  });
+}
+
+if (typeof document !== 'undefined') {
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initKeyboardControls);
+  } else {
+    initKeyboardControls();
+  }
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+// End CTPP scaffolding
+// ═════════════════════════════════════════════════════════════════════════
+
 async function runAI() {
   const aiSeat = gameState.activePlayer;
   console.log('[AI] runAI called. phase:', gameState.phase, 'activePlayer:', aiSeat);
@@ -8196,6 +9815,13 @@ async function runAI() {
   let secondBestCardAction = null;
 
   const st = snap();
+
+  // ── CTPP lifecycle hook (Milestone 0: no-op unless window._ctppEnabled) ─
+  // Lazy-init portfolio if this is the AI's first CTPP-eligible turn.
+  if (window._ctppEnabled && gameMode !== 'tutorial' && ctppGetTier().useCtpp) {
+    if (!gameState.players[pi].aiPortfolio) ctppInitPortfolio(pi);
+    ctppRunLifecycle(pi, _aiTurnCtx);
+  }
 
   // ── AI GUARD: embargo & Warden's Decree ────────────────────────────
   // If AI's card phase is skipped (Warden's Decree / skip_full_turn), skip all card evaluation
@@ -8860,6 +10486,20 @@ async function runAI() {
     }
   }
 
+  // ── CTPP Phase 1 override (M3) ────────────────────────────────────
+  // If the primary plan commits to a wall/phantom this turn and it's legal,
+  // swap in the plan-endorsed action. Greedy's pick is kept otherwise.
+  {
+    const _ctppOverride = ctppBuildPhase1Override(pi);
+    if (_ctppOverride) {
+      console.log('[AI] CTPP override: plan-endorsed', _ctppOverride.kind, 'at', _ctppOverride.anchor, _ctppOverride.orientation, _ctppOverride.len, 'card', _ctppOverride.card?.id);
+      bestCardAction = _ctppOverride;
+      // Don't set 1e9 (that's the goal-reached sentinel); use a high score to
+      // signal priority but allow Phase 3 to execute normally.
+      bestCardScore = Math.max(bestCardScore, 500);
+    }
+  }
+
   // ══════════════════════════════════════════════════════════════════
   console.log('[AI] Phase 1 complete. bestCardAction:', bestCardAction?.kind, bestCardAction?.subkind || '', bestCardAction?.card?.id || 'none');
   // PHASE 2 — choose the MOVE action
@@ -8912,11 +10552,20 @@ async function runAI() {
   let secondBestMoveScore = -Infinity;
   let secondBestMoveDest  = null;
 
+  // CTPP (M1): pull primary plan's endorsement map once; cheap dict lookups
+  // inside the loop. Defensive — always safe, returns 0 when CTPP is off.
+  const _ctppPort = (window._ctppEnabled && ctppGetTier().useCtpp)
+    ? gameState.players[pi].aiPortfolio
+    : null;
+
   for (const to of moves) {
     // In blocking mode, don't rush to goal — stay and block opponents
     if (!_blocking && isGoalReached(pi, to)) { bestMoveDest = to; bestMoveScore = 1e9; break; }
-    const s = scoreAction({type:'move', to}, simWallsForMove, st.aiPos, st.oppPos)
-            + probeBonus(to, simWallsForMove);
+    let s = scoreAction({type:'move', to}, simWallsForMove, st.aiPos, st.oppPos)
+          + probeBonus(to, simWallsForMove);
+    if (_ctppPort) {
+      s += ctppScoreActionAcrossPlans(`move:${to.row},${to.col}`, _ctppPort) * CTPP_MOVE_WEIGHT;
+    }
     if (s > bestMoveScore) {
       secondBestMoveScore = bestMoveScore; secondBestMoveDest = bestMoveDest;
       bestMoveScore = s; bestMoveDest = to;
@@ -9253,17 +10902,28 @@ async function runAI() {
     let loopBestScore = 0; // minimum score threshold — only play if positive
     let loopBestAction = null;
 
+    // M7: CTPP protection — reject cards the plan needs on a FUTURE turn.
+    const _ctppLoopPort = (window._ctppEnabled && ctppGetTier().useCtpp)
+      ? gameState.players[pi].aiPortfolio : null;
+    const _ctppLoopCurTurn = gameState.turnNumber;
+    const _ctppCardProtected = (cardId) =>
+      _ctppLoopPort && ctppGetCardFutureCommitment(_ctppLoopPort, cardId, _ctppLoopCurTurn) !== Infinity;
+
     // Evaluate wall cards
     if (loopSt.aiWalls < loopSt.aiLimit && _loopEmbargoType !== 'Wall') {
       const wallCards = loopSt.aiHand.filter(c =>
         c.type === 'Wall' && !c.phantom && !c.special
-        && getEffectiveEnergyCost(c, pi) <= curEnergy);
+        && getEffectiveEnergyCost(c, pi) <= curEnergy
+        && !_ctppCardProtected(c.id));
       for (const card of wallCards) {
         const len = getCardWallLength(card.id);
         const cands = generateWallCandidates(loopSt.oppPos, len);
         for (const {anchor, orientation} of cands) {
           if (!isWallLegal(anchor, orientation, len, loopSt.walls, loopSt.oppPos, loopSt.aiPos, false)) continue;
-          const s = scoreAction({type:'wall', anchor, orientation, length:len}, loopSt.walls, loopSt.aiPos, loopSt.oppPos);
+          let s = scoreAction({type:'wall', anchor, orientation, length:len}, loopSt.walls, loopSt.aiPos, loopSt.oppPos);
+          if (_ctppLoopPort) {
+            s += ctppScoreActionAcrossPlans(`wall:${anchor.row},${anchor.col}:${orientation}:${len}`, _ctppLoopPort) * CTPP_MOVE_WEIGHT;
+          }
           if (s > loopBestScore) {
             loopBestScore = s;
             loopBestAction = {kind:'wall', card, anchor, orientation, len};
@@ -9275,13 +10935,17 @@ async function runAI() {
     // Evaluate phantom wall cards
     if (loopSt.aiWalls < loopSt.aiLimit && _loopEmbargoType !== 'Wall') {
       const phantomCards = loopSt.aiHand.filter(c => c.type === 'Wall' && c.phantom && !c.special
-        && getEffectiveEnergyCost(c, pi) <= curEnergy);
+        && getEffectiveEnergyCost(c, pi) <= curEnergy
+        && !_ctppCardProtected(c.id));
       for (const card of phantomCards) {
         const len = 2;
         const cands = generateWallCandidates(loopSt.oppPos, len);
         for (const {anchor, orientation} of cands) {
           if (!isWallLegal(anchor, orientation, len, loopSt.walls, loopSt.oppPos, loopSt.aiPos, true)) continue;
-          const s = scoreAction({type:'phantom', anchor, orientation, length:len}, loopSt.walls, loopSt.aiPos, loopSt.oppPos);
+          let s = scoreAction({type:'phantom', anchor, orientation, length:len}, loopSt.walls, loopSt.aiPos, loopSt.oppPos);
+          if (_ctppLoopPort) {
+            s += ctppScoreActionAcrossPlans(`phantom:${anchor.row},${anchor.col}:${orientation}:${len}`, _ctppLoopPort) * CTPP_MOVE_WEIGHT;
+          }
           if (s > loopBestScore) {
             loopBestScore = s;
             loopBestAction = {kind:'phantom', card, anchor, orientation, len};
@@ -9294,7 +10958,8 @@ async function runAI() {
     if (_loopEmbargoType !== 'Disruption') {
       const simpleDisruptions = loopSt.aiHand.filter(c =>
         c.type === 'Disruption' && getEffectiveEnergyCost(c, pi) <= curEnergy
-        && ['RC','B04','B07','B08','AR16','AR17','PF18','WD17','PH18','PU13','TR14','AD6','B15','B16'].includes(c.id));
+        && ['RC','B04','B07','B08','AR16','AR17','PF18','WD17','PH18','PU13','TR14','AD6','B15','B16'].includes(c.id)
+        && !_ctppCardProtected(c.id));  // M7: never consume RC/B04 if a future plan entry needs it
       for (const card of simpleDisruptions) {
         // Simple heuristic: energy-gaining cards are worth playing, disruptions get base score
         let s = 3; // base value for playing a disruption
@@ -9302,6 +10967,9 @@ async function runAI() {
         if (card.id === 'WD17') s = 8; // energy denial is high value
         if (card.id === 'RC' && loopSt.aiWalls > 0) s = 2; // reclaim only if walls exist
         if (card.id === 'B07') s = 4; // undermine
+        if (_ctppLoopPort) {
+          s += ctppScoreActionAcrossPlans(`card:${card.id}`, _ctppLoopPort) * CTPP_MOVE_WEIGHT;
+        }
         if (s > loopBestScore) {
           loopBestScore = s;
           loopBestAction = {kind:'disruption', card, subkind: card.id === 'RC' ? 'reclaim' : 'generic'};
@@ -9356,15 +11024,29 @@ async function runAI() {
     const postLegal = getLegalMoves(gameState, pi);
     if (postLegal.length) {
       const goalRow = getGoalRow(pi);
+      // CTPP (M1): bias recalc distances by plan endorsement so plan-endorsed
+      // sidesteps can win over purely-greedy shortest paths.
+      const _ctppPortP4 = (window._ctppEnabled && ctppGetTier().useCtpp)
+        ? gameState.players[pi].aiPortfolio
+        : null;
       let recalcBest = null, recalcDist = Infinity;
       for (const dest of postLegal) {
-        const d = bfsDistanceFor(dest, goalRow, postSt.walls, pi);
+        let d = bfsDistanceFor(dest, goalRow, postSt.walls, pi);
+        if (_ctppPortP4) {
+          const e = ctppScoreActionAcrossPlans(`move:${dest.row},${dest.col}`, _ctppPortP4);
+          d -= e * CTPP_PHASE4_WEIGHT;
+        }
         if (d < recalcDist) { recalcDist = d; recalcBest = dest; }
       }
       if (recalcBest) {
-        const oldDist = bestMoveDest ? bfsDistanceFor(bestMoveDest, goalRow, postSt.walls, pi) : Infinity;
+        const oldDistRaw = bestMoveDest ? bfsDistanceFor(bestMoveDest, goalRow, postSt.walls, pi) : Infinity;
+        let oldDist = oldDistRaw;
+        if (_ctppPortP4 && bestMoveDest) {
+          const e = ctppScoreActionAcrossPlans(`move:${bestMoveDest.row},${bestMoveDest.col}`, _ctppPortP4);
+          oldDist -= e * CTPP_PHASE4_WEIGHT;
+        }
         if (recalcDist < oldDist || !bestMoveDest) {
-          console.log('[AI] Recalculated move after card plays:', bestMoveDest, '→', recalcBest, '(dist', oldDist, '→', recalcDist, ')');
+          console.log('[AI] Recalculated move after card plays:', bestMoveDest, '→', recalcBest, '(dist', oldDistRaw, '→', recalcDist, ')');
           bestMoveDest = recalcBest;
         }
       }
