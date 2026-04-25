@@ -440,37 +440,38 @@
     0%,100% { box-shadow: 0 0 4px rgba(74,222,128,0.3); }
     50%     { box-shadow: 0 0 10px rgba(74,222,128,0.7); }
   }
-  .relic-tooltip {
-    position: absolute;
-    bottom: calc(100% + 6px);
-    right: 0;
-    min-width: 180px; max-width: 220px;
+  /* Tooltip is rendered as a body-level floating element (see
+     _showRelicTooltip in JS) so it escapes the opponent panel's
+     `overflow-y: auto` clipping and any sibling stacking contexts. */
+  #relic-tooltip-floating {
+    position: fixed;
+    min-width: 180px; max-width: 240px;
     background: var(--surface);
     border: 1px solid var(--border);
     padding: 6px 8px;
     font-size: 10px; line-height: 1.3;
     letter-spacing: 0.02em;
     color: var(--text);
-    z-index: 500;
+    z-index: 100000;
     pointer-events: none;
     opacity: 0;
     transition: opacity 0.12s ease;
     white-space: normal;
     text-align: left;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.6);
   }
-  .relic-tooltip .relic-tooltip-name {
+  #relic-tooltip-floating .relic-tooltip-name {
     font-family: 'Teko', sans-serif;
     font-size: 14px;
     letter-spacing: 0.05em;
     margin-bottom: 3px;
   }
-  .relic-tooltip .relic-tooltip-rarity {
+  #relic-tooltip-floating .relic-tooltip-rarity {
     font-size: 8px;
     letter-spacing: 0.15em;
     color: var(--text-dim);
     margin-bottom: 4px;
   }
-  .relic-icon:hover .relic-tooltip { opacity: 1; }
 
   /* ── Hand ──────────────────────────────────────────────────────── */
   .hand-section {}
@@ -3258,39 +3259,79 @@ function activateRelic(relicId) {
   }
 }
 
+// Body-level floating tooltip for relic icons. We can't use a child element
+// with position:absolute because the opponent right-panel uses overflow-y:auto,
+// which clips tooltips that extend beyond its bounds. Appending to body and
+// using position:fixed lifts the tooltip above any panel.
+let _relicTooltipEl = null;
+function _ensureRelicTooltip() {
+  if (_relicTooltipEl && document.body.contains(_relicTooltipEl)) return _relicTooltipEl;
+  const el = document.createElement('div');
+  el.id = 'relic-tooltip-floating';
+  document.body.appendChild(el);
+  _relicTooltipEl = el;
+  return el;
+}
+function _showRelicTooltip(iconEl, html) {
+  const tt = _ensureRelicTooltip();
+  tt.innerHTML = html;
+  // Measure after innerHTML so width/height are real, then place above-right of the icon.
+  tt.style.left = '0px';
+  tt.style.top  = '0px';
+  tt.style.opacity = '0';
+  const ttRect   = tt.getBoundingClientRect();
+  const iconRect = iconEl.getBoundingClientRect();
+  let left = iconRect.right - ttRect.width;
+  if (left < 4) left = 4;
+  if (left + ttRect.width > window.innerWidth - 4) left = window.innerWidth - ttRect.width - 4;
+  let top = iconRect.top - ttRect.height - 6;
+  if (top < 4) top = iconRect.bottom + 6; // flip below icon if no headroom
+  tt.style.left = left + 'px';
+  tt.style.top  = top + 'px';
+  tt.style.opacity = '1';
+}
+function _hideRelicTooltip() {
+  if (_relicTooltipEl) _relicTooltipEl.style.opacity = '0';
+}
+
 // Render the relic tray (called from renderPanels). Shown only in Gauntlet.
 function renderRelicTray() {
   const section = document.getElementById('relic-tray-section');
   const tray    = document.getElementById('relic-tray');
   if (!section || !tray) return;
   const inGauntlet = (gameMode === 'gauntlet' && _gauntletRun && _gauntletRun.relics?.length);
-  if (!inGauntlet) { section.style.display = 'none'; return; }
+  if (!inGauntlet) { section.style.display = 'none'; _hideRelicTooltip(); return; }
   section.style.display = '';
 
-  const html = _gauntletRun.relics.map(id => {
-    const relic = RELICS[id]; if (!relic) return '';
+  const items = _gauntletRun.relics.map(id => {
+    const relic = RELICS[id]; if (!relic) return null;
     const icon  = RELIC_ICONS[id] || '✦';
     const state = getRelicActivationState(id);
     const classes = ['relic-icon', `rarity-${relic.rarity}`];
     let clickAttr = '';
     if (state === 'ready')    { classes.push('active-ready');    clickAttr = ` onclick="activateRelic('${id}')"`; }
     if (state === 'cooldown') { classes.push('active-cooldown'); }
-    // Tooltip shows name / rarity / desc; also mentions activation status for active relics
     const stateLine = state === 'ready'    ? '<div style="font-size:8px;color:#4ade80;margin-top:3px;letter-spacing:.1em;">CLICK TO ACTIVATE</div>'
                     : state === 'cooldown' ? '<div style="font-size:8px;color:#e05050;margin-top:3px;letter-spacing:.1em;">USED THIS MATCH</div>'
                     : '';
-    const safeDesc = (relic.desc || '').replace(/"/g, '&quot;');
-    return `<div class="${classes.join(' ')}"${clickAttr} data-relic-id="${id}">
-      ${icon}
-      <div class="relic-tooltip">
-        <div class="relic-tooltip-name" style="color:${RELIC_RARITY_COLOR[relic.rarity]||'#ccc'};">✦ ${relic.name}</div>
-        <div class="relic-tooltip-rarity">${relic.rarity} · RELIC</div>
-        <div>${safeDesc}</div>
-        ${stateLine}
-      </div>
-    </div>`;
-  }).join('');
-  tray.innerHTML = html;
+    const tooltipHtml =
+      `<div class="relic-tooltip-name" style="color:${RELIC_RARITY_COLOR[relic.rarity]||'#ccc'};">✦ ${relic.name}</div>` +
+      `<div class="relic-tooltip-rarity">${relic.rarity} · RELIC</div>` +
+      `<div>${relic.desc || ''}</div>${stateLine}`;
+    return { id, classes: classes.join(' '), clickAttr, icon, tooltipHtml };
+  }).filter(Boolean);
+
+  tray.innerHTML = items.map(it =>
+    `<div class="${it.classes}"${it.clickAttr} data-relic-id="${it.id}">${it.icon}</div>`
+  ).join('');
+
+  // Wire mouseenter/leave per icon to show the body-level tooltip.
+  const iconNodes = tray.querySelectorAll('.relic-icon');
+  iconNodes.forEach((node, i) => {
+    const html = items[i]?.tooltipHtml || '';
+    node.addEventListener('mouseenter', () => _showRelicTooltip(node, html));
+    node.addEventListener('mouseleave', _hideRelicTooltip);
+  });
 }
 
 // Per-match relic trigger state (resets in initGauntletGame).
@@ -4723,6 +4764,22 @@ function initGauntletGame(playerChamp, aiChamp, playerDeckIds, aiDeckCards) {
   // in CTPP_DIFFICULTY_TIERS, so the lifecycle should run by default rather
   // than requiring a manual console flip.
   window._ctppEnabled = true;
+  // Reset CTPP telemetry so the export button captures only this match.
+  if (window.CtppHarness?.telemetry?.reset) {
+    window.CtppHarness.telemetry.reset();
+    window.CtppHarness.telemetry.setMatchMeta?.({
+      startedAt: new Date().toISOString(),
+      gameMode: 'gauntlet',
+      gauntletStage: _gauntletRun?.stage,
+      gauntletNodeType: _gauntletRun?._currentNode?.type,
+      aiDifficulty,
+      champions: [
+        { seat: 0, name: playerChamp?.name, faction: playerChamp?.faction, rarity: playerChamp?.rarity },
+        { seat: 1, name: aiChamp?.name,     faction: aiChamp?.faction,     rarity: aiChamp?.rarity     },
+      ],
+      relics: [...(_gauntletRun?.relics || [])],
+    });
+  }
 
   gameState = {
     players: [
@@ -8164,6 +8221,37 @@ function markProbedWalls() {
 window._ctppEnabled  = window._ctppEnabled  === true;  // master toggle
 window._ctppTestMode = window._ctppTestMode === true;  // seeded RNG + AI-vs-AI
 
+// Built-in telemetry shim. The existing CTPP record calls (recordTurn,
+// recordCommitmentSwitch, recordLifecycleEvent) gate on `window.CtppHarness?.
+// telemetry` so they no-op unless ctpp_test_harness.js is loaded — which it
+// isn't in the live game. This shim provides the same interface so per-match
+// data is captured without external tooling. Also adds recordPortfolioSnapshot
+// for the deeper per-turn dump used by the export button.
+if (!window.CtppHarness) {
+  window.CtppHarness = {
+    _builtIn: true,
+    telemetry: {
+      turns: [],
+      commitmentSwitches: [],
+      planLifecycle: [],
+      portfolioSnapshots: [],
+      matchMeta: null,
+      reset() {
+        this.turns.length = 0;
+        this.commitmentSwitches.length = 0;
+        this.planLifecycle.length = 0;
+        this.portfolioSnapshots.length = 0;
+        this.matchMeta = null;
+      },
+      recordTurn(d)              { this.turns.push(d); },
+      recordCommitmentSwitch(d)  { this.commitmentSwitches.push(d); },
+      recordLifecycleEvent(d)    { this.planLifecycle.push(d); },
+      recordPortfolioSnapshot(d) { this.portfolioSnapshots.push(d); },
+      setMatchMeta(d)            { this.matchMeta = d; },
+    },
+  };
+}
+
 // Difficulty tiers — Easy uses current greedy AI; Medium/Hard/Nightmare
 // route through CTPP once lifecycle is live (Milestone 1+).
 const CTPP_DIFFICULTY_TIERS = {
@@ -9314,6 +9402,51 @@ function ctppRunLifecycle(pi, ctx) {
     });
   }
 
+  // Full portfolio snapshot — captures every plan, its timetable, and the
+  // game-state context needed to reconstruct the AI's reasoning post-match.
+  // Used by the "Export readout" button in the CTPP overlay.
+  if (window.CtppHarness?.telemetry?.recordPortfolioSnapshot) {
+    try {
+      const me = gameState.players[pi];
+      const opp = gameState.players.find((_, i) => i !== pi);
+      window.CtppHarness.telemetry.recordPortfolioSnapshot({
+        turn: curTurn,
+        seat: pi,
+        primaryId: port.primaryId,
+        archetypeQuota: { ...(port.archetypeQuota || {}) },
+        plans: (port.plans || []).map(p => ({
+          id: p.id,
+          archetype: p.archetype,
+          health: p.health,
+          confidence: p.confidence,
+          adaptCount: p.adaptCount || 0,
+          stuckTurns: p.stuckTurns || 0,
+          expectedWinTurn: p.metrics?.expectedWinTurn,
+          expectedMargin:  p.metrics?.expectedMargin,
+          oppDisruption:   p.oppModel?.disruption,
+          timetable: (p.timetable || []).map(e => ({
+            turn: e.turn, role: e.role,
+            actionKind: e.action?.kind,
+            actionDetail: e.action ? { ...e.action } : null,
+            expectedCardId: e.expectedCard?.id,
+            arrivalProb:    e.expectedCard?.arrivalProb,
+          })),
+        })),
+        context: {
+          aiPos:      me?.position ? { ...me.position } : null,
+          oppPos:     opp?.position ? { ...opp.position } : null,
+          aiHand:     (me?.hand || []).map(c => c?.id),
+          aiEnergy:   me?.energyCurrent,
+          aiWalls:    me?.wallsInPlay,
+          wallLimit:  me?.wallLimitCurrent,
+          ultCharge:  me?.ultimateCharge,
+          ultReady:   me?.ultimateReady,
+          totalWalls: gameState.walls?.length ?? 0,
+        },
+      });
+    } catch (e) { console.warn('[CTPP] portfolio snapshot failed:', e); }
+  }
+
   return primary;
 }
 
@@ -9603,6 +9736,78 @@ function ctppOverlayInitNow() {
   ctppOverlayRender();
 }
 
+// Build a single JSON blob describing every recorded turn of the current match
+// so it can be copied and fed back for analysis. Includes: match meta, full
+// per-turn portfolio snapshots (every plan + timetable + AI context), turn
+// summaries, lifecycle events, and commitment switches.
+function ctppOverlayBuildExport() {
+  const tel = window.CtppHarness?.telemetry;
+  const data = {
+    exportedAt: new Date().toISOString(),
+    flags: { ctppEnabled: !!window._ctppEnabled, testMode: !!window._ctppTestMode },
+    matchMeta: tel?.matchMeta || null,
+    currentTurn: gameState?.turnNumber ?? null,
+    winner: gameState?.winner ?? null,
+    turnSummaries:       tel?.turns || [],
+    portfolioSnapshots:  tel?.portfolioSnapshots || [],
+    commitmentSwitches:  tel?.commitmentSwitches || [],
+    planLifecycle:       tel?.planLifecycle || [],
+  };
+  return JSON.stringify(data, null, 2);
+}
+
+// Try clipboard first; if blocked (older browsers / non-secure contexts),
+// open a modal with a pre-selected textarea so the user can copy manually.
+function ctppOverlayExport() {
+  const json = ctppOverlayBuildExport();
+  const tel  = window.CtppHarness?.telemetry;
+  const counts = {
+    snapshots: tel?.portfolioSnapshots?.length || 0,
+    turns:     tel?.turns?.length || 0,
+    switches:  tel?.commitmentSwitches?.length || 0,
+    lifecycle: tel?.planLifecycle?.length || 0,
+  };
+  const sizeKb = (json.length / 1024).toFixed(1);
+  const ok = (msg) => console.log('[CTPP export]', msg, counts);
+  if (navigator.clipboard?.writeText) {
+    navigator.clipboard.writeText(json).then(
+      () => { ok('copied'); _ctppShowExportToast(`Copied ${sizeKb} KB · ${counts.snapshots} snapshots`); },
+      () => { _ctppShowExportFallback(json, counts, sizeKb); }
+    );
+  } else {
+    _ctppShowExportFallback(json, counts, sizeKb);
+  }
+}
+
+function _ctppShowExportToast(msg) {
+  const t = document.createElement('div');
+  t.textContent = msg;
+  t.style.cssText = 'position:fixed;top:18px;left:50%;transform:translateX(-50%);background:#1c2a38;color:#9fd89f;border:1px solid #4a8a4a;padding:6px 12px;font:11px monospace;z-index:100001;box-shadow:0 4px 16px rgba(0,0,0,0.6);';
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), 2200);
+}
+
+function _ctppShowExportFallback(json, counts, sizeKb) {
+  const wrap = document.createElement('div');
+  wrap.setAttribute('data-ctpp-export', '');
+  wrap.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:100001;display:flex;align-items:center;justify-content:center;';
+  const safe = json.replace(/&/g, '&amp;').replace(/</g, '&lt;');
+  wrap.innerHTML = `
+    <div style="background:#0e141c;border:1px solid #2a4560;border-radius:6px;padding:14px;max-width:88vw;max-height:88vh;display:flex;flex-direction:column;gap:8px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;color:#d8e6f2;font:11px monospace;">
+        <span>CTPP readout — ${sizeKb} KB · ${counts.snapshots} snapshots · ${counts.turns} turns</span>
+        <button onclick="this.closest('[data-ctpp-export]').remove()" style="cursor:pointer;background:#1c2a38;color:#d8e6f2;border:1px solid #4a6a90;padding:3px 10px;font:11px monospace;">Close</button>
+      </div>
+      <textarea readonly style="width:70vw;height:65vh;background:#000;color:#a8c4d8;border:1px solid #2a4560;font:10px/1.4 monospace;padding:8px;resize:none;">${safe}</textarea>
+      <div style="color:#888;font:10px monospace;">Clipboard write was blocked — select all (Ctrl+A) and copy (Ctrl+C).</div>
+    </div>`;
+  document.body.appendChild(wrap);
+  setTimeout(() => {
+    const ta = wrap.querySelector('textarea');
+    if (ta) { ta.focus(); ta.select(); }
+  }, 50);
+}
+
 function _ctppHealthBar(val) {
   const v = Math.max(0, Math.min(1, val || 0));
   const cls = v < 0.2 ? 'crit' : (v < 0.5 ? 'low' : '');
@@ -9678,6 +9883,7 @@ function ctppOverlayRender() {
     <span class="ctpp-flag-btn ${ctppCls}" onclick="ctppOverlayToggleEnabled()" title="Toggle CTPP master switch">CTPP: ${window._ctppEnabled ? 'ON' : 'OFF'}</span>
     <span class="ctpp-flag-btn ${testCls}" onclick="ctppOverlayToggleTest()" title="Toggle CTPP test mode (seeded RNG / AI-vs-AI)">Test: ${window._ctppTestMode ? 'ON' : 'OFF'}</span>
     <span class="ctpp-action-btn" onclick="ctppOverlayInitNow()" title="Seed portfolios for AI seats now (also flips CTPP on)">Init portfolios</span>
+    <span class="ctpp-action-btn" onclick="ctppOverlayExport()" title="Copy the full match readout (every turn's portfolio snapshot, lifecycle events, and switches) as JSON">Export readout</span>
     <span style="margin-left:auto;color:#888;">Turn ${gameState?.turnNumber ?? '?'}</span>
   </div>`;
 
@@ -12520,6 +12726,20 @@ function startGauntletFFA() {
   // Auto-enable CTPP for gauntlet FFA races (initMultiPlayerGame doesn't go
   // through initGauntletGame, so the flag must be set here too).
   window._ctppEnabled = true;
+  if (window.CtppHarness?.telemetry?.reset) {
+    window.CtppHarness.telemetry.reset();
+    window.CtppHarness.telemetry.setMatchMeta?.({
+      startedAt: new Date().toISOString(),
+      gameMode: 'gauntlet',
+      gauntletStage: _gauntletRun?.stage,
+      gauntletNodeType: 'ffa_race',
+      aiDifficulty,
+      champions: gameState.players.map((p, i) => ({
+        seat: i, name: p.champion?.name, faction: p.champion?.faction, rarity: p.champion?.rarity,
+      })),
+      relics: [...(_gauntletRun?.relics || [])],
+    });
+  }
 
   // Store gauntlet context AFTER init so the flag is on the new gameState
   gameState._gauntletFFAReturn = true;
