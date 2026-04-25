@@ -9844,6 +9844,26 @@ function ctppEndorseAction(plan, currentTurn, pi) {
       if (a.followUpMove) {
         plan.endorsedActions[`move:${a.followUpMove.row},${a.followUpMove.col}`] = 0.6;
       }
+      // Patch B (post-stage-10 readout): if the scheduled card isn't in hand
+      // anymore (faction passive churned it, opp removal, etc.), endorse any
+      // OTHER fast-move card in hand at reduced weight. The plan-state-sync
+      // demotion in the lifecycle already lowered this plan's confidence,
+      // but if it's still primary the AI should at least play *some* speed
+      // card instead of falling all the way back on a base move.
+      const handArr = (typeof gameState !== 'undefined' && gameState?.players?.[pi]?.hand) || [];
+      const handHasScheduled = handArr.some(c => c?.id === a.cardId);
+      if (!handHasScheduled) {
+        // Scheduled card is gone — endorse other speed cards as substitutes.
+        for (const c of handArr) {
+          if (!c || c.id === a.cardId) continue;
+          if (typeof _ctppIsFastMoveCard === 'function' && _ctppIsFastMoveCard(c)) {
+            // 0.5 weight: half of the scheduled card's full endorsement, so
+            // a base-move endorsed elsewhere doesn't beat it but the plan
+            // also doesn't lock onto a missing card.
+            plan.endorsedActions[`card:${c.id}`] = Math.max(plan.endorsedActions[`card:${c.id}`] || 0, 0.5);
+          }
+        }
+      }
     } else if (a.kind === 'ultimate') {
       plan.endorsedActions[`ultimate`] = 1.0;
     } else if (a.kind === 'move' && a.to) {
@@ -10104,6 +10124,32 @@ function ctppRunLifecycle(pi, ctx) {
   // quota-disabled). Plan.metrics.expectedMargin is populated at creation /
   // adaptation, so it's already valid here — no pre-eval needed.
   ctppPanicExpandIfLosing(pi, ctx);
+
+  // CARD-AVAILABILITY CHECK (Patch A, post-stage-10 readout):
+  // If a plan's current-turn timetable scheduled a specific card (play_card
+  // or wall with cardId) and that card is no longer in hand — most often due
+  // to faction passives churning the hand — demote the plan's confidence so
+  // commitment-switch + scoring favor a plan whose card IS available.
+  // Without this, the AI commits to a plan whose key card vanished and falls
+  // back on greedy moves (the lateral row-0 drift in the stage-10 readout).
+  {
+    const handIds = new Set((gameState.players[pi].hand || []).map(c => c?.id).filter(Boolean));
+    for (const plan of port.plans) {
+      const entry = (plan.timetable || []).find(e => e.turn === curTurn);
+      const wantedId = entry?.action?.cardId;
+      if (!wantedId) { plan._missingScheduledCard = false; continue; }
+      const present = handIds.has(wantedId);
+      if (!present) {
+        // Sharp confidence demotion — knocks the plan well below alternative
+        // plans whose cards are in hand. We don't drop to 0 in case the card
+        // arrives next turn (deck draw can resurrect it).
+        plan.confidence = Math.min(plan.confidence ?? 1, 0.3);
+        plan._missingScheduledCard = true;
+      } else {
+        plan._missingScheduledCard = false;
+      }
+    }
+  }
 
   // COMMITMENT CHECK (hysteresis).
   const switchTo = ctppShouldSwitchPrimary(port);
