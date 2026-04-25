@@ -8042,16 +8042,26 @@ function scoreAction(action, walls, aiPos, oppPos) {
   }
 
   if (action.type === 'move') {
-    // ── VERTICAL-GOALWARD MOVE BONUS ────────────────────────────────
-    // When two moves are tied in BFS distance (e.g., one closes a row,
-    // one sidesteps), prefer the one that closes vertical distance to
-    // the goal. Only meaningful for row-objective modes (1v1, 2v2).
-    // FFA's objective is a tile, so both axes matter equally — skip there.
+    // ── VERTICAL-GOALWARD MOVE BONUS / LATERAL PENALTY ──────────────
+    // When two moves are tied in BFS distance, prefer the one that
+    // closes vertical distance to the goal. Only meaningful for
+    // row-objective modes (1v1, 2v2). FFA's objective is a tile, so
+    // both axes matter equally — skip there.
+    //
+    // Patch (post-stage-5 readout): bonus was +2 per row closed which
+    // wasn't enough to dominate when walls forced detours — the AI
+    // ended up at (0,4) → (0,5) → (1,5) → (1,4) → (1,3) → (2,3),
+    // 4 lateral moves out of 5. Now: +4 per row closed, -2 for pure
+    // lateral moves, and backward moves take -4 per row. This keeps
+    // the AI advancing whenever a forward option exists, falling back
+    // on lateral only when truly necessary.
     let verticalBonus = 0;
     const obj = aiGetObjective(aiSeat);
     if (obj.type === 'row' && action.to) {
       const rowGain = Math.abs(aiPos.row - obj.target) - Math.abs(action.to.row - obj.target);
-      if (rowGain > 0) verticalBonus = rowGain * 2;  // +2 per row closed
+      if (rowGain > 0) verticalBonus = rowGain * 4;      // +4 per row closed (was +2)
+      else if (rowGain === 0) verticalBonus = -2;         // pure-lateral penalty
+      else verticalBonus = rowGain * 4;                   // backward: rowGain<0, so -4 per row
     }
     return base + F.moveBonus + rushBonus + verticalBonus;
   }
@@ -8677,11 +8687,16 @@ function ctppGenerateAllCandidates(pi, ctx) {
   if (aiDifficulty === 'hard' || aiDifficulty === 'nightmare') {
     for (const plan of candidates) {
       const sim = ctppSimulateOpponentAgainstPlan(plan, pi);
-      plan.metrics.expectedOppWinTurn = sim.oppWinTurn;
+      // Patch: oppWinTurn now includes the delay our plan's walls inflict on
+      // opp (selfDisruption). Previously Blocker / Siege walls weren't
+      // credited, so margin under-rated disruption archetypes vs. Rush.
+      const adjustedOppWinTurn = sim.oppWinTurn + (sim.selfDisruption || 0);
+      plan.metrics.expectedOppWinTurn = adjustedOppWinTurn;
       plan.metrics.expectedWinTurn   += sim.disruption;
-      plan.metrics.expectedMargin     = sim.oppWinTurn - plan.metrics.expectedWinTurn;
+      plan.metrics.expectedMargin     = adjustedOppWinTurn - plan.metrics.expectedWinTurn;
       plan.oppModel = {
         disruption: sim.disruption,
+        selfDisruption: sim.selfDisruption || 0,
         oppWallCards: sim.oppWallCards,
         oppRemovalCards: sim.oppRemovalCards,
       };
@@ -9499,13 +9514,17 @@ function ctppAdaptPlan(plan, pi) {
   const newRoute = [{ row: me.position.row, col: me.position.col },
                     ...raw.map(p => ({ row: p.row, col: p.col }))];
 
-  // Rule 1: detour-budget guard. If the new path is more than 2 extra steps
-  // longer than what was left of the original, the adaptation is producing a
-  // slow zigzag — better to let the plan die so the portfolio re-expands.
+  // Rule 1: detour-budget guard. If the new path is much longer than what
+  // remained of the original, adaptation is producing a slow zigzag. Original
+  // budget was +2, but the stage-5 boss readout had wall-heavy boards forcing
+  // legitimate +5 detours — every adaptation got rejected, plans went stale,
+  // AI fell back on greedy (lateral drift). Loosened to +5 so adaptation
+  // accepts realistic late-game detours; the lateral-ratio health penalty
+  // (Rule 2 below) still demotes zigzag plans in primary selection.
   const idx = curTurn - plan.createdTurn;
   const originalRemaining = Math.max(1, (plan.path?.length || 1) - 1 - idx);
   const newRemaining = newRoute.length - 1;
-  if (newRemaining - originalRemaining > 2) return false;
+  if (newRemaining - originalRemaining > 5) return false;
 
   // Rule 2: lateral-step ratio. Count how many steps in the new route make
   // forward progress toward the goal vs. lateral moves. Used below to scale
@@ -9623,7 +9642,7 @@ function ctppEndorseAction(plan, currentTurn, pi) {
 // Only meaningful at Nightmare (which has deep deck peek + modelOppHand).
 // Medium/Hard use "worst-case" assumption (implicit via plan health decay).
 function ctppSimulateOpponentAgainstPlan(plan, pi) {
-  const empty = { disruption: 0, oppWinTurn: 99, oppWallCards: 0, oppRemovalCards: 0, reinforcedCount: 0 };
+  const empty = { disruption: 0, selfDisruption: 0, oppWinTurn: 99, oppWallCards: 0, oppRemovalCards: 0, reinforcedCount: 0 };
   if (!plan) return empty;
   const me = gameState.players[pi];
   const opp = gameState.players[getFirstOpponent(pi)];
@@ -9640,12 +9659,38 @@ function ctppSimulateOpponentAgainstPlan(plan, pi) {
   const oppGoal = getGoalRow(opp.index);
   const oppDist = bfsDistanceFor(opp.position, oppGoal, gameState.walls, opp.index);
   const oppPace = Math.max(1, 1 + oppMovementFast * 0.3);  // rough: more fast-move cards → quicker
-  const oppWinTurn = gameState.turnNumber + Math.ceil(oppDist / oppPace);
+  let oppWinTurn = gameState.turnNumber + Math.ceil(oppDist / oppPace);
 
   // Archetype-specific vulnerability: how much opp's resources can slow the plan.
   const remainingTurns = Math.max(1, (plan.metrics?.expectedWinTurn || 10) - gameState.turnNumber);
   const oppWallPlaysInWindow = Math.min(oppWallCards, Math.ceil(remainingTurns / 2));
   let disruption = 0;
+  // Patch (post-stage-5 readout): selfDisruption is the symmetric counterpart
+  // — how much MY plan's walls slow OPP. Previously the simulator only
+  // computed disruption (opp slowing me), so disruption-archetype plans like
+  // Blocker / Siege got margin = oppWinTurn − myWinTurn without crediting
+  // their own walls' delay to the opponent. That made Blocker (oppDisruption
+  // visible as 0) look strictly worse than Siege/Rush even when its wall
+  // would actually slow the opp. Now selfDisruption reflects the BFS-distance
+  // gain the plan's walls cause, and the caller adds it to oppWinTurn.
+  let selfDisruption = 0;
+
+  // Helper: simulate opp distance after my plan's walls are placed.
+  function _simOppDelayWithWalls(walls) {
+    if (!walls || walls.length === 0) return 0;
+    let simWalls = gameState.walls;
+    for (const w of walls) {
+      simWalls = [...simWalls, {
+        anchor: w.anchor,
+        orientation: w.orient || w.orientation,
+        length: w.length || 2,
+        isPhantom: false, reinforced: false,
+      }];
+    }
+    const newOppDist = bfsDistanceFor(opp.position, oppGoal, simWalls, opp.index);
+    if (!Number.isFinite(newOppDist)) return 0;
+    return Math.max(0, newOppDist - oppDist);
+  }
 
   if (plan.archetype === 'Rush' || plan.archetype === 'Tunnel') {
     // Each opp wall added to my path ≈ 1.2 extra turns (BFS re-routes cost).
@@ -9662,6 +9707,17 @@ function ctppSimulateOpponentAgainstPlan(plan, pi) {
   } else if (plan.archetype === 'Siege') {
     // Siege is vulnerable to opp's wall-removal cards destroying my stack.
     disruption += Math.min(3, oppRemovalCards);
+    // Credit Siege's own walls — they slow opp until removed.
+    selfDisruption = _simOppDelayWithWalls(plan.siegeWalls);
+  } else if (plan.archetype === 'Blocker') {
+    // Blocker = single-wall disruption. Same vulnerability as Siege but smaller
+    // scale: opp's removal cards can destroy our blocking wall. Cap at 2
+    // (only 1 wall to lose, so removal is less catastrophic than against Siege).
+    disruption += Math.min(2, oppRemovalCards);
+    // Credit the blocking wall's delay on opp's path.
+    if (plan.blockerWall) {
+      selfDisruption = _simOppDelayWithWalls([plan.blockerWall]);
+    }
   } else if (plan.archetype === 'PhantomBait') {
     // Phantoms auto-remove on crossing; opp wasting anti-wall cards on them is bonus.
     // Net effect: low disruption (phantoms are disposable).
@@ -9672,7 +9728,7 @@ function ctppSimulateOpponentAgainstPlan(plan, pi) {
     disruption += 0;
   }
 
-  return { disruption, oppWinTurn, oppWallCards, oppRemovalCards, reinforcedCount: oppReinforced };
+  return { disruption, selfDisruption, oppWinTurn, oppWallCards, oppRemovalCards, reinforcedCount: oppReinforced };
 }
 
 // ── Group C: Plan lifecycle ──────────────────────────────────────────────
@@ -9733,7 +9789,19 @@ function ctppShouldSwitchPrimary(portfolio) {
   if (!bestBackup) return null;
 
   const primaryScore = (primary.health ?? 1) * (primary.confidence ?? 1);
-  if (primary.health < CTPP_HEALTH_SWITCH_THRESHOLD) return bestBackup;
+
+  // Patch (post-stage-5 readout): catastrophic-switch path used to fire on
+  // primary.health < SWITCH_THRESHOLD regardless of backup quality. When all
+  // plans were sub-threshold (e.g. all at 0.18), this caused thrashing —
+  // every turn flipped primary because "any backup beats catastrophic
+  // primary." Now the catastrophic path also requires the backup to be
+  // *meaningfully* healthier (1.3× score). If everything is dying together,
+  // hold the current primary so the AI executes a coherent plan instead of
+  // bouncing between equally-bad ones.
+  if (primary.health < CTPP_HEALTH_SWITCH_THRESHOLD) {
+    if (bestScore > primaryScore * 1.3) return bestBackup;
+    return null;
+  }
 
   const curTurn = (typeof gameState !== 'undefined' && gameState) ? gameState.turnNumber : null;
   const inPanic = (portfolio._panicActiveTurn != null && portfolio._panicActiveTurn === curTurn);
