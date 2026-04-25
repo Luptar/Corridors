@@ -9739,6 +9739,27 @@ function ctppOverlayInit() {
     #ctpp-overlay .ctpp-section-hdr { color: #7fd4ff; font-weight: bold;
       font-size: 10px; margin-bottom: 4px; text-transform: uppercase; }
     #ctpp-overlay .ctpp-log-entry { color: #a0a8b4; font-size: 10px; margin: 1px 0; }
+    #ctpp-overlay .ctpp-prediction {
+      font-size: 11px;
+      padding: 4px 6px;
+      margin: 2px 0 6px 0;
+      border-radius: 3px;
+      letter-spacing: 0.05em;
+      text-align: center;
+      font-weight: bold;
+    }
+    #ctpp-overlay .ctpp-prediction .ctpp-pred-detail {
+      display: block;
+      font-weight: normal;
+      font-size: 9px;
+      letter-spacing: 0.04em;
+      color: var(--text-dim, #888);
+      margin-top: 2px;
+    }
+    #ctpp-overlay .prediction-win    { background: rgba(74,222,128,0.15); border: 1px solid #4a8a4a; color: #9fd89f; }
+    #ctpp-overlay .prediction-loss   { background: rgba(224,80,80,0.15);  border: 1px solid #6a3030; color: #ec6b6b; }
+    #ctpp-overlay .prediction-tossup { background: rgba(212,144,58,0.15); border: 1px solid #8a6a2a; color: #ffb864; }
+    #ctpp-overlay .prediction-pending{ background: rgba(60,60,60,0.4);    border: 1px solid #444;    color: #888; font-style: italic; }
     #ctpp-overlay .ctpp-flags { color: #888; font-size: 10px; margin-top: 4px;
       display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
     #ctpp-overlay .ctpp-flag-btn { cursor: pointer; padding: 2px 6px;
@@ -9932,6 +9953,53 @@ function _ctppRenderPlan(p, isPrimary) {
   </div>`;
 }
 
+// Build the predicted-outcome banner for a seat. Reads the primary plan's
+// metrics — `expectedWinTurn` is the turn the AI expects to reach its goal,
+// `expectedMargin = oppWinTurn - aiWinTurn`, so positive margin = AI wins
+// first (good), negative margin = opp wins first (bad).
+//
+// Three verdicts:
+//   AI WIN  — margin > +0.5: AI predicted to reach goal before opponent
+//   AI LOSS — margin < -0.5: opponent predicted to reach goal first
+//   TOSS-UP — |margin| <= 0.5: race is too close to call
+//
+// Also reports the most-optimistic plan in the portfolio (best margin) when
+// it differs from primary — useful for spotting plans the AI isn't committing
+// to that would actually fare better.
+function _ctppRenderPrediction(port) {
+  if (!port?.plans?.length) {
+    return '<div class="ctpp-prediction prediction-pending">PREDICTION PENDING — no plans</div>';
+  }
+  const primary = port.plans.find(p => p.id === port.primaryId) || port.plans[0];
+  const m  = primary.metrics?.expectedMargin;
+  const wt = primary.metrics?.expectedWinTurn;
+  if (typeof m !== 'number' || typeof wt !== 'number' || !Number.isFinite(m) || !Number.isFinite(wt)) {
+    return '<div class="ctpp-prediction prediction-pending">PREDICTION PENDING — metrics not yet evaluated</div>';
+  }
+  // expectedMargin = oppWinTurn - aiWinTurn → oppWinTurn = aiWinTurn + margin
+  const oppWinTurn = wt + m;
+  const fmtTurn   = (t) => t.toFixed(1).replace(/\.0$/, '');
+  const fmtMargin = (x) => (x >= 0 ? '+' : '') + x.toFixed(1);
+
+  // Detect a more optimistic backup so the user can spot under-committed plans.
+  const bestPlan = port.plans.reduce((b, p) =>
+    ((p.metrics?.expectedMargin ?? -Infinity) > (b.metrics?.expectedMargin ?? -Infinity) ? p : b), primary);
+  const altLine = (bestPlan !== primary && Number.isFinite(bestPlan.metrics?.expectedMargin))
+    ? `<span class="ctpp-pred-detail">best alt: ${bestPlan.archetype} margin ${fmtMargin(bestPlan.metrics.expectedMargin)}</span>`
+    : '';
+
+  if (Math.abs(m) <= 0.5) {
+    return `<div class="ctpp-prediction prediction-tossup">⚖ TOSS-UP @ T${fmtTurn(wt)} · margin ${fmtMargin(m)}` +
+           `<span class="ctpp-pred-detail">${primary.archetype} (primary)</span>${altLine}</div>`;
+  }
+  if (m > 0) {
+    return `<div class="ctpp-prediction prediction-win">▲ AI WIN @ T${fmtTurn(wt)} · margin ${fmtMargin(m)}` +
+           `<span class="ctpp-pred-detail">${primary.archetype} (primary)</span>${altLine}</div>`;
+  }
+  return `<div class="ctpp-prediction prediction-loss">▼ AI LOSS @ T${fmtTurn(oppWinTurn)} · margin ${fmtMargin(m)}` +
+         `<span class="ctpp-pred-detail">${primary.archetype} (primary)</span>${altLine}</div>`;
+}
+
 function _ctppRenderSeat(pi) {
   const pl = gameState?.players?.[pi];
   if (!pl) return '';
@@ -9945,6 +10013,7 @@ function _ctppRenderSeat(pi) {
   } else if (!port.plans || port.plans.length === 0) {
     body += '<div class="ctpp-empty">Portfolio empty (0 plans)</div>';
   } else {
+    body += _ctppRenderPrediction(port);
     const primary = port.plans.find(p => p.id === port.primaryId) || port.plans[0];
     body += _ctppRenderPlan(primary, true);
     const backups = port.plans.filter(p => p !== primary);
