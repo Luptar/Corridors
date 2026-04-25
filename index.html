@@ -4765,21 +4765,18 @@ function initGauntletGame(playerChamp, aiChamp, playerDeckIds, aiDeckCards) {
   // than requiring a manual console flip.
   window._ctppEnabled = true;
   // Reset CTPP telemetry so the export button captures only this match.
+  // setMatchMeta is deliberately NOT called here — startGauntletCombat sets
+  // aiDifficulty via getGauntletDifficulty() AFTER initGauntletGame returns,
+  // so capturing it now would freeze the previous match's stale difficulty
+  // into the export. Meta capture lives in _ctppCaptureGauntletMatchMeta(),
+  // called by startGauntletCombat once aiDifficulty is correct.
   if (window.CtppHarness?.telemetry?.reset) {
     window.CtppHarness.telemetry.reset();
-    window.CtppHarness.telemetry.setMatchMeta?.({
-      startedAt: new Date().toISOString(),
-      gameMode: 'gauntlet',
-      gauntletStage: _gauntletRun?.stage,
-      gauntletNodeType: _gauntletRun?._currentNode?.type,
-      aiDifficulty,
-      champions: [
-        { seat: 0, name: playerChamp?.name, faction: playerChamp?.faction, rarity: playerChamp?.rarity },
-        { seat: 1, name: aiChamp?.name,     faction: aiChamp?.faction,     rarity: aiChamp?.rarity     },
-      ],
-      relics: [...(_gauntletRun?.relics || [])],
-    });
   }
+  // Stash champions on a private slot so the meta-capture helper can read
+  // them after difficulty is set (avoids re-threading them through callers).
+  gameState && (gameState._pendingMatchMeta = null);
+  window._pendingCtppChampions = { player: playerChamp, ai: aiChamp };
 
   gameState = {
     players: [
@@ -8609,6 +8606,84 @@ function ctppExpandPortfolio(pi, ctx) {
   }
 }
 
+// ── Panic expansion ───────────────────────────────────────────────────────
+// When every surviving plan projects a loss (expectedMargin < 0), the AI is
+// committed to an unwinnable strategy. Normal lifecycle won't fix this:
+// adapt re-routes the same archetype, prune only kicks in below 0.1 health,
+// and ctppExpandPortfolio bails as soon as the portfolio meets tier.portfolioSize.
+//
+// The diagnosis from the post-match readout: at turn 1, candidate generation
+// returns whatever's viable from the *current* hand. Tunnel/PhantomBait/Scramble
+// can fail to materialize because the hand lacks the right cards. Once they're
+// missed, the standard expand path never tries them again — even after the hand
+// has rotated and the situation is now winnable with a different approach.
+//
+// Panic mode: bypass the tier cap, ignore archetype quotas (so Scramble can
+// appear even when its quota is 0), and bring in any archetype not currently
+// represented. A failing strategy with a backup is strictly better than a
+// failing strategy with no alternative.
+
+const CTPP_PANIC_EXTRA_SLOTS = 3;     // how many extra plans panic-expand may add over tier cap
+const CTPP_PANIC_COOLDOWN_TURNS = 2;  // don't panic again until this many turns passed
+
+function _ctppAllPlansLosing(port) {
+  if (!port?.plans?.length) return false;
+  return port.plans.every(p => {
+    const m = p.metrics?.expectedMargin;
+    return typeof m === 'number' && m < 0;
+  });
+}
+
+function ctppPanicExpandIfLosing(pi, ctx) {
+  const port = gameState.players[pi]?.aiPortfolio;
+  if (!port || !port.plans?.length) return false;
+  if (!_ctppAllPlansLosing(port)) return false;
+
+  // Cooldown — avoid running every turn while the projection stays negative.
+  const curTurn = gameState.turnNumber;
+  if (port._lastPanicTurn != null && curTurn - port._lastPanicTurn < CTPP_PANIC_COOLDOWN_TURNS) return false;
+
+  const tier = ctppGetTier();
+  const cap  = (tier.portfolioSize || 1) + CTPP_PANIC_EXTRA_SLOTS;
+  const candidates = ctppGenerateAllCandidates(pi, ctx);
+  if (!candidates.length) return false;
+
+  // Pick archetypes not currently represented. Scramble is intentionally
+  // included even if archetypeQuota.Scramble === 0 — quotas exist to keep the
+  // routine portfolio focused, but in panic mode any plan beats no plan.
+  const existing = new Set(port.plans.map(p => p.archetype));
+  const newcomers = candidates.filter(c => !existing.has(c.archetype));
+  if (!newcomers.length) return false;
+
+  // M6 detail: Scramble's margin gets a bonus inside ctppGenerateAllCandidates
+  // when the opponent is near winning — that's exactly the "all plans losing"
+  // case, so it tends to outrank pure-race archetypes here.
+  const slotsLeft = Math.max(0, cap - port.plans.length);
+  if (slotsLeft <= 0) return false;
+  const picks = newcomers.slice(0, slotsLeft);
+
+  for (const plan of picks) {
+    port.plans.push(plan);
+    if (window.CtppHarness?.telemetry) {
+      window.CtppHarness.telemetry.recordLifecycleEvent({
+        turn: curTurn, event: 'panic_create',
+        planId: plan.id, archetype: plan.archetype,
+        reason: 'all_plans_losing',
+      });
+    }
+  }
+  port._lastPanicTurn = curTurn;
+
+  // Re-evaluate primary: if the panic-spawned plan beats current primary on
+  // candidate score, let softmax pick a new one (subject to switch hysteresis
+  // applied later in the lifecycle).
+  if (!port.primaryId || !port.plans.find(p => p.id === port.primaryId)) {
+    const primary = _ctppSoftmaxPick(port.plans, tier.softmaxTemp);
+    if (primary) port.primaryId = primary.id;
+  }
+  return true;
+}
+
 function ctppGenRushPlan(pi, ctx) {
   const me = gameState.players[pi];
   if (!me) return null;
@@ -9362,6 +9437,12 @@ function ctppRunLifecycle(pi, ctx) {
 
   // EXPAND if portfolio is empty (or below quota — M4 tightens this).
   if (port.plans.length === 0) ctppExpandPortfolio(pi, ctx);
+
+  // PANIC EXPAND: if every surviving plan still projects a loss, try to bring
+  // in an archetype not yet attempted (including Scramble, which is normally
+  // quota-disabled). Plan.metrics.expectedMargin is populated at creation /
+  // adaptation, so it's already valid here — no pre-eval needed.
+  ctppPanicExpandIfLosing(pi, ctx);
 
   // COMMITMENT CHECK (hysteresis).
   const switchTo = ctppShouldSwitchPrimary(port);
@@ -12024,6 +12105,28 @@ function confirmGauntletNode(nodeId) {
   startGauntletCombat(node);
 }
 
+// Capture CTPP match metadata once aiDifficulty has been set to its final
+// gauntlet value. Called from startGauntletCombat after `aiDifficulty =
+// getGauntletDifficulty(...)`. Reads champions from the slot stashed by
+// initGauntletGame (avoids re-threading them through every call site).
+function _ctppCaptureGauntletMatchMeta(nodeType) {
+  if (!window.CtppHarness?.telemetry?.setMatchMeta) return;
+  const champs = window._pendingCtppChampions || {};
+  window.CtppHarness.telemetry.setMatchMeta({
+    startedAt: new Date().toISOString(),
+    gameMode: 'gauntlet',
+    gauntletStage: _gauntletRun?.stage,
+    gauntletNodeType: nodeType,
+    aiDifficulty,
+    champions: [
+      { seat: 0, name: champs.player?.name, faction: champs.player?.faction, rarity: champs.player?.rarity },
+      { seat: 1, name: champs.ai?.name,     faction: champs.ai?.faction,     rarity: champs.ai?.rarity     },
+    ],
+    relics: [...(_gauntletRun?.relics || [])],
+  });
+  window._pendingCtppChampions = null;
+}
+
 function startGauntletCombat(node) {
   const stage = _gauntletRun.stage;
 
@@ -12051,6 +12154,7 @@ function startGauntletCombat(node) {
     const bossDeck = b.deck.map(id => ({...CARDS[id]})).filter(Boolean);
     initGauntletGame(_gauntletRun.champion, bossChamp, _gauntletRun.deck, bossDeck);
     aiDifficulty = getGauntletDifficulty(stage, 'boss');
+    _ctppCaptureGauntletMatchMeta('boss');
     applyBossBoard({ preWalls: b.preWalls });
     return;
   }
@@ -12073,6 +12177,7 @@ function startGauntletCombat(node) {
   initGauntletGame(_gauntletRun.champion, aiChamp, _gauntletRun.deck, aiDeck);
   // AI tier: HARD for regular battles, NIGHTMARE for elites (per getGauntletDifficulty).
   aiDifficulty = getGauntletDifficulty(stage, node.type);
+  _ctppCaptureGauntletMatchMeta(node.type);
   // ── AI PRE-PLACED WALLS ──────────────────────────────────────────
   // Starting walls scale with AI champion rarity. Common opponents get 0,
   // Legendary opponents get 4. Done AFTER initGauntletGame so gameState
