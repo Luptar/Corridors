@@ -2848,8 +2848,13 @@ const AI_PREPLACED_WALL_SETS_BY_RARITY = {
   ],
 };
 function applyAIPreplacedWalls(rarity) {
-  const set = AI_PREPLACED_WALL_SETS_BY_RARITY[rarity];
-  if (!set || set.length === 0 || !gameState) return;
+  // Bug 1 fix: previously bailed early when the rarity set was empty (Common
+  // has []), which meant the Phase 2.3 verifier never ran for Common AI —
+  // even though a stage-1 player could still benefit from a slightly-blocked
+  // board. Now we only bail when there's no gameState to act on; the
+  // verifier always gets a chance, with stage-scaled aggressiveness.
+  if (!gameState) return;
+  const set = AI_PREPLACED_WALL_SETS_BY_RARITY[rarity] || [];
   const aiSeat = 1; // AI is always seat 1 in gauntlet 1v1
   // Validate each wall is legal in current state before placing — protects
   // against board sizes that wouldn't fit the layout (boss-board overrides etc.)
@@ -2869,10 +2874,13 @@ function applyAIPreplacedWalls(rarity) {
     // Count against AI's wall budget — they don't get extra free placements
     gameState.players[aiSeat].wallsInPlay += 1;
   }
-  // Phase 2.3: verify the layout actually blocks. If the player's BFS path
-  // length doesn't exceed Manhattan-distance by at least the target gain,
-  // augment with strategically-placed extra walls.
-  _ctppAugmentPreWallsForBlocking(0, 3, aiSeat);
+  // Phase 2.3: verify the layout actually blocks. Target gain scales by
+  // gauntlet stage so we don't punish new players on stage 1 with the same
+  // density of walls we'd place at stage 16. 1 tile of detour at stage 1
+  // turns into 3 tiles by the late game.
+  const stage = _gauntletRun?.stage || 1;
+  const targetGain = stage >= 12 ? 3 : (stage >= 5 ? 2 : 1);
+  _ctppAugmentPreWallsForBlocking(0, targetGain, aiSeat);
 }
 
 // Phase 2.3: Pre-wall strategic verifier. Stage-16 boss readout had 21
@@ -4328,15 +4336,15 @@ function buildGauntletAIDeck(stage, faction) {
   // Stage-16 boss readout had ZERO movement cards in its hand — the boss
   // physically couldn't race a Chronists/relic player. With wall-only decks
   // the AI can disrupt but can't close, and at 1 tile/turn it's outpaced by
-  // any opponent with a movement card. Floor: stages 5-8 need ≥1 movement
-  // card, stages 9+ need ≥2. Bosses (any stage) get the stage-12 floor too,
-  // so stage-4 and stage-8 bosses also start with movement options.
+  // any opponent with a movement card. Bug 2 fix (post-stage-1 readout):
+  // stage-1 AI also drew a wall-only hand and couldn't react when the
+  // player wall-rushed — floor now starts at stage 1 with ≥1 movement card,
+  // ramping up to ≥2 at stage 9. Bosses still get the next-tier floor.
   const movementPool = pool.filter(c => c.type === 'Movement');
   if (movementPool.length > 0) {
     const isBoss = GAUNTLET_BOSS_STAGES.includes(stage);
-    let minMovement = 0;
+    let minMovement = 1; // every gauntlet AI gets at least one movement card
     if (stage >= 9 || (isBoss && stage >= 8)) minMovement = 2;
-    else if (stage >= 5 || isBoss)            minMovement = 1;
     let movInDeck = deck.filter(c => c.type === 'Movement').length;
     if (movInDeck < minMovement) {
       // Replace lowest-rarity NON-WALL, non-movement cards (we don't want
@@ -8626,7 +8634,13 @@ function _ctppScoreCandidatePlan(plan, pi) {
   const confidence = plan.confidence ?? 1.0;
   let score = -winTurn * (1 / bias) / Math.max(0.1, confidence);
 
-  if (aiDifficulty === 'nightmare' && plan.metrics?.expectedMargin !== null
+  // Patch (post-stage-1 readout): margin scoring previously gated to nightmare
+  // only, which meant Phase 1.4/1.5 panic gates never fired at hard tier
+  // because expectedMargin stayed at the creation default of 0. Now hard +
+  // nightmare both apply margin scoring; medium still skips so it stays a
+  // gentle ramp for new players.
+  const useMarginScoring = (aiDifficulty === 'hard' || aiDifficulty === 'nightmare');
+  if (useMarginScoring && plan.metrics?.expectedMargin !== null
       && plan.metrics?.expectedMargin !== undefined) {
     const margin = plan.metrics.expectedMargin;
     if (margin < 0)      score -= 20;       // AI loses the race — catastrophic
@@ -8655,8 +8669,12 @@ function ctppGenerateAllCandidates(pi, ctx) {
     }
   }
 
-  // M6: Nightmare opponent modeling — refine metrics per plan.
-  if (aiDifficulty === 'nightmare') {
+  // M6 + post-stage-1 patch: opponent modeling runs at hard AND nightmare.
+  // Previously nightmare-only, which left hard-tier plans with margin=0 and
+  // dormant Phase 1.4 (panic-fire ult) / 1.5 (panic-expand) — both gate on
+  // negative margin. Hard tier now produces real margins so panic mode
+  // actually engages. Medium still skips for new-player simplicity.
+  if (aiDifficulty === 'hard' || aiDifficulty === 'nightmare') {
     for (const plan of candidates) {
       const sim = ctppSimulateOpponentAgainstPlan(plan, pi);
       plan.metrics.expectedOppWinTurn = sim.oppWinTurn;
@@ -9457,6 +9475,16 @@ function ctppComputePlanConfidence(plan) {
 // identity (id, createdTurn, archetype). This is the key M2 insight: instead of
 // pruning and regenerating when disrupted, adapt so the same strategic commitment
 // continues. Returns true if adaptation succeeded.
+//
+// Patch (post-stage-1 readout): zigzag adaptations were producing slow, mostly-
+// lateral paths that the AI committed to. Two new rules:
+//   1. Reject the adaptation entirely if the new path is much longer than what
+//      remained of the original — a plan that needs 5 extra detour turns is
+//      worse than dying and getting replaced.
+//   2. After acceptance, penalize the plan's health proportionally to how much
+//      of the path is lateral. A path that's 50% lateral is ~50% less healthy
+//      than a straight one. This makes pure-race plans score correctly against
+//      detour-heavy adaptations in primary selection.
 function ctppAdaptPlan(plan, pi) {
   if (!plan) return false;
   const me = gameState.players[pi];
@@ -9471,7 +9499,31 @@ function ctppAdaptPlan(plan, pi) {
   const newRoute = [{ row: me.position.row, col: me.position.col },
                     ...raw.map(p => ({ row: p.row, col: p.col }))];
 
+  // Rule 1: detour-budget guard. If the new path is more than 2 extra steps
+  // longer than what was left of the original, the adaptation is producing a
+  // slow zigzag — better to let the plan die so the portfolio re-expands.
   const idx = curTurn - plan.createdTurn;
+  const originalRemaining = Math.max(1, (plan.path?.length || 1) - 1 - idx);
+  const newRemaining = newRoute.length - 1;
+  if (newRemaining - originalRemaining > 2) return false;
+
+  // Rule 2: lateral-step ratio. Count how many steps in the new route make
+  // forward progress toward the goal vs. lateral moves. Used below to scale
+  // the post-adaptation health penalty.
+  const goalRow = (typeof getGoalRow === 'function') ? getGoalRow(pi) : null;
+  let forwardSteps = 0, lateralSteps = 0;
+  if (goalRow !== null) {
+    for (let i = 1; i < newRoute.length; i++) {
+      const prev = newRoute[i - 1], cur = newRoute[i];
+      const towardGoal = (Math.abs(cur.row - goalRow) < Math.abs(prev.row - goalRow));
+      if (towardGoal) forwardSteps++;
+      else if (cur.row === prev.row) lateralSteps++;
+      // else: backward step (shouldn't happen with BFS but counted as non-forward)
+    }
+  }
+  const totalSteps = Math.max(1, forwardSteps + lateralSteps);
+  const lateralRatio = lateralSteps / totalSteps;
+
   const prefix = plan.path.slice(0, Math.max(0, idx));
   plan.path = [...prefix, ...newRoute];
 
@@ -9503,6 +9555,19 @@ function ctppAdaptPlan(plan, pi) {
   plan.metrics.expectedWinTurn = curTurn + newRoute.length - 1;
   plan.adaptCount = (plan.adaptCount || 0) + 1;
   plan.lastAdaptedOn = curTurn;
+  // Patch: lateral-ratio health penalty (see Rule 2 above). A path that's
+  // half lateral gets a 25% health knock; a fully-lateral one gets 50%.
+  // Stage-1 readout had Rush adapt to a 33%-lateral path that the AI then
+  // committed to — this makes such adaptations score lower in primary
+  // selection without outright invalidating them. Cap the penalty so a
+  // partially-lateral plan doesn't drop below CTPP_HEALTH_PRUNE_THRESHOLD
+  // immediately and prematurely die.
+  if (lateralRatio > 0) {
+    const penalty = Math.min(0.5, lateralRatio * 0.5);
+    plan.health = Math.max(CTPP_HEALTH_PRUNE_THRESHOLD,
+                           (plan.health ?? 1) * (1 - penalty));
+  }
+  plan._lastAdaptLateralRatio = lateralRatio;
   return true;
 }
 
@@ -12597,8 +12662,10 @@ function applyBossBoard(board) {
   // walls are owner=-1 (neutral), but augmentation walls get owner=aiSeat=1
   // so they consume the AI's wall budget like normal pre-placed walls.
   // Stage-16 boss had 21 pre-walls and the player still walked the open
-  // center lane — this catches that.
-  _ctppAugmentPreWallsForBlocking(0, 3, 1);
+  // center lane — this catches that. Boss `targetGain` matches stage scaling.
+  const _bossStage = _gauntletRun?.stage || 1;
+  const _bossTargetGain = _bossStage >= 12 ? 3 : (_bossStage >= 5 ? 2 : 1);
+  _ctppAugmentPreWallsForBlocking(0, _bossTargetGain, 1);
 
   renderAll();
 }
