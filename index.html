@@ -2769,8 +2769,21 @@ const GAUNTLET_FFA_FLOORS = [3, 7, 11];
 // and additional buffs via AI_CHAMPION_BUFFS_BY_RARITY) — NOT from AI tier.
 // This avoids the "easy AI plays dumb" problem: every opponent plays well;
 // stronger opponents just have better stats and decks.
+// Phase 2.4: Difficulty floor by stage. Previously every regular battle ran
+// at 'hard' from stage 1, which made the new-player ramp brutal. Stages 1-2
+// now use 'medium' so the first matches feel like a tutorial; stages 3-11
+// step up to 'hard'; stages 12-16 always run at 'nightmare' (the late-game
+// stretch where relic snowball and CTPP depth most matter).
+//
+// Bosses and elites stay at 'nightmare' regardless of stage — their special
+// status is tied to AI tier, not just rarity.
 function getGauntletDifficulty(stage, nodeType) {
-  return (nodeType === 'boss' || nodeType === 'elite') ? 'nightmare' : 'hard';
+  if (nodeType === 'boss' || nodeType === 'elite') return 'nightmare';
+  if (typeof stage === 'number') {
+    if (stage >= 12) return 'nightmare';
+    if (stage <= 2)  return 'medium';
+  }
+  return 'hard';
 }
 
 // ── AI CHAMPION BUFFS  (rarity-keyed — AI side only) ─────────────────
@@ -2781,12 +2794,17 @@ function getGauntletDifficulty(stage, nodeType) {
 //
 // Applied AFTER generateChampion for regular/elite gauntlet matches.
 // NOT applied to bosses — they have hand-crafted stats and would double-buff.
+// Phase 2.1: Energy buffs were too low for high-rarity AI to keep tempo with
+// relic-equipped players. A Legendary boss running at 3 energy/turn could
+// only play one card per turn, while a 5-relic Common player out-tempo'd it.
+// New curve: Epic +3, Legendary +4 — closes the gap so Legendary AI can
+// actually spend cards as fast as the late-game player draws them.
 const AI_CHAMPION_BUFFS_BY_RARITY = {
   Common:    { wallLimit: 0, cardDraw: 0, energy: 0, ultimateCost:  0 },
   Uncommon:  { wallLimit: 1, cardDraw: 0, energy: 1, ultimateCost:  0 },
-  Rare:      { wallLimit: 2, cardDraw: 1, energy: 1, ultimateCost: -1 },
-  Epic:      { wallLimit: 4, cardDraw: 1, energy: 2, ultimateCost: -1 },
-  Legendary: { wallLimit: 5, cardDraw: 2, energy: 2, ultimateCost: -2 },
+  Rare:      { wallLimit: 2, cardDraw: 1, energy: 2, ultimateCost: -1 },
+  Epic:      { wallLimit: 4, cardDraw: 1, energy: 3, ultimateCost: -1 },
+  Legendary: { wallLimit: 5, cardDraw: 2, energy: 4, ultimateCost: -2 },
 };
 function applyAIChampionBuff(champ) {
   const b = AI_CHAMPION_BUFFS_BY_RARITY[champ?.rarity];
@@ -2850,6 +2868,82 @@ function applyAIPreplacedWalls(rarity) {
     });
     // Count against AI's wall budget — they don't get extra free placements
     gameState.players[aiSeat].wallsInPlay += 1;
+  }
+  // Phase 2.3: verify the layout actually blocks. If the player's BFS path
+  // length doesn't exceed Manhattan-distance by at least the target gain,
+  // augment with strategically-placed extra walls.
+  _ctppAugmentPreWallsForBlocking(0, 3, aiSeat);
+}
+
+// Phase 2.3: Pre-wall strategic verifier. Stage-16 boss readout had 21
+// pre-placed walls but the player walked row 7 → 0 unimpeded. This routine
+// checks whether the player's BFS-shortest path is at least `targetGain`
+// tiles longer than the straight-line minimum, and augments with extra
+// reinforced walls if not. Walls are placed along the player's path at the
+// position that adds the most distance per wall.
+//
+// Caps at 3 augmentation walls per call so we don't generate impassable
+// boards. Only iterates anchors in the player's path zone (between start
+// row and goal row), which keeps the simulation under ~150 candidates × BFS.
+function _ctppAugmentPreWallsForBlocking(playerSeat, targetGain, wallOwnerSeat) {
+  if (!gameState?.players?.[playerSeat]) return;
+  const player = gameState.players[playerSeat];
+  const goalRow = getGoalRow(playerSeat);
+  const startPos = player.position;
+  const aiSeat = (typeof wallOwnerSeat === 'number') ? wallOwnerSeat : 1;
+  const aiPlayer = gameState.players[aiSeat];
+
+  const manhattan = Math.abs(startPos.row - goalRow);
+  let curDist = bfsDistanceFor(startPos, goalRow, gameState.walls, playerSeat);
+  if (!Number.isFinite(curDist)) return; // already cut off — abort, would be illegal
+  if (curDist - manhattan >= targetGain) return; // already blocking enough
+
+  // Player's path zone — only consider walls between start row and goal row.
+  const rowLo = Math.min(startPos.row, goalRow);
+  const rowHi = Math.max(startPos.row, goalRow);
+  const oppPos = gameState.players[playerSeat].position;
+  const aiPos  = gameState.players[aiSeat]?.position || { row: 0, col: 0 };
+
+  const MAX_AUGMENT = 3;
+  let placed = 0;
+  while (curDist - manhattan < targetGain && placed < MAX_AUGMENT) {
+    // AI wall-budget guard. Don't exceed the AI's wallLimit.
+    if (aiPlayer && (aiPlayer.wallsInPlay || 0) >= (aiPlayer.wallLimitCurrent || 0)) break;
+
+    let bestAnchor = null, bestOrient = null, bestGain = 0;
+    for (let r = rowLo; r <= rowHi; r++) {
+      for (let c = 0; c < BOARD_SIZE; c++) {
+        for (const orient of ['H', 'V']) {
+          const anchor = { row: r, col: c };
+          if (!wallInBounds(anchor, orient, 2)) continue;
+          if (!isWallLegal(anchor, orient, 2, gameState.walls, oppPos, aiPos, false)) continue;
+          const simWalls = [...gameState.walls, {
+            id: '__sim__', owner: aiSeat, anchor, orientation: orient, length: 2,
+            isPhantom: false, reinforced: true,
+          }];
+          const newDist = bfsDistanceFor(startPos, goalRow, simWalls, playerSeat);
+          if (!Number.isFinite(newDist)) continue;
+          const gain = newDist - curDist;
+          if (gain > bestGain) {
+            bestGain = gain;
+            bestAnchor = anchor;
+            bestOrient = orient;
+          }
+        }
+      }
+    }
+    if (!bestAnchor || bestGain <= 0) break; // no useful placement available
+
+    gameState.walls.push({
+      id: gameState.nextWallId++, owner: aiSeat,
+      anchor: bestAnchor, orientation: bestOrient, length: 2,
+      isPhantom: false, durable: false, durableHits: 0,
+      immune: true, reinforced: true, permanent: true,
+      temporary: false, turnsRemaining: null, placedOnTurn: 0,
+    });
+    if (aiPlayer) aiPlayer.wallsInPlay = (aiPlayer.wallsInPlay || 0) + 1;
+    curDist += bestGain;
+    placed++;
   }
 }
 
@@ -4226,6 +4320,38 @@ function buildGauntletAIDeck(stage, faction) {
         if (wallsInDeck >= minWalls) break;
         deck[idx] = { ...pickWall() };
         wallsInDeck++;
+      }
+    }
+  }
+
+  // ── MOVEMENT-FLOOR PASS (Phase 2.2) ──────────────────────────────────
+  // Stage-16 boss readout had ZERO movement cards in its hand — the boss
+  // physically couldn't race a Chronists/relic player. With wall-only decks
+  // the AI can disrupt but can't close, and at 1 tile/turn it's outpaced by
+  // any opponent with a movement card. Floor: stages 5-8 need ≥1 movement
+  // card, stages 9+ need ≥2. Bosses (any stage) get the stage-12 floor too,
+  // so stage-4 and stage-8 bosses also start with movement options.
+  const movementPool = pool.filter(c => c.type === 'Movement');
+  if (movementPool.length > 0) {
+    const isBoss = GAUNTLET_BOSS_STAGES.includes(stage);
+    let minMovement = 0;
+    if (stage >= 9 || (isBoss && stage >= 8)) minMovement = 2;
+    else if (stage >= 5 || isBoss)            minMovement = 1;
+    let movInDeck = deck.filter(c => c.type === 'Movement').length;
+    if (movInDeck < minMovement) {
+      // Replace lowest-rarity NON-WALL, non-movement cards (we don't want
+      // to undo the wall-floor work above). Disruption cards are sacrificed
+      // first since they're the most fungible.
+      const rarityRank = { Common: 0, Uncommon: 1, Rare: 2, Legendary: 3 };
+      const idxs = deck.map((c, i) => ({ c, i }))
+                       .filter(x => x.c.type !== 'Wall' && x.c.type !== 'Movement')
+                       .sort((a, b) => (rarityRank[a.c.rarity] || 0) - (rarityRank[b.c.rarity] || 0))
+                       .map(x => x.i);
+      for (const idx of idxs) {
+        if (movInDeck >= minMovement) break;
+        const pick = movementPool[Math.floor(Math.random() * movementPool.length)];
+        deck[idx] = { ...pick };
+        movInDeck++;
       }
     }
   }
@@ -8283,11 +8409,22 @@ const CTPP_DRAWS_PER_TURN = 2;
 
 // ── Group A: Plan generation / portfolio ─────────────────────────────────
 function ctppInitPortfolio(pi) {
+  // Phase 1.3: Scramble was previously gated at 0 — only reachable via panic
+  // mode. But Scramble is the archetype that earns a +3 margin bonus when the
+  // opponent is near winning (M6 nightmare path), exactly the situation where
+  // the AI most needs an alternative. Tier-aware quota: medium keeps it off
+  // (would distract from cleaner archetypes); hard/nightmare always allow 1.
+  const tier = (typeof ctppGetTier === 'function') ? ctppGetTier() : null;
+  const useNonRaceArchetypes = !!(tier?.useCtpp);
+  const isHardPlus = aiDifficulty === 'hard' || aiDifficulty === 'nightmare';
   gameState.players[pi].aiPortfolio = {
     plans: [],
     primaryId: null,
     lastUpdatedTurn: -1,
-    archetypeQuota: { Rush: 1, Gate: 1, Tunnel: 1, Siege: 1, PhantomBait: 1, Scramble: 0 },
+    archetypeQuota: {
+      Rush: 1, Gate: 1, Tunnel: 1, Siege: 1, PhantomBait: 1,
+      Scramble: (useNonRaceArchetypes && isHardPlus) ? 1 : 0,
+    },
     deckProjection: null,
   };
   return gameState.players[pi].aiPortfolio;
@@ -8462,14 +8599,17 @@ function _ctppFindSiegeWalls(pi, opp, topK = 5, length = 2) {
 }
 
 // Faction → archetype affinity. Multiplicative bonus when scoring candidate plans.
+// Phase 1.1: Blocker is a fallback archetype intended as a backup, not a
+// primary. Bias is set just below faction-preferred archetypes (~1.0) so it
+// shows up in the portfolio but doesn't usually beat archetype-aligned plans.
 const CTPP_FACTION_ARCHETYPE_BIAS = {
-  Architects:  { Rush: 0.9, Gate: 1.3, Tunnel: 0.8, Siege: 1.3, PhantomBait: 0.7, Scramble: 1.0 },
-  Pathfinders: { Rush: 1.3, Gate: 0.8, Tunnel: 1.3, Siege: 0.8, PhantomBait: 0.7, Scramble: 1.0 },
-  Wardens:     { Rush: 0.9, Gate: 1.1, Tunnel: 0.8, Siege: 1.2, PhantomBait: 0.7, Scramble: 1.4 },
-  Phantoms:    { Rush: 0.9, Gate: 1.1, Tunnel: 0.9, Siege: 0.9, PhantomBait: 1.4, Scramble: 1.0 },
-  Pushers:     { Rush: 1.2, Gate: 0.9, Tunnel: 0.9, Siege: 1.2, PhantomBait: 0.7, Scramble: 1.0 },
-  Trappers:    { Rush: 0.8, Gate: 1.2, Tunnel: 0.8, Siege: 1.2, PhantomBait: 0.7, Scramble: 1.0 },
-  Chronists:   { Rush: 1.0, Gate: 1.0, Tunnel: 1.0, Siege: 1.0, PhantomBait: 1.0, Scramble: 1.0 },
+  Architects:  { Rush: 0.9, Gate: 1.3, Tunnel: 0.8, Siege: 1.3, PhantomBait: 0.7, Scramble: 1.0, Blocker: 1.1 },
+  Pathfinders: { Rush: 1.3, Gate: 0.8, Tunnel: 1.3, Siege: 0.8, PhantomBait: 0.7, Scramble: 1.0, Blocker: 0.8 },
+  Wardens:     { Rush: 0.9, Gate: 1.1, Tunnel: 0.8, Siege: 1.2, PhantomBait: 0.7, Scramble: 1.4, Blocker: 1.1 },
+  Phantoms:    { Rush: 0.9, Gate: 1.1, Tunnel: 0.9, Siege: 0.9, PhantomBait: 1.4, Scramble: 1.0, Blocker: 0.9 },
+  Pushers:     { Rush: 1.2, Gate: 0.9, Tunnel: 0.9, Siege: 1.2, PhantomBait: 0.7, Scramble: 1.0, Blocker: 1.0 },
+  Trappers:    { Rush: 0.8, Gate: 1.2, Tunnel: 0.8, Siege: 1.2, PhantomBait: 0.7, Scramble: 1.0, Blocker: 1.0 },
+  Chronists:   { Rush: 1.0, Gate: 1.0, Tunnel: 1.0, Siege: 1.0, PhantomBait: 1.0, Scramble: 1.0, Blocker: 1.0 },
 };
 
 // Score a candidate plan — lower expectedWinTurn is better. Faction bias
@@ -8503,6 +8643,7 @@ function ctppGenerateAllCandidates(pi, ctx) {
   const generators = [
     ctppGenRushPlan, ctppGenGatePlan, ctppGenTunnelPlan,
     ctppGenSiegePlan, ctppGenPhantomBaitPlan, ctppGenScramblePlan,
+    ctppGenBlockerPlan, // Phase 1.1: always-succeeds disruption fallback
   ];
   const candidates = [];
   for (const gen of generators) {
@@ -8634,6 +8775,17 @@ function _ctppAllPlansLosing(port) {
   });
 }
 
+// Disruption-priority order used by panic-mode force-pivot. Higher index =
+// more disruption-flavored. When all plans are losing AND no new archetypes
+// can be spawned, panic-pivot to the existing plan that's most likely to
+// derail the opponent rather than continue a race we can't win.
+const _CTPP_DISRUPTION_PRIORITY = ['Rush', 'Tunnel', 'Gate', 'PhantomBait', 'Siege', 'Blocker', 'Scramble'];
+
+function _ctppDisruptionScore(archetype) {
+  const i = _CTPP_DISRUPTION_PRIORITY.indexOf(archetype);
+  return i < 0 ? 0 : i;
+}
+
 function ctppPanicExpandIfLosing(pi, ctx) {
   const port = gameState.players[pi]?.aiPortfolio;
   if (!port || !port.plans?.length) return false;
@@ -8643,17 +8795,49 @@ function ctppPanicExpandIfLosing(pi, ctx) {
   const curTurn = gameState.turnNumber;
   if (port._lastPanicTurn != null && curTurn - port._lastPanicTurn < CTPP_PANIC_COOLDOWN_TURNS) return false;
 
+  // Mark panic active. ctppShouldSwitchPrimary checks this to lower its
+  // hysteresis margin so commitment switches actually fire while behind.
+  port._panicActiveTurn = curTurn;
+
   const tier = ctppGetTier();
   const cap  = (tier.portfolioSize || 1) + CTPP_PANIC_EXTRA_SLOTS;
   const candidates = ctppGenerateAllCandidates(pi, ctx);
-  if (!candidates.length) return false;
 
   // Pick archetypes not currently represented. Scramble is intentionally
   // included even if archetypeQuota.Scramble === 0 — quotas exist to keep the
   // routine portfolio focused, but in panic mode any plan beats no plan.
   const existing = new Set(port.plans.map(p => p.archetype));
   const newcomers = candidates.filter(c => !existing.has(c.archetype));
-  if (!newcomers.length) return false;
+
+  // Phase 1.5: When no new archetypes are available (every generator either
+  // returned null or returned an archetype we already have), force-pivot the
+  // primary to the most disruption-flavored existing plan. The previous
+  // implementation gave up here, leaving the AI committed to its losing race.
+  if (!newcomers.length) {
+    const sorted = [...port.plans].sort((a, b) =>
+      _ctppDisruptionScore(b.archetype) - _ctppDisruptionScore(a.archetype));
+    const target = sorted[0];
+    if (target && target.id !== port.primaryId) {
+      const fromId = port.primaryId;
+      port.primaryId = target.id;
+      port._lastPanicTurn = curTurn;
+      if (window.CtppHarness?.telemetry) {
+        window.CtppHarness.telemetry.recordCommitmentSwitch({
+          turn: curTurn, fromId, toId: target.id,
+          reason: 'panic_pivot_no_newcomers',
+        });
+        window.CtppHarness.telemetry.recordLifecycleEvent({
+          turn: curTurn, event: 'panic_pivot',
+          planId: target.id, archetype: target.archetype,
+          reason: 'all_plans_losing_no_newcomers',
+        });
+      }
+      return true;
+    }
+    // Already on the most-disruption plan; nothing else to do.
+    port._lastPanicTurn = curTurn;
+    return false;
+  }
 
   // M6 detail: Scramble's margin gets a bonus inside ctppGenerateAllCandidates
   // when the opponent is near winning — that's exactly the "all plans losing"
@@ -8744,8 +8928,14 @@ function ctppGenGatePlan(pi, ctx) {
   const removeCard = _ctppFindCard(pi, _ctppIsSelfRemoveCard);
   if (!wallCard || !removeCard) return null;
 
-  // Need the wall before the remove — Gate sequence only works if wall arrives first.
-  if (wallCard.arrivalTurn > removeCard.arrivalTurn) return null;
+  // Phase 1.2: previously bailed when wall arrived after remove. Now we still
+  // generate the plan as long as both arrive within the lookahead window —
+  // adapt-pass will re-route if the order ends up impossible. Bailing on a
+  // 1-turn ordering mismatch was throwing away too many viable plans.
+  const _curTurnGate = gameState.turnNumber;
+  const _tierGate = ctppGetTier();
+  const _horizonGate = _curTurnGate + (_tierGate.lookahead || 3);
+  if (wallCard.arrivalTurn > _horizonGate || removeCard.arrivalTurn > _horizonGate) return null;
 
   // Path from AI to goal — wall is placed on this path at a future step.
   const raw = aiPathToObjective(me.position, gameState.walls, pi);
@@ -8950,10 +9140,14 @@ function ctppGenSiegePlan(pi, ctx) {
 
 // PhantomBait: use phantom walls as cheap disruption + bait.
 // Feasibility: has phantom wall cards (PH1 etc) — typically Phantom faction only.
+// Phase 1.2: was `< 2` (needed 2+ phantom cards). Relaxed to `< 1` so a single
+// phantom is enough to spawn the plan — a single bait phantom still forces the
+// opponent to commit to an avoidance path or risk the bluff. Plan-confidence
+// already downweights single-source plans via dependency probability.
 function ctppGenPhantomBaitPlan(pi, ctx) {
   const me = gameState.players[pi];
   if (!me) return null;
-  if (_ctppCountCards(pi, _ctppIsPhantomWallCard) < 2) return null;
+  if (_ctppCountCards(pi, _ctppIsPhantomWallCard) < 1) return null;
 
   const opp = gameState.players[getFirstOpponent(pi)];
   if (!opp) return null;
@@ -9055,6 +9249,98 @@ function ctppGenScramblePlan(pi, ctx) {
     dependencies: [{ type: 'ultimateReady', byTurn: ultTurn, prob: 1.0 }],
     metrics: {
       expectedWinTurn: curTurn + (path.length - 1),
+      expectedOppWinTurn: null, expectedMargin: 0, riskVariance: 0,
+    },
+  };
+}
+
+// ── Blocker plan (Phase 1.1) ─────────────────────────────────────────────
+// The "always succeeds" disruption fallback. Generates whenever the AI has
+// any wall card AND any free wall slot — no archetype-specific preconditions.
+// Picks the SINGLE best blocking placement (top-1 from _ctppFindSiegeWalls,
+// falling back to generateWallCandidates if no high-impact disruption is
+// found) and schedules it on turn 1, then advances normally.
+//
+// Why this exists: the post-match readout from stage 16 boss showed only 2
+// plans materialized at nightmare (target was 5). Tunnel/Gate/PhantomBait
+// returned null because their hand-content checks failed. Panic-expand was
+// a no-op because it depended on the same generators. Blocker plugs that
+// hole — as long as the AI has cards to play walls, panic mode now has
+// something to spawn instead of giving up.
+function ctppGenBlockerPlan(pi, ctx) {
+  const me = gameState.players[pi];
+  if (!me) return null;
+  // Single-wall feasibility: any wall card + any free wall slot.
+  if (_ctppCountCards(pi, _ctppIsWallCard) < 1) return null;
+  if ((me.wallLimitCurrent || 0) - (me.wallsInPlay || 0) < 1) return null;
+
+  const oppIdx = getFirstOpponent(pi);
+  const opp = gameState.players[oppIdx];
+  if (!opp) return null;
+
+  // Try strategic disruption first (top-1 from siege scoring), then fall back
+  // to placement candidates near the opponent (generateWallCandidates).
+  let pick = null;
+  const siegeCands = (typeof _ctppFindSiegeWalls === 'function')
+    ? _ctppFindSiegeWalls(pi, opp, 1, 2) : [];
+  if (siegeCands.length) {
+    const c = siegeCands[0];
+    pick = { anchor: c.anchor, orient: c.orient, length: c.length };
+  } else if (typeof generateWallCandidates === 'function') {
+    const fallbacks = generateWallCandidates(opp.position, 2);
+    for (const cand of fallbacks) {
+      if (!isWallLegal(cand.anchor, cand.orientation, 2, gameState.walls,
+                        gameState.players[0].position,
+                        gameState.players[gameState.players.length - 1].position,
+                        false)) continue;
+      pick = { anchor: cand.anchor, orient: cand.orientation, length: 2 };
+      break;
+    }
+  }
+  if (!pick) return null;
+
+  const wc = _ctppFindCard(pi, _ctppIsWallCard);
+  if (!wc) return null;
+
+  const curTurn = gameState.turnNumber;
+  const tier = ctppGetTier();
+  const raw = aiPathToObjective(me.position, gameState.walls, pi);
+  if (!raw || raw.length < 1) return null;
+  const path = [{ row: me.position.row, col: me.position.col }, ...raw.map(p => ({ row: p.row, col: p.col }))];
+
+  const timetable = [];
+  // Turn 0 of the plan: place the blocking wall.
+  timetable.push({
+    turn: curTurn, role: 'setup',
+    action: { kind: 'wall', anchor: pick.anchor, orientation: pick.orient, length: pick.length, cardId: wc.cardId },
+    expectedCard: { id: wc.cardId, arrivalTurn: wc.arrivalTurn, arrivalProb: 1.0 },
+    criticality: 'hard',
+  });
+  // Subsequent turns: advance along the AI's own path.
+  for (let i = 1; i < tier.lookahead; i++) {
+    const step = path[Math.min(i, path.length - 1)];
+    timetable.push({
+      turn: curTurn + i,
+      role: (i === tier.lookahead - 1 ? 'payoff' : 'deploy'),
+      action: { kind: 'move', to: { row: step.row, col: step.col } },
+      expectedCard: null, criticality: 'soft',
+      plannedPos: { row: step.row, col: step.col },
+    });
+  }
+
+  // Expected win turn: AI advances at 1 tile/turn after the blocking wall.
+  // The wall steals ~3 tiles from opponent — this isn't reflected in plan.metrics
+  // here; ctppGenerateAllCandidates' nightmare opp-sim refines it post-creation.
+  return {
+    id: `Blocker_p${pi}_T${curTurn}`,
+    archetype: 'Blocker',
+    createdTurn: curTurn,
+    health: 1.0, confidence: 1.0,
+    endorsedActions: {}, timetable, path,
+    blockerWall: pick,
+    dependencies: [{ type: 'wallSlot', byTurn: curTurn, prob: 1.0 }],
+    metrics: {
+      expectedWinTurn: curTurn + (path.length - 1) + 1, // +1 for the wall-placement turn
       expectedOppWinTurn: null, expectedMargin: 0, riskVariance: 0,
     },
   };
@@ -9360,6 +9646,14 @@ function ctppPrunePortfolio(portfolio) {
 //   - plan  → switch to this plan
 // Switch only when: (a) primary health is catastrophic (<0.3) AND a backup exists,
 // or (b) a backup's score exceeds primary's by CTPP_HYSTERESIS_MARGIN (20%).
+//
+// Phase 1.5: When panic mode is active (port._panicActiveTurn === current turn),
+// drop the hysteresis multiplier from 1.2 to 1.05. The default 20% margin was
+// designed to prevent thrashing; it also prevents salvageable switches when
+// the AI is already committed to a losing race. In panic mode we need any
+// movement, even small, toward a different plan.
+const CTPP_PANIC_HYSTERESIS_MARGIN = 1.05;
+
 function ctppShouldSwitchPrimary(portfolio) {
   if (!portfolio || !portfolio.plans || portfolio.plans.length === 0) return null;
   const primary = portfolio.plans.find(p => p.id === portfolio.primaryId);
@@ -9375,7 +9669,11 @@ function ctppShouldSwitchPrimary(portfolio) {
 
   const primaryScore = (primary.health ?? 1) * (primary.confidence ?? 1);
   if (primary.health < CTPP_HEALTH_SWITCH_THRESHOLD) return bestBackup;
-  if (bestScore > primaryScore * CTPP_HYSTERESIS_MARGIN) return bestBackup;
+
+  const curTurn = (typeof gameState !== 'undefined' && gameState) ? gameState.turnNumber : null;
+  const inPanic = (portfolio._panicActiveTurn != null && portfolio._panicActiveTurn === curTurn);
+  const margin  = inPanic ? CTPP_PANIC_HYSTERESIS_MARGIN : CTPP_HYSTERESIS_MARGIN;
+  if (bestScore > primaryScore * margin) return bestBackup;
   return null;
 }
 
@@ -12294,6 +12592,13 @@ function applyBossBoard(board) {
       gameState.players[pi] = {...gameState.players[pi], position: newPos};
     }
   }
+
+  // Phase 2.3: same blocking-strength audit applied to boss boards. Boss
+  // walls are owner=-1 (neutral), but augmentation walls get owner=aiSeat=1
+  // so they consume the AI's wall budget like normal pre-placed walls.
+  // Stage-16 boss had 21 pre-walls and the player still walked the open
+  // center lane — this catches that.
+  _ctppAugmentPreWallsForBlocking(0, 3, 1);
 
   renderAll();
 }
@@ -18056,33 +18361,48 @@ function maybeAIUltimate(pi) {
   const oppIdx = getFirstOpponent(pi);
   const oppDist = bfsDistanceFor(gameState.players[oppIdx].position, getGoalRow(oppIdx), gameState.walls, oppIdx);
 
-  // Per-champion conditional firing
-  if (ultId === 'nyx') {
-    // Nyx invisibility: save for when close to goal (within 4 tiles)
-    if (aiDist > 4) return false;
-  } else if (ultId === 'thorne') {
-    // Thorne wall reorder: only fire when AI is significantly blocked
-    if (aiDist < 6) return false;
-  } else if (ultId === 'vex') {
-    // Vex Temporal Fold: only fire when hand has 2+ non-Basic cards worth playing
-    const nonBasicCards = p.hand.filter(c => c.id !== 'BB' && c.id !== 'B01');
-    if (nonBasicCards.length < 2) return false;
-  } else if (ultId === 'shade') {
-    // Shade Killing Field: fire when opponent is close (traps matter most near goal)
-    if (oppDist > 5) return false;
-  } else if (ultId === 'magnus') {
-    // Magnus Living Blueprint: fire when hand is nearly empty
-    if (p.hand.length > 2) return false;
-  } else if (ultId === 'pushaman') {
-    // Pushaman Breach: fire when opponent is within jump range
-    const manhattanDist = Math.abs(p.position.row - gameState.players[oppIdx].position.row)
-                        + Math.abs(p.position.col - gameState.players[oppIdx].position.col);
-    if (manhattanDist > 3) return false;
+  // Phase 1.4: When CTPP projects a heavy loss (expectedMargin < -3) and the
+  // ultimate is ready, fire it unconditionally. Holding back a maxed-out
+  // ultimate while predicting your own defeat is wasteful — even a marginal
+  // benefit beats not using the resource at all. Stage-16 boss readout had
+  // ultimate at 2/3 charge while the match ended with a -6 predicted margin.
+  const port = p.aiPortfolio;
+  const primary = port?.plans?.find(pl => pl.id === port.primaryId);
+  const margin = primary?.metrics?.expectedMargin;
+  const ctppPanicFire = (typeof margin === 'number' && margin < -3);
+
+  if (!ctppPanicFire) {
+    // Per-champion conditional firing (skipped when panic-firing).
+    if (ultId === 'nyx') {
+      // Nyx invisibility: save for when close to goal (within 4 tiles)
+      if (aiDist > 4) return false;
+    } else if (ultId === 'thorne') {
+      // Thorne wall reorder: only fire when AI is significantly blocked
+      if (aiDist < 6) return false;
+    } else if (ultId === 'vex') {
+      // Vex Temporal Fold: only fire when hand has 2+ non-Basic cards worth playing
+      const nonBasicCards = p.hand.filter(c => c.id !== 'BB' && c.id !== 'B01');
+      if (nonBasicCards.length < 2) return false;
+    } else if (ultId === 'shade') {
+      // Shade Killing Field: fire when opponent is close (traps matter most near goal)
+      if (oppDist > 5) return false;
+    } else if (ultId === 'magnus') {
+      // Magnus Living Blueprint: fire when hand is nearly empty
+      if (p.hand.length > 2) return false;
+    } else if (ultId === 'pushaman') {
+      // Pushaman Breach: fire when opponent is within jump range
+      const manhattanDist = Math.abs(p.position.row - gameState.players[oppIdx].position.row)
+                          + Math.abs(p.position.col - gameState.players[oppIdx].position.col);
+      if (manhattanDist > 3) return false;
+    }
+    // Soren (and any others): always fire — simple passives benefit immediately
   }
-  // Soren (and any others): always fire — simple passives benefit immediately
 
   gameState.players[pi] = { ...p, ultimateUsed:true, ultimateReady:false, ultimateCharge:0 };
   applyUltimate(pi, ultId);
+  if (ctppPanicFire) {
+    addLog(pi, 'ultimate', `Panic-fired ultimate (margin ${margin.toFixed(1)})`);
+  }
   return true;
 }function onEndTurnPassives(pi) {
   const champId = getPassiveId(pi);
