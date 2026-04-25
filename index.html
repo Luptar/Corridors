@@ -8561,6 +8561,69 @@ const _ctppIsSelfRemoveCard  = (c) => c && c.selfRemove === true;
 const _ctppIsBypassCard      = (c) => c && (c.ownWallsPassthrough === true || c.tunnelThrough === true);
 const _ctppIsMovementCard    = (c) => c && c.type === 'Movement';
 
+// Fast-move predicate for race plans: orthogonal multi-tile movement cards
+// like Advance (overrideSpeed:2). Excludes diagonal-only, lateral-only,
+// tunnel/passthrough cards (those have their own archetypes), and special
+// cards (Shortcut, Wrecking Ball, etc — they have side-effects beyond move).
+// Stage-9 readout had 8+ Advance cards in hand that the AI never played
+// because the plan timetable only knew about base 1-tile moves.
+const _ctppIsFastMoveCard = (c) =>
+  _ctppIsMovementCard(c) &&
+  (c.overrideSpeed || 1) >= 2 &&
+  !c.diagonal &&
+  !c.lateralOnly &&
+  !c.tunnelThrough &&
+  !c.ownWallsPassthrough &&
+  !c.special;
+
+// Collect all fast-move cards (hand + deck) with arrival info, sorted by
+// (speed desc, arrival asc, prob desc). Used by ctppGenRushPlan and other
+// race-flavored generators to compress timetables — each card play covers
+// `overrideSpeed` tiles in one turn instead of 1.
+function _ctppCollectFastMoveCards(pi, fromTurn) {
+  const me = gameState.players[pi];
+  if (!me) return [];
+  const port = me.aiPortfolio;
+  const proj = port?.deckProjection;
+  const out = [];
+  // In-hand: arrival = current turn, prob = 1.0. Each card instance is unique
+  // (we may have 2× Advance), so we tag by index to avoid double-counting.
+  (me.hand || []).forEach((c, i) => {
+    if (_ctppIsFastMoveCard(c)) {
+      out.push({
+        ...c,
+        _arrivalTurn: fromTurn,
+        _arrivalProb: 1.0,
+        _key: `hand:${i}:${c.id}`,
+      });
+    }
+  });
+  // In-deck: compute arrival via the projection. We DEDUPE by id since
+  // ctppCardArrivalInfo returns the same arrival info for all copies of the
+  // same id in probabilistic mode. Each copy is still its own _key so the
+  // greedy scheduler can use them independently in distinct turns.
+  const deckIds = (me.deck || []).map(x => x?.id).filter(Boolean);
+  (me.deck || []).forEach((c, i) => {
+    if (_ctppIsFastMoveCard(c)) {
+      const info = (typeof ctppCardArrivalInfo === 'function')
+        ? ctppCardArrivalInfo(c.id, fromTurn, proj, [], deckIds)
+        : { arrivalTurn: fromTurn + 1, arrivalProb: 0.5 };
+      out.push({
+        ...c,
+        _arrivalTurn: info.arrivalTurn,
+        _arrivalProb: info.arrivalProb,
+        _key: `deck:${i}:${c.id}`,
+      });
+    }
+  });
+  out.sort((a, b) =>
+    ((b.overrideSpeed || 1) - (a.overrideSpeed || 1)) ||
+    (a._arrivalTurn - b._arrivalTurn) ||
+    (b._arrivalProb - a._arrivalProb)
+  );
+  return out;
+}
+
 // Count cards matching a predicate in hand+deck combined. Used for feasibility.
 function _ctppCountCards(pi, predicate) {
   const me = gameState.players[pi];
@@ -8914,22 +8977,78 @@ function ctppGenRushPlan(pi, ctx) {
 
   const curTurn = gameState.turnNumber;
   const tier    = ctppGetTier();
-  const limit   = Math.min(tier.lookahead, path.length - 1);
   const timetable = [];
+  const dependencies = [];
 
-  for (let i = 0; i < limit; i++) {
-    const step = path[i + 1]; // first step at i=0 is path[1]
-    timetable.push({
-      turn: curTurn + i,
-      role: (i === 0 ? 'setup' : (i === limit - 1 ? 'payoff' : 'deploy')),
-      action: { kind: 'move', to: { row: step.row, col: step.col } },
-      expectedCard: null,
-      criticality: 'hard',
-      plannedPos: { row: step.row, col: step.col },
-    });
+  // Phase B (post-stage-9 readout): Rush no longer plans 1-tile/turn pace.
+  // Fold available fast Movement cards (Advance, etc.) into the timetable so
+  // each card-play covers `overrideSpeed` tiles in one turn. Stage-9 hand had
+  // 8+ Advance copies that the AI never used because plans only knew about
+  // base moves. Greedy scheduler: prefer the highest-speed card available
+  // each turn that we can afford and that has tiles left to cover.
+  const fastCards = _ctppCollectFastMoveCards(pi, curTurn);
+  const energyPerTurn = me.energyPerTurn || me.energy || 3;
+  const usedKeys = new Set();
+  let pathIdx = 1;             // index of next tile to land on (path[0] = start)
+  let turnSavings = 0;         // tiles saved by card plays (each card saves overrideSpeed-1 turns)
+  const maxTurns = Math.min(tier.lookahead, Math.max(1, path.length - 1));
+
+  for (let i = 0; i < maxTurns && pathIdx < path.length; i++) {
+    const t = curTurn + i;
+    // Find a movement card usable this turn
+    let pick = null;
+    for (const mc of fastCards) {
+      if (usedKeys.has(mc._key)) continue;
+      if (mc._arrivalTurn > t) continue;
+      const cost = mc.energyCost || 0;
+      if (cost > energyPerTurn) continue;
+      const speed = mc.overrideSpeed || 1;
+      if (pathIdx + speed - 1 >= path.length) continue; // not enough tiles left
+      pick = mc; break; // sorted by speed desc — first fit is best fit
+    }
+
+    if (pick) {
+      const speed = pick.overrideSpeed || 2;
+      const dest = path[pathIdx + speed - 1];
+      timetable.push({
+        turn: t,
+        role: (i === 0 ? 'setup' : (i === maxTurns - 1 ? 'payoff' : 'deploy')),
+        action: { kind: 'play_card', cardId: pick.id, followUpMove: { row: dest.row, col: dest.col }, overrideSpeed: speed },
+        expectedCard: { id: pick.id, arrivalTurn: pick._arrivalTurn, arrivalProb: pick._arrivalProb },
+        criticality: 'hard',
+        plannedPos: { row: dest.row, col: dest.col },
+      });
+      dependencies.push({ type: 'cardArrival', cardId: pick.id, byTurn: t, prob: pick._arrivalProb });
+      usedKeys.add(pick._key);
+      pathIdx += speed;
+      turnSavings += (speed - 1);
+    } else {
+      const step = path[pathIdx];
+      timetable.push({
+        turn: t,
+        role: (i === 0 ? 'setup' : (i === maxTurns - 1 ? 'payoff' : 'deploy')),
+        action: { kind: 'move', to: { row: step.row, col: step.col } },
+        expectedCard: null,
+        criticality: 'hard',
+        plannedPos: { row: step.row, col: step.col },
+      });
+      pathIdx += 1;
+    }
   }
 
-  return {
+  // Project out beyond the lookahead window: any remaining unused fast-move
+  // cards still save (speed-1) turns each, capped so we never project the
+  // win turn before now.
+  for (const mc of fastCards) {
+    if (usedKeys.has(mc._key)) continue;
+    const speed = mc.overrideSpeed || 1;
+    turnSavings += (speed - 1);
+    usedKeys.add(mc._key);
+  }
+  const baseWinTurn = curTurn + (path.length - 1);
+  const expectedWinTurn = Math.max(curTurn + 1, baseWinTurn - turnSavings);
+
+  const rushPlan = {
     id: `Rush_p${pi}_T${curTurn}`,
     archetype: 'Rush',
     createdTurn: curTurn,
@@ -8939,14 +9058,19 @@ function ctppGenRushPlan(pi, ctx) {
     timetable,
     path,
     sharedPrefix: [],
-    dependencies: [],
+    dependencies,
     metrics: {
-      expectedWinTurn: curTurn + (path.length - 1),
+      expectedWinTurn,
       expectedOppWinTurn: null,
       expectedMargin: 0,
       riskVariance: 0,
     },
   };
+  // Confidence scales with arrival probability of any fast-move dependencies.
+  if (dependencies.length > 0 && typeof ctppComputePlanConfidence === 'function') {
+    rushPlan.confidence = ctppComputePlanConfidence(rushPlan);
+  }
+  return rushPlan;
 }
 
 // Gate: place wall near own approach to slow opponent, self-remove when passing.
@@ -9059,29 +9183,82 @@ function ctppGenTunnelPlan(pi, ctx) {
 
   const curTurn = gameState.turnNumber;
   const tier = ctppGetTier();
-  const limit = Math.min(tier.lookahead, path.length - 1);
   const playTurn = Math.max(curTurn, bypass.arrivalTurn);
 
+  // Phase B: collect fast-move cards for non-bypass turns. The bypass card
+  // itself is a movement card (via overrideSpeed/tunnelThrough), but it's
+  // already filtered out of fastCards (tunnelThrough excluded). Other speed
+  // cards still apply on the move-only turns of the timetable.
+  const fastCards = _ctppCollectFastMoveCards(pi, curTurn);
+  const energyPerTurn = me.energyPerTurn || me.energy || 3;
+  const usedKeys = new Set();
+  let pathIdx = 1;
+  let turnSavings = 0;
+
   const timetable = [];
-  for (let i = 0; i < limit; i++) {
-    const step = path[i + 1];
+  const dependencies = [{ type: 'cardArrival', cardId: bypass.cardId, byTurn: playTurn, prob: bypass.arrivalProb ?? 1.0 }];
+  const maxTurns = Math.min(tier.lookahead, path.length - 1);
+
+  for (let i = 0; i < maxTurns && pathIdx < path.length; i++) {
     const t = curTurn + i;
-    if (t === playTurn) {
+    // Bypass card play takes precedence on its scheduled turn.
+    if (t === playTurn && pathIdx < path.length) {
+      const step = path[pathIdx];
       timetable.push({
         turn: t, role: 'payoff',
         action: { kind: 'play_card', cardId: bypass.cardId, followUpMove: step },
         expectedCard: { id: bypass.cardId, arrivalTurn: bypass.arrivalTurn, arrivalProb: 1.0 },
         criticality: 'hard',
       });
-    } else {
+      pathIdx += 1;
+      continue;
+    }
+    // Otherwise: try a fast-move card, fall back to base move.
+    let pickCard = null;
+    for (const mc of fastCards) {
+      if (usedKeys.has(mc._key)) continue;
+      if (mc._arrivalTurn > t) continue;
+      const cost = mc.energyCost || 0;
+      if (cost > energyPerTurn) continue;
+      const speed = mc.overrideSpeed || 1;
+      if (pathIdx + speed - 1 >= path.length) continue;
+      pickCard = mc; break;
+    }
+    if (pickCard) {
+      const speed = pickCard.overrideSpeed || 2;
+      const dest = path[pathIdx + speed - 1];
       timetable.push({
-        turn: t, role: (i === 0 ? 'setup' : (i === limit - 1 ? 'payoff' : 'deploy')),
+        turn: t,
+        role: (i === 0 ? 'setup' : (i === maxTurns - 1 ? 'payoff' : 'deploy')),
+        action: { kind: 'play_card', cardId: pickCard.id, followUpMove: { row: dest.row, col: dest.col }, overrideSpeed: speed },
+        expectedCard: { id: pickCard.id, arrivalTurn: pickCard._arrivalTurn, arrivalProb: pickCard._arrivalProb },
+        criticality: 'soft',
+        plannedPos: { row: dest.row, col: dest.col },
+      });
+      dependencies.push({ type: 'cardArrival', cardId: pickCard.id, byTurn: t, prob: pickCard._arrivalProb });
+      usedKeys.add(pickCard._key);
+      pathIdx += speed;
+      turnSavings += (speed - 1);
+    } else {
+      const step = path[pathIdx];
+      timetable.push({
+        turn: t,
+        role: (i === 0 ? 'setup' : (i === maxTurns - 1 ? 'payoff' : 'deploy')),
         action: { kind: 'move', to: { row: step.row, col: step.col } },
         expectedCard: null, criticality: 'soft',
         plannedPos: { row: step.row, col: step.col },
       });
+      pathIdx += 1;
     }
   }
+  // Project unused fast-move cards as additional savings beyond the lookahead.
+  for (const mc of fastCards) {
+    if (usedKeys.has(mc._key)) continue;
+    turnSavings += ((mc.overrideSpeed || 1) - 1);
+    usedKeys.add(mc._key);
+  }
+  const baseWinTurn = curTurn + (path.length - 1);
+  const expectedWinTurn = Math.max(curTurn + 1, baseWinTurn - turnSavings);
 
   const tunnelPlan = {
     id: `Tunnel_p${pi}_T${curTurn}`,
@@ -9090,9 +9267,9 @@ function ctppGenTunnelPlan(pi, ctx) {
     health: 1.0, confidence: 1.0,
     endorsedActions: {}, timetable, path,
     bypassCard: { id: bypass.cardId, playTurn },
-    dependencies: [{ type: 'cardArrival', cardId: bypass.cardId, byTurn: playTurn, prob: bypass.arrivalProb ?? 1.0 }],
+    dependencies,
     metrics: {
-      expectedWinTurn: curTurn + (path.length - 1),
+      expectedWinTurn,
       expectedOppWinTurn: null, expectedMargin: 0, riskVariance: 0,
     },
   };
@@ -9342,6 +9519,8 @@ function ctppGenBlockerPlan(pi, ctx) {
   const path = [{ row: me.position.row, col: me.position.col }, ...raw.map(p => ({ row: p.row, col: p.col }))];
 
   const timetable = [];
+  const dependencies = [{ type: 'wallSlot', byTurn: curTurn, prob: 1.0 }];
+
   // Turn 0 of the plan: place the blocking wall.
   timetable.push({
     turn: curTurn, role: 'setup',
@@ -9349,34 +9528,85 @@ function ctppGenBlockerPlan(pi, ctx) {
     expectedCard: { id: wc.cardId, arrivalTurn: wc.arrivalTurn, arrivalProb: 1.0 },
     criticality: 'hard',
   });
-  // Subsequent turns: advance along the AI's own path.
-  for (let i = 1; i < tier.lookahead; i++) {
-    const step = path[Math.min(i, path.length - 1)];
-    timetable.push({
-      turn: curTurn + i,
-      role: (i === tier.lookahead - 1 ? 'payoff' : 'deploy'),
-      action: { kind: 'move', to: { row: step.row, col: step.col } },
-      expectedCard: null, criticality: 'soft',
-      plannedPos: { row: step.row, col: step.col },
-    });
+
+  // Phase B (post-stage-9): subsequent turns can use fast Movement cards
+  // instead of base 1-tile moves. Same scheduler as Rush — pick highest-speed
+  // affordable card each turn until path or cards are exhausted.
+  const fastCards = _ctppCollectFastMoveCards(pi, curTurn);
+  const energyPerTurn = me.energyPerTurn || me.energy || 3;
+  const usedKeys = new Set();
+  let pathIdx = 1;
+  let turnSavings = 0;
+
+  for (let i = 1; i < tier.lookahead && pathIdx < path.length; i++) {
+    const t = curTurn + i;
+    let pickCard = null;
+    for (const mc of fastCards) {
+      if (usedKeys.has(mc._key)) continue;
+      if (mc._arrivalTurn > t) continue;
+      const cost = mc.energyCost || 0;
+      if (cost > energyPerTurn) continue;
+      const speed = mc.overrideSpeed || 1;
+      if (pathIdx + speed - 1 >= path.length) continue;
+      pickCard = mc; break;
+    }
+    if (pickCard) {
+      const speed = pickCard.overrideSpeed || 2;
+      const dest = path[pathIdx + speed - 1];
+      timetable.push({
+        turn: t,
+        role: (i === tier.lookahead - 1 ? 'payoff' : 'deploy'),
+        action: { kind: 'play_card', cardId: pickCard.id, followUpMove: { row: dest.row, col: dest.col }, overrideSpeed: speed },
+        expectedCard: { id: pickCard.id, arrivalTurn: pickCard._arrivalTurn, arrivalProb: pickCard._arrivalProb },
+        criticality: 'soft',
+        plannedPos: { row: dest.row, col: dest.col },
+      });
+      dependencies.push({ type: 'cardArrival', cardId: pickCard.id, byTurn: t, prob: pickCard._arrivalProb });
+      usedKeys.add(pickCard._key);
+      pathIdx += speed;
+      turnSavings += (speed - 1);
+    } else {
+      const step = path[pathIdx];
+      timetable.push({
+        turn: t,
+        role: (i === tier.lookahead - 1 ? 'payoff' : 'deploy'),
+        action: { kind: 'move', to: { row: step.row, col: step.col } },
+        expectedCard: null, criticality: 'soft',
+        plannedPos: { row: step.row, col: step.col },
+      });
+      pathIdx += 1;
+    }
+  }
+  // Project remaining unused fast-move cards as additional savings.
+  for (const mc of fastCards) {
+    if (usedKeys.has(mc._key)) continue;
+    turnSavings += ((mc.overrideSpeed || 1) - 1);
+    usedKeys.add(mc._key);
   }
 
-  // Expected win turn: AI advances at 1 tile/turn after the blocking wall.
-  // The wall steals ~3 tiles from opponent — this isn't reflected in plan.metrics
-  // here; ctppGenerateAllCandidates' nightmare opp-sim refines it post-creation.
-  return {
+  // Expected win turn: base = path tiles + 1 turn for wall placement, minus
+  // turns saved by movement cards. The wall's effect on opp is credited
+  // separately via selfDisruption in ctppSimulateOpponentAgainstPlan.
+  const baseWinTurn = curTurn + (path.length - 1) + 1;
+  const expectedWinTurn = Math.max(curTurn + 1, baseWinTurn - turnSavings);
+
+  const blockerPlan = {
     id: `Blocker_p${pi}_T${curTurn}`,
     archetype: 'Blocker',
     createdTurn: curTurn,
     health: 1.0, confidence: 1.0,
     endorsedActions: {}, timetable, path,
     blockerWall: pick,
-    dependencies: [{ type: 'wallSlot', byTurn: curTurn, prob: 1.0 }],
+    dependencies,
     metrics: {
-      expectedWinTurn: curTurn + (path.length - 1) + 1, // +1 for the wall-placement turn
+      expectedWinTurn,
       expectedOppWinTurn: null, expectedMargin: 0, riskVariance: 0,
     },
   };
+  if (typeof ctppComputePlanConfidence === 'function') {
+    blockerPlan.confidence = ctppComputePlanConfidence(blockerPlan);
+  }
+  return blockerPlan;
 }
 
 function ctppPlanFromTemplate() { return null; /* Kept for future refactor */ }
@@ -9936,6 +10166,7 @@ function ctppRunLifecycle(pi, ctx) {
           expectedWinTurn: p.metrics?.expectedWinTurn,
           expectedMargin:  p.metrics?.expectedMargin,
           oppDisruption:   p.oppModel?.disruption,
+          selfDisruption:  p.oppModel?.selfDisruption,
           timetable: (p.timetable || []).map(e => ({
             turn: e.turn, role: e.role,
             actionKind: e.action?.kind,
