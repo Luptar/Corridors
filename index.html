@@ -2598,11 +2598,10 @@
       <div class="hand-label">HAND <span id="p1-deck-count" style="color:var(--text-dim)">(deck: 15)</span></div>
       <div class="hand-cards" id="p1-hand"></div>
     </div>
-    <!-- Relic tray (Gauntlet only — bottom of right column) -->
-    <div class="panel-section" id="relic-tray-section" style="margin-top:auto;padding-top:6px;border-top:1px solid var(--border);display:none;">
-      <div style="font-size:8px;color:var(--text-dim);letter-spacing:.15em;margin-bottom:4px;">RELICS</div>
-      <div id="relic-tray" style="display:flex;flex-wrap:wrap;gap:4px;min-height:24px;"></div>
-    </div>
+    <!-- Relic tray is rendered into the opponent right-panel by
+         renderAIStatusStrip(); the static container that used to live here
+         caused a duplicate-id collision (getElementById always returned the
+         hidden copy) and has been removed. -->
   </div>
 
   <!-- Card Play History -->
@@ -4205,6 +4204,11 @@ let wallOrientation = 'H';
 let selectedCard = null;   // {id, idx, length, isPhantom, isDurable} or null
 let hasMoved = false;       // whether champion has moved this turn
 let hasPlayedCard = false;  // whether a card has been played this turn
+// Stepwise WASD movement: tracks the player's tentative position and remaining
+// step budget while they walk a multi-tile move one tile at a time. Cleared on
+// commit (executeMove), cancel (enterMoveMode toggle), or stale turn detection.
+// Shape: { seat, turn, tentativePos:{row,col}, stepsRemaining }
+let _wasdStepState = null;
 let selectedChampionId = null;
 let aiDifficulty = 'medium'; // 'easy' | 'medium' | 'hard' | 'nightmare'
 const DIFFICULTY_DEPTH = { easy: 0, medium: 1, hard: 2 };
@@ -4714,6 +4718,11 @@ function initGauntletGame(playerChamp, aiChamp, playerDeckIds, aiDeckCards) {
   mp_gameId = null; mp_localSeat = null; mp_opponentName = null;
   if (mp_subscription && _sb) { _sb.removeChannel(mp_subscription); mp_subscription = null; }
   // Note: aiDifficulty is set by the caller (startGauntletCombat) via getGauntletDifficulty().
+  // Auto-enable CTPP for every gauntlet match. Gauntlet difficulty is always
+  // 'hard' (regular/elite) or 'nightmare' (boss/elite) — both have useCtpp:true
+  // in CTPP_DIFFICULTY_TIERS, so the lifecycle should run by default rather
+  // than requiring a manual console flip.
+  window._ctppEnabled = true;
 
   gameState = {
     players: [
@@ -5239,6 +5248,9 @@ function reconstructBFSPath(from, to, pi) {
 }
 
 function executeMove(to) {
+  // Commit clears any in-flight stepwise WASD tracking — a final destination
+  // is being applied, the tentative path is no longer relevant.
+  _wasdStepState = null;
   const pi   = gameState.activePlayer;
   const from = gameState.players[pi].position;
   // Breach teleport handling
@@ -9513,9 +9525,18 @@ function ctppOverlayInit() {
     #ctpp-overlay .ctpp-section-hdr { color: #7fd4ff; font-weight: bold;
       font-size: 10px; margin-bottom: 4px; text-transform: uppercase; }
     #ctpp-overlay .ctpp-log-entry { color: #a0a8b4; font-size: 10px; margin: 1px 0; }
-    #ctpp-overlay .ctpp-flags { color: #888; font-size: 10px; margin-top: 4px; }
-    #ctpp-overlay .ctpp-flag-on { color: #9fd89f; }
-    #ctpp-overlay .ctpp-flag-off { color: #d94040; }
+    #ctpp-overlay .ctpp-flags { color: #888; font-size: 10px; margin-top: 4px;
+      display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+    #ctpp-overlay .ctpp-flag-btn { cursor: pointer; padding: 2px 6px;
+      border: 1px solid #2a4560; border-radius: 3px; background: rgba(20,32,46,0.7);
+      font: inherit; user-select: none; }
+    #ctpp-overlay .ctpp-flag-btn:hover { border-color: #5a8db0; }
+    #ctpp-overlay .ctpp-flag-on { color: #9fd89f; border-color: #4a8a4a; }
+    #ctpp-overlay .ctpp-flag-off { color: #d94040; border-color: #6a3030; }
+    #ctpp-overlay .ctpp-action-btn { cursor: pointer; padding: 2px 6px;
+      border: 1px solid #4a6a90; border-radius: 3px; background: rgba(40,60,90,0.6);
+      color: #b8d0e8; font: inherit; user-select: none; }
+    #ctpp-overlay .ctpp-action-btn:hover { background: rgba(60,90,130,0.8); }
   `;
   document.head.appendChild(style);
 
@@ -9553,6 +9574,33 @@ function ctppOverlayShow() {
 function ctppOverlayHide() {
   if (_ctppOverlayEl) _ctppOverlayEl.classList.remove('visible');
   if (_ctppOverlayPollId) { clearInterval(_ctppOverlayPollId); _ctppOverlayPollId = null; }
+}
+
+// Toggle CTPP master switch from the overlay UI. Flipping ON does not
+// retroactively seed portfolios — that happens at the start of each AI turn
+// (see runAI). Use ctppOverlayInitNow() to force-seed for already-running games.
+function ctppOverlayToggleEnabled() {
+  window._ctppEnabled = !window._ctppEnabled;
+  ctppOverlayRender();
+}
+function ctppOverlayToggleTest() {
+  window._ctppTestMode = !window._ctppTestMode;
+  ctppOverlayRender();
+}
+// Manually seed portfolios for every AI seat in the current game so the
+// overlay shows plans without waiting for the next AI turn.
+function ctppOverlayInitNow() {
+  if (!window._ctppEnabled) {
+    window._ctppEnabled = true;
+  }
+  if (!gameState?.players) { ctppOverlayRender(); return; }
+  for (let i = 0; i < gameState.players.length; i++) {
+    if (typeof isHumanSeat === 'function' && isHumanSeat(i)) continue;
+    if (!gameState.players[i].aiPortfolio && typeof ctppInitPortfolio === 'function') {
+      ctppInitPortfolio(i);
+    }
+  }
+  ctppOverlayRender();
 }
 
 function _ctppHealthBar(val) {
@@ -9624,10 +9672,13 @@ function ctppOverlayRender() {
   const body = _ctppOverlayEl.querySelector('#ctpp-overlay-body');
   if (!body) return;
 
+  const ctppCls = window._ctppEnabled ? 'ctpp-flag-on' : 'ctpp-flag-off';
+  const testCls = window._ctppTestMode ? 'ctpp-flag-on' : 'ctpp-flag-off';
   const flagHtml = `<div class="ctpp-flags">
-    CTPP: <span class="ctpp-flag-${window._ctppEnabled ? 'on">ON' : 'off">OFF'}</span>
-    &nbsp;| Test: <span class="ctpp-flag-${window._ctppTestMode ? 'on">ON' : 'off">OFF'}</span>
-    &nbsp;| Turn ${gameState?.turnNumber ?? '?'}
+    <span class="ctpp-flag-btn ${ctppCls}" onclick="ctppOverlayToggleEnabled()" title="Toggle CTPP master switch">CTPP: ${window._ctppEnabled ? 'ON' : 'OFF'}</span>
+    <span class="ctpp-flag-btn ${testCls}" onclick="ctppOverlayToggleTest()" title="Toggle CTPP test mode (seeded RNG / AI-vs-AI)">Test: ${window._ctppTestMode ? 'ON' : 'OFF'}</span>
+    <span class="ctpp-action-btn" onclick="ctppOverlayInitNow()" title="Seed portfolios for AI seats now (also flips CTPP on)">Init portfolios</span>
+    <span style="margin-left:auto;color:#888;">Turn ${gameState?.turnNumber ?? '?'}</span>
   </div>`;
 
   let seatsHtml = '';
@@ -9709,7 +9760,9 @@ function initKeyboardControls() {
       return;
     }
 
-    // WASD → movement
+    // WASD → movement (stepwise: each press advances ONE tile from the
+    // current tentative position, until the speed budget is exhausted or the
+    // player reaches the goal — only then is the move committed).
     if (key === 'w' || key === 'a' || key === 's' || key === 'd') {
       ev.preventDefault();
       if (uiMode !== 'move') {
@@ -9717,18 +9770,56 @@ function initKeyboardControls() {
         if (typeof enterMoveMode === 'function') enterMoveMode();
         return;
       }
-      // Second press: execute move in this direction. Try 1-step first, then
-      // 2-step (jump over adjacent opponent). Silently ignore illegal presses.
-      const pos = gameState.players[mySeat].position;
+      // Drop stale stepwise state from a prior turn / different seat.
+      if (_wasdStepState && (_wasdStepState.seat !== mySeat || _wasdStepState.turn !== gameState.turnNumber)) {
+        _wasdStepState = null;
+      }
+      // Lazy-init on first directional press of this move-mode session.
+      if (!_wasdStepState) {
+        const startPos = gameState.players[mySeat].position;
+        let speed;
+        if (selectedCard && selectedCard.overrideSpeed !== undefined && selectedCard.overrideSpeed !== null) {
+          speed = selectedCard.overrideSpeed;
+        } else {
+          speed = gameState.players[mySeat].champion.moveSpeed || 1;
+          const hasMartialLaw = (gameState.players[mySeat].statusEffects || []).some(e => e.type === 'martial_law' && e.turnsRemaining > 0);
+          if (hasMartialLaw) speed = Math.max(0, speed - 1);
+        }
+        _wasdStepState = { seat: mySeat, turn: gameState.turnNumber, tentativePos: startPos, stepsRemaining: speed };
+      }
+      if (_wasdStepState.stepsRemaining <= 0) return;
+      const pos = _wasdStepState.tentativePos;
       if (!pos) return;
       const dr = key === 'w' ? -1 : key === 's' ? 1 : 0;
       const dc = key === 'a' ? -1 : key === 'd' ? 1 : 0;
-      const legal = (typeof getLegalMoves === 'function') ? getLegalMoves(gameState, mySeat) : [];
+      // Compute single-step legal moves from the tentative position, honoring
+      // the active card's flags (tunnelThrough, ownWallsPassthrough, lateralOnly).
+      // Diagonal-only cards have overrideSpeed === 1 and don't match WASD.
+      const tunnelThrough = !!(selectedCard && selectedCard.tunnelThrough);
+      const ownWallsPassthrough = !!(selectedCard && selectedCard.ownWallsPassthrough);
+      const lateralOnly = !!(selectedCard && selectedCard.lateralOnly);
+      const tempState = {
+        ...gameState,
+        players: gameState.players.map((p, i) => (i === mySeat && p) ? {...p, position: pos} : p)
+      };
+      const stepLegal = (typeof getLegalMoves === 'function')
+        ? getLegalMoves(tempState, mySeat, 1, tunnelThrough, false, ownWallsPassthrough, lateralOnly)
+        : [];
       const step1 = { row: pos.row + dr,     col: pos.col + dc };
       const step2 = { row: pos.row + dr * 2, col: pos.col + dc * 2 };
-      const found = legal.find(m => m.row === step1.row && m.col === step1.col)
-                 || legal.find(m => m.row === step2.row && m.col === step2.col);
-      if (found && typeof executeMove === 'function') executeMove(found);
+      const found = stepLegal.find(m => m.row === step1.row && m.col === step1.col)
+                 || stepLegal.find(m => m.row === step2.row && m.col === step2.col);
+      if (!found) return; // illegal direction — silently ignore
+      _wasdStepState.tentativePos = found;
+      _wasdStepState.stepsRemaining -= 1;
+      // Reflect the tentative pawn position in the UI.
+      if (typeof renderBoard === 'function') renderBoard();
+      const reachedGoal = (typeof isGoalReached === 'function') ? isGoalReached(mySeat, found) : false;
+      if (_wasdStepState.stepsRemaining <= 0 || reachedGoal) {
+        const finalPos = _wasdStepState.tentativePos;
+        _wasdStepState = null;
+        if (typeof executeMove === 'function') executeMove(finalPos);
+      }
     }
   });
 }
@@ -12426,6 +12517,9 @@ function startGauntletFFA() {
 
   // Apply gauntlet-stage difficulty to FFA bots (overrides the exhibition-set default)
   aiDifficulty = getGauntletDifficulty(stage, 'ffa_race');
+  // Auto-enable CTPP for gauntlet FFA races (initMultiPlayerGame doesn't go
+  // through initGauntletGame, so the flag must be set here too).
+  window._ctppEnabled = true;
 
   // Store gauntlet context AFTER init so the flag is on the new gameState
   gameState._gauntletFFAReturn = true;
@@ -13433,6 +13527,8 @@ function startSPGame(championId) {
 
 // ── UI interactions ─────────────────────────────────────────────────
 function enterMoveMode() {
+  // Any toggle of move mode invalidates in-flight stepwise WASD progress.
+  _wasdStepState = null;
   if (isSpectatorMode()) return;
   if (_tutorialState?.tooltipShowing) return;
   if (gameMode === 'mp' && gameState.activePlayer !== mp_localSeat) { showStatus("It's not your turn!", 'error'); return; }
@@ -18209,7 +18305,26 @@ function renderBoard() {
   const diagonal = !!(selectedCard && selectedCard.diagonal);
   const ownWallsPassthrough = !!(selectedCard && selectedCard.ownWallsPassthrough);
   const lateralOnly = !!(selectedCard && selectedCard.lateralOnly);
-  let legalMoves = uiMode==='move' ? getLegalMoves(gameState, gameState.activePlayer, overrideSpeed, tunnelThrough, diagonal, ownWallsPassthrough, lateralOnly) : [];
+  // While the active player is stepping through a multi-tile move via WASD,
+  // recompute legal moves from their tentative position with the remaining
+  // step budget so the highlights narrow tile-by-tile.
+  const _wasdActive = !!(_wasdStepState
+    && uiMode === 'move'
+    && _wasdStepState.seat === gameState.activePlayer
+    && _wasdStepState.turn === gameState.turnNumber);
+  let legalMoves = [];
+  if (uiMode === 'move') {
+    if (_wasdActive && _wasdStepState.stepsRemaining > 0) {
+      const _seat = gameState.activePlayer;
+      const _tentState = {
+        ...gameState,
+        players: gameState.players.map((p, i) => (i === _seat && p) ? {...p, position: _wasdStepState.tentativePos} : p)
+      };
+      legalMoves = getLegalMoves(_tentState, _seat, _wasdStepState.stepsRemaining, tunnelThrough, diagonal, ownWallsPassthrough, lateralOnly);
+    } else {
+      legalMoves = getLegalMoves(gameState, gameState.activePlayer, overrideSpeed, tunnelThrough, diagonal, ownWallsPassthrough, lateralOnly);
+    }
+  }
   // Breach override: show breach targets instead of normal moves
   if (gameState._breachTargets && selectedCard && selectedCard._breach) {
     legalMoves = gameState._breachTargets;
@@ -18325,8 +18440,11 @@ function renderBoard() {
         ghostCellEl.appendChild(ghost);
       }
     } else {
-      // Real position — shown to Nyx's owner (or when no trail)
-      const realPos = gameState.players[pi].position;
+      // Real position — shown to Nyx's owner (or when no trail). While the
+      // active player is mid-stepwise WASD move, render their pawn at the
+      // tentative position so the user sees each step land visually.
+      const _useTentative = _wasdActive && pi === gameState.activePlayer;
+      const realPos = _useTentative ? _wasdStepState.tentativePos : gameState.players[pi].position;
       const realCellEl = grid.children[realPos.row * BOARD_SIZE + realPos.col];
       if (realCellEl) {
         const isActive = pi === gameState.activePlayer && !aiThinking;
