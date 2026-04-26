@@ -653,6 +653,84 @@
   .cell.legal-move:hover {
     background: rgba(212,144,58,0.25);
   }
+  /* Phantom King tentative move: tile reachable only by attempting to cross
+     a wall that LOOKS real but might be a phantom. Distinct purple tint +
+     "?" mark so the player knows this is a guess. */
+  .cell.tentative-move {
+    background: rgba(160, 100, 200, 0.18);
+    cursor: help;
+    position: relative;
+  }
+  .cell.tentative-move::before {
+    content: '?';
+    position: absolute;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    font-size: 24px;
+    font-weight: bold;
+    color: rgba(180, 120, 220, 0.7);
+    pointer-events: none;
+    z-index: 2;
+  }
+  .cell.tentative-move:hover {
+    background: rgba(160, 100, 200, 0.32);
+    box-shadow: inset 0 0 0 2px rgba(180, 120, 220, 0.6);
+  }
+  /* ── Phase 3 boss gimmick visuals ─────────────────────────────────────
+     Wyrd Slow Aura: 5×5 tinted overlay on tiles inside the aura.
+     The animation is a slow violet pulse to convey "time is being
+     manipulated here" without making the suppression feel hostile. */
+  .cell.wyrd-aura {
+    background: rgba(168, 85, 247, 0.16);
+    box-shadow: inset 0 0 0 1px rgba(192, 132, 252, 0.25);
+    animation: wyrdAuraPulse 3.2s ease-in-out infinite;
+    position: relative;
+  }
+  @keyframes wyrdAuraPulse {
+    0%, 100% { background: rgba(168, 85, 247, 0.12); }
+    50%      { background: rgba(168, 85, 247, 0.22); }
+  }
+  /* Kael Living Wall: distinct crimson-orange wall with a constant
+     wiggle animation. Marks the snake-wall as visibly "alive" so the
+     player can tell it apart from regular walls. */
+  .wall-segment.kael-living-wall {
+    background: linear-gradient(135deg, #e25822 0%, #c2410c 100%) !important;
+    box-shadow: 0 0 12px rgba(226, 88, 34, 0.55), inset 0 0 6px rgba(255, 200, 150, 0.3) !important;
+    animation: kaelWiggle 2.0s ease-in-out infinite;
+  }
+  .wall-segment.kael-living-wall.kael-head {
+    box-shadow: 0 0 16px rgba(255, 140, 60, 0.85), inset 0 0 8px rgba(255, 220, 180, 0.5) !important;
+  }
+  @keyframes kaelWiggle {
+    0%, 100% { transform: translate(0, 0) rotate(0deg); }
+    25%      { transform: translate(1px, 0) rotate(0.6deg); }
+    50%      { transform: translate(0, 1px) rotate(0deg); }
+    75%      { transform: translate(-1px, 0) rotate(-0.6deg); }
+  }
+  /* Ghrel Cage walls: iron-bar pattern. Distinct from regular Ghrel
+     walls so the player knows these are part of the shrinking cage
+     (and that Ghrel can pass through them). */
+  .wall-segment.ghrel-cage-wall {
+    background: repeating-linear-gradient(
+      90deg,
+      #78350f 0px, #78350f 4px,
+      #c2410c 4px, #c2410c 6px
+    ) !important;
+    box-shadow: 0 0 8px rgba(120, 53, 15, 0.6), inset 0 0 4px rgba(0, 0, 0, 0.5) !important;
+    border: 1px solid #451a03 !important;
+  }
+  /* Vael mirror flash: brief overlay when the mirror ability fires. */
+  @keyframes vaelMirrorFlash {
+    0%   { opacity: 0; }
+    20%  { opacity: 1; }
+    80%  { opacity: 1; }
+    100% { opacity: 0; }
+  }
+  /* Ruk treadmill shift: applied to all wall elements during the slide
+     animation so they translate downward smoothly. */
+  .wall-segment.ruk-shifting {
+    transition: transform 0.4s ease-in-out !important;
+  }
   .cell.goal-row-p0 {
     background: rgba(212,144,58,0.10);
     border-top: 2px solid var(--amber-dim);
@@ -2922,9 +3000,101 @@ function applyAIPreplacedWalls(rarity) {
   // gauntlet stage so we don't punish new players on stage 1 with the same
   // density of walls we'd place at stage 16. 1 tile of detour at stage 1
   // turns into 3 tiles by the late game.
+  // Phase 3 Step 2: total-wall cap so the verifier doesn't pile on top of
+  // boss preWalls + AI preplaced. Regular battles cap low (5), elites
+  // moderate (8), bosses generous but bounded (10).
   const stage = _gauntletRun?.stage || 1;
   const targetGain = stage >= 12 ? 3 : (stage >= 5 ? 2 : 1);
-  _ctppAugmentPreWallsForBlocking(0, targetGain, aiSeat);
+  const nodeType = _gauntletRun?._currentNode?.type || 'battle';
+  const cap = (nodeType === 'boss') ? PHASE3_MAX_BOSS_TOTAL_WALLS
+            : (nodeType === 'elite') ? PHASE3_MAX_ELITE_TOTAL_WALLS
+            : PHASE3_MAX_REGULAR_TOTAL_WALLS;
+  _ctppAugmentPreWallsForBlocking(0, targetGain, aiSeat, cap);
+}
+
+// ── Phase 3 Step 1+2: boss-board audit + total-wall caps ─────────────────
+// Multiple readouts (stage-12, stage-13, stage-14, stage-15) showed the AI
+// being self-trapped by the COMBINATION of boss preWalls + AI preplaced
+// walls + verifier walls. Sometimes 16-21 walls existed at turn 1, forcing
+// the AI's BFS path into 14-22 tile detours. Even Phase B's bypass-aware
+// pathfinding couldn't fix this — the AI didn't have enough bypass cards
+// to break out of all those walls.
+//
+// Two caps in this file address it:
+//   1. Per-boss audit: after applyBossBoard places preWalls, check the
+//      AI's BFS distance to its goal. If > MAX_BOSS_AI_PATH, iteratively
+//      remove preWalls that disproportionately block the AI until the AI
+//      has a reasonable path.
+//   2. Total-wall cap: the verifier (_ctppAugmentPreWallsForBlocking)
+//      stops adding walls once the total reaches the configured max.
+const PHASE3_MAX_BOSS_TOTAL_WALLS    = 12;
+const PHASE3_MAX_ELITE_TOTAL_WALLS   = 8;
+const PHASE3_MAX_REGULAR_TOTAL_WALLS = 5;
+// Maximum tolerable AI BFS distance after boss preWalls applied. Beyond
+// this, the audit removes walls. 10 tiles on a 9x9 board is straight-line
+// 8 tiles + 2 detour, which is fair without making the AI path absurd.
+const PHASE3_MAX_BOSS_AI_PATH        = 10;
+
+// Audit: trim boss preWalls that disproportionately block the AI's path
+// without contributing to the player's. Only runs when the AI's BFS
+// distance exceeds PHASE3_MAX_BOSS_AI_PATH.
+function _phase3AuditBossWalls(playerSeat, aiSeat) {
+  if (!gameState?.players) return;
+  const aiPlayer = gameState.players[aiSeat];
+  const playerPlayer = gameState.players[playerSeat];
+  if (!aiPlayer || !playerPlayer) return;
+
+  const aiGoal = (typeof getGoalRow === 'function') ? getGoalRow(aiSeat) : null;
+  const playerGoal = (typeof getGoalRow === 'function') ? getGoalRow(playerSeat) : null;
+  if (aiGoal === null || playerGoal === null) return;
+
+  const measureAi = () => bfsDistanceFor(aiPlayer.position, aiGoal, gameState.walls, aiSeat);
+  const measurePlayer = () => bfsDistanceFor(playerPlayer.position, playerGoal, gameState.walls, playerSeat);
+
+  let aiDist = measureAi();
+  if (!Number.isFinite(aiDist)) {
+    console.warn('[Phase 3 audit] AI is fully cut off by boss walls — emergency unblock');
+  } else if (aiDist <= PHASE3_MAX_BOSS_AI_PATH) {
+    return; // already fine, no trimming needed
+  }
+
+  // Only consider boss walls (owner === -1, neutral). AI-owned and player-
+  // placed walls are off-limits to this audit.
+  const playerBaseline = measurePlayer();
+  const removableIds = gameState.walls.filter(w => w.owner === -1 && w._bossWall).map(w => w.id);
+
+  const MAX_REMOVALS = 6;
+  let removed = 0;
+  while (removed < MAX_REMOVALS) {
+    aiDist = measureAi();
+    if (Number.isFinite(aiDist) && aiDist <= PHASE3_MAX_BOSS_AI_PATH) break;
+
+    // Find the wall whose removal helps the AI MOST while hurting the
+    // player LEAST — i.e., aiBenefit / max(1, playerBenefit) ratio.
+    let bestId = null, bestRatio = -Infinity;
+    const wallsSnapshot = [...gameState.walls];
+    for (const w of wallsSnapshot) {
+      if (!removableIds.includes(w.id)) continue;
+      gameState.walls = wallsSnapshot.filter(x => x.id !== w.id);
+      const newAi = measureAi();
+      const newPlayer = measurePlayer();
+      gameState.walls = wallsSnapshot;
+      if (!Number.isFinite(newAi)) continue;
+      const aiSaved = (Number.isFinite(aiDist) ? aiDist : 99) - newAi;
+      const playerLoss = Math.max(0, (Number.isFinite(playerBaseline) ? playerBaseline : 0) - newPlayer);
+      if (aiSaved <= 0) continue;
+      const ratio = aiSaved / Math.max(1, playerLoss);
+      if (ratio > bestRatio) { bestRatio = ratio; bestId = w.id; }
+    }
+    if (bestId === null) break;
+
+    gameState.walls = gameState.walls.filter(w => w.id !== bestId);
+    removed++;
+  }
+
+  if (removed > 0) {
+    console.log(`[Phase 3 audit] Removed ${removed} self-blocking boss wall(s); AI BFS distance: ${aiDist} → ${measureAi()}`);
+  }
 }
 
 // Phase 2.3: Pre-wall strategic verifier. Stage-16 boss readout had 21
@@ -2937,18 +3107,26 @@ function applyAIPreplacedWalls(rarity) {
 // Caps at 3 augmentation walls per call so we don't generate impassable
 // boards. Only iterates anchors in the player's path zone (between start
 // row and goal row), which keeps the simulation under ~150 candidates × BFS.
-function _ctppAugmentPreWallsForBlocking(playerSeat, targetGain, wallOwnerSeat) {
+//
+// Phase 3 Step 2 patch: optional `maxTotalWalls` cap stops the verifier from
+// adding walls once the total board wall count reaches the limit. Combined
+// with boss preWalls + AI preplaced + this verifier, total starting walls
+// stay reasonable. Without it, stage-15 boards saw 16-21 walls at turn 1
+// even though boss preWalls alone might only be 12.
+function _ctppAugmentPreWallsForBlocking(playerSeat, targetGain, wallOwnerSeat, maxTotalWalls) {
   if (!gameState?.players?.[playerSeat]) return;
   const player = gameState.players[playerSeat];
   const goalRow = getGoalRow(playerSeat);
   const startPos = player.position;
   const aiSeat = (typeof wallOwnerSeat === 'number') ? wallOwnerSeat : 1;
   const aiPlayer = gameState.players[aiSeat];
+  const totalCap = (typeof maxTotalWalls === 'number') ? maxTotalWalls : Infinity;
 
   const manhattan = Math.abs(startPos.row - goalRow);
   let curDist = bfsDistanceFor(startPos, goalRow, gameState.walls, playerSeat);
   if (!Number.isFinite(curDist)) return; // already cut off — abort, would be illegal
   if (curDist - manhattan >= targetGain) return; // already blocking enough
+  if (gameState.walls.length >= totalCap) return; // total-wall cap already met
 
   // Player's path zone — only consider walls between start row and goal row.
   const rowLo = Math.min(startPos.row, goalRow);
@@ -2969,6 +3147,8 @@ function _ctppAugmentPreWallsForBlocking(playerSeat, targetGain, wallOwnerSeat) 
   const MAX_AUGMENT = 3;
   let placed = 0;
   while (curDist - manhattan < targetGain && placed < MAX_AUGMENT) {
+    // Phase 3 Step 2: stop adding walls once the total-wall cap is hit.
+    if (gameState.walls.length >= totalCap) break;
     // AI wall-budget guard. Don't exceed the AI's wallLimit.
     if (aiPlayer && (aiPlayer.wallsInPlay || 0) >= (aiPlayer.wallLimitCurrent || 0)) break;
 
@@ -3107,147 +3287,109 @@ const GAUNTLET_BOSSES = {
       stats:{wallLimit:12, handSize:10, cardDraw:5, moveSpeed:1, energy:4, ultimateCost:4},
       // Tailored deck: heavy wall cards to exploit the narrow board
       deck:['AR1','AR1','AR1','BB','BB','BB','BB','CB','CB','AR2','AR2','AR3','AR5','AR9','RC','AV','B08','B08','B07','B04'],
-      boardName:'THE GAUNTLET', boardDesc:'A narrow 3-wide corridor with walled-off alcoves. Kael controls the chokepoints.',
-      preWalls:[
-        // Left V wall along col 2 (full height in segments)
-        {anchor:{row:0,col:2},orientation:'V',length:2},{anchor:{row:2,col:2},orientation:'V',length:1},
-        {anchor:{row:3,col:2},orientation:'V',length:3},
-        {anchor:{row:6,col:2},orientation:'V',length:1},{anchor:{row:7,col:2},orientation:'V',length:2},
-        // Right V wall along col 6 (full height in segments)
-        {anchor:{row:0,col:6},orientation:'V',length:2},{anchor:{row:2,col:6},orientation:'V',length:1},
-        {anchor:{row:3,col:6},orientation:'V',length:3},
-        {anchor:{row:6,col:6},orientation:'V',length:1},{anchor:{row:7,col:6},orientation:'V',length:2},
-        // H walls sealing top corners at row 2
-        {anchor:{row:2,col:0},orientation:'H',length:2},
-        {anchor:{row:2,col:7},orientation:'H',length:2},
-        // H walls sealing bottom corners at row 6
-        {anchor:{row:6,col:0},orientation:'H',length:2},
-        {anchor:{row:6,col:7},orientation:'H',length:2},
-      ]},
+      boardName:'THE LIVING CORRIDOR', boardDesc:'A snake-wall grows in front of you, one tile at a time. Capped at 5 segments — destroy the head and it splits and grows in parallel. Doesn\'t count against Kael\'s wall budget.',
+      // Phase 3 Living Wall gimmick: a snake-like wall starts as a 1-tile
+      // segment between the player and their goal (north edge). Each Kael
+      // end-of-turn it grows toward the player\'s current front-edge,
+      // navigating around obstacles. Capped at 5 segments (FIFO eviction).
+      // Splits when the player destroys a middle segment — both pieces
+      // grow in parallel. Does NOT count against Kael\'s wall budget.
+      gimmick: 'livingWall',
+      preWalls: [],
+    },
     { bossName:'Vael', bossTitle:'the Maze Keeper', faction:'Architects',
       passiveId:'magnus', ultimateId:'thorne',
       stats:{wallLimit:10, handSize:10, cardDraw:5, moveSpeed:1, energy:3, ultimateCost:5},
       deck:['AR1','AR1','BB','BB','BB','BB','CB','CB','AR3','AR3','AR2','AR5','AR9','AR11','RC','RC','AV','B08','B07','B04'],
-      boardName:'THE ARENA', boardDesc:'A walled box with narrow entrances. Vael controls the interior.',
-      preWalls:[
-        // Top wall of box at row 2, gap at col 4
-        {anchor:{row:2,col:2},orientation:'H',length:2},
-        {anchor:{row:2,col:5},orientation:'H',length:2},
-        // Bottom wall of box at row 6, gap at col 4
-        {anchor:{row:6,col:2},orientation:'H',length:2},
-        {anchor:{row:6,col:5},orientation:'H',length:2},
-        // Left V wall of box, col 2
-        {anchor:{row:2,col:2},orientation:'V',length:4},
-        // Right V wall of box, col 6
-        {anchor:{row:2,col:6},orientation:'V',length:4},
-      ]},
+      boardName:'THE HALL OF MIRRORS', boardDesc:'Vael builds his maze, then flips it. Once every 3 turns he can reflect every wall he\'s placed across the vertical axis. Watch the cooldown — and the side you\'re fighting on.',
+      // Phase 3 Mirror Shift gimmick: empty board to start. Vael builds his
+      // maze with cards. Once per 3 of his turns, he can mirror every wall
+      // he\'s placed across the vertical axis (col 4) — the AI evaluates
+      // when firing is worth it. Cooldown badge in top-right of the board.
+      gimmick: 'mirrorShift',
+      preWalls: [],
+    },
   ],
   8: [
     { bossName:'Ghrel', bossTitle:'the Cage Master', faction:'Wardens',
       passiveId:'thorne', ultimateId:'thorne', // Reveal + Reposition walls
       stats:{wallLimit:8, handSize:10, cardDraw:5, moveSpeed:1, energy:3, ultimateCost:5},
       deck:['WD1','WD1','WD2','WD2','WD3','WD3','WD4','WD6','WD8','WD12','BB','BB','BB','RC','RC','AV','AV','CB','B07','B09'],
-      boardName:'THE CAGE', boardDesc:'A massive enclosed cage spans the board. Only one way in from each side.',
-      preWalls:[
-        // Top wall at row 1: spans col 1-4 and 5-8, gap at col 4
-        {anchor:{row:1,col:1},orientation:'H',length:3},
-        {anchor:{row:1,col:5},orientation:'H',length:3},
-        // Bottom wall at row 7: spans col 1-4 and 5-8, gap at col 4
-        {anchor:{row:7,col:1},orientation:'H',length:3},
-        {anchor:{row:7,col:5},orientation:'H',length:3},
-        // Left V wall, col 1
-        {anchor:{row:1,col:1},orientation:'V',length:3},{anchor:{row:4,col:1},orientation:'V',length:3},
-        // Right V wall, col 7
-        {anchor:{row:1,col:7},orientation:'V',length:3},{anchor:{row:4,col:7},orientation:'V',length:3},
-        // Internal staggered H walls for obstacle
-        {anchor:{row:3,col:3},orientation:'H',length:2},
-        {anchor:{row:5,col:4},orientation:'H',length:2},
-      ]},
+      boardName:'THE SHRINKING CAGE', boardDesc:'A square cage of iron bars surrounds you. Every 3 turns it shrinks: 7×7 → 5×5 → 3×3 → reset. Break individual bars to escape — holes carry forward to each smaller ring. Ghrel walks through the bars. You don\'t.',
+      // Phase 3 Cage Closes gimmick: a square ring of "cage" walls forms a
+      // closed perimeter around the player. Every 3 of Ghrel\'s turns the
+      // ring shrinks one tier (7 → 5 → 3 → 7 reset). The cage walls are
+      // passable for Ghrel only — players see them as solid walls. Each
+      // bar is its own length-1 wall so the player can break individual
+      // slots; broken slots carry forward to each shrink. The cycle reset
+      // (3 → 7) wipes the broken-slot record and seals the cage anew.
+      // Player gets pushed toward center if a shrink would leave them
+      // outside the new ring\'s interior.
+      gimmick: 'cageCloses',
+      preWalls: [],
+    },
     { bossName:'Nira', bossTitle:'the Phantom Queen', faction:'Phantoms',
       passiveId:'nyx', ultimateId:'nyx', // Illusory Trail + Invisibility
       stats:{wallLimit:9, handSize:10, cardDraw:5, moveSpeed:1, energy:3, ultimateCost:3},
       deck:['PH1','PH1','PH1','PH2','PH2','PH3','PH3','PH4','PH8','PH10','PH16','BB','BB','RC','AV','AV','QS','QS','B01','B07'],
-      boardName:'THE MIRROR', boardDesc:'Symmetric S-curves force a winding path. Nira exploits every blind spot.',
-      preWalls:[
-        // S-curve: alternating long H walls with gaps on opposite sides
-        {anchor:{row:1,col:0},orientation:'H',length:4},{anchor:{row:1,col:4},orientation:'H',length:3},  // row 1: gap at col 7-8
-        {anchor:{row:2,col:6},orientation:'V',length:1},  // V wall forces turn at col 6
-        {anchor:{row:3,col:1},orientation:'H',length:3},{anchor:{row:3,col:4},orientation:'H',length:4},  // row 3: gap at col 0
-        {anchor:{row:4,col:1},orientation:'V',length:1},  // V wall forces turn at col 1
-        {anchor:{row:5,col:0},orientation:'H',length:3},{anchor:{row:5,col:3},orientation:'H',length:4},  // row 5: gap at col 7-8
-        {anchor:{row:6,col:6},orientation:'V',length:1},  // V wall forces turn at col 6
-        {anchor:{row:7,col:1},orientation:'H',length:3},{anchor:{row:7,col:4},orientation:'H',length:4},  // row 7: gap at col 0
-      ]},
+      boardName:'THE MIRROR', boardDesc:'Four horizontal barriers stretch the board. Half of every wall is a phantom — Nira knows which. You must guess.',
+      // Phase 3: Phantom King gimmick — walls are built dynamically by
+      // _buildPhantomKingBarriers() in applyBossBoard rather than from a
+      // static array. This boss is fundamentally about deception: real
+      // walls and phantoms are visually identical, and the player must
+      // try to push through to learn which is which. Tentative-move tiles
+      // (purple "?") highlight where the player suspects a phantom.
+      gimmick: 'phantomKing',
+      preWalls: [],
+    },
   ],
   12: [
     { bossName:'Ruk', bossTitle:'the Pit Fighter', faction:'Pushers',
       passiveId:'pushaman', ultimateId:'pushaman', // Chad Aura + Breach
       stats:{wallLimit:8, handSize:10, cardDraw:5, moveSpeed:1, energy:3, ultimateCost:4},
       deck:['PU2','PU2','PU3','PU3','PU4','PU4','PU7','PU9','PU9','PU11','PU12','BB','BB','BB','RC','AV','AV','AV','CB','B07'],
-      boardName:'THE PIT', boardDesc:'A tight walled pit with side corridors. Ruk pushes you into corners.',
-      preWalls:[
-        // Top of pit at row 1, gap at col 4 for entry
-        {anchor:{row:1,col:2},orientation:'H',length:2},
-        {anchor:{row:1,col:5},orientation:'H',length:2},
-        // Bottom of pit at row 7, gap at col 4 for entry
-        {anchor:{row:7,col:2},orientation:'H',length:2},
-        {anchor:{row:7,col:5},orientation:'H',length:2},
-        // Left V walls with side corridor
-        {anchor:{row:1,col:2},orientation:'V',length:2},
-        {anchor:{row:5,col:2},orientation:'V',length:2},
-        // Right V walls with side corridor
-        {anchor:{row:1,col:6},orientation:'V',length:2},
-        {anchor:{row:5,col:6},orientation:'V',length:2},
-        // Side walls extending to edges at row 3 and row 5
-        {anchor:{row:3,col:0},orientation:'H',length:2},
-        {anchor:{row:3,col:7},orientation:'H',length:2},
-        {anchor:{row:5,col:0},orientation:'H',length:2},
-        {anchor:{row:5,col:7},orientation:'H',length:2},
-      ]},
+      boardName:'THE PIT', boardDesc:'Open arena. Every 2 turns the floor itself slides — every wall on the board grinds one tile toward your starting row. Walls passing through your tile drag you with them.',
+      // Phase 3 Treadmill gimmick: every 2 of Ruk's turns, all walls on
+      // the board (his + the player's) shift one row toward the player's
+      // starting row (downward, away from goal). Walls that fall off the
+      // bottom edge are destroyed. Walls that pass through the player's
+      // tile drag the player with them. Animation slides walls smoothly
+      // for ~400ms, blocking turn flow during the slide.
+      gimmick: 'treadmill',
+      preWalls: [],
+    },
     { bossName:'Wyrd', bossTitle:'the Timeweaver', faction:'Chronists',
       passiveId:'vex', ultimateId:'vex', // Echo Chamber + Temporal Fold
       stats:{wallLimit:9, handSize:10, cardDraw:6, moveSpeed:1, energy:3, ultimateCost:3},
       deck:['CH1','CH1','CH3','CH3','CH6','CH6','CH8','CH10','CH12','CH13','BB','BB','BB','RC','RC','AV','AV','CB','B07','B12'],
-      boardName:'THE CLOCKTOWER', boardDesc:'Spiraling walls force a twisting path. Wyrd manipulates time inside.',
-      preWalls:[
-        // Outer box
-        {anchor:{row:1,col:1},orientation:'H',length:3},{anchor:{row:1,col:5},orientation:'H',length:3}, // top, gap col 4
-        {anchor:{row:7,col:1},orientation:'H',length:3},{anchor:{row:7,col:5},orientation:'H',length:3}, // bottom, gap col 4
-        {anchor:{row:1,col:1},orientation:'V',length:3},{anchor:{row:5,col:1},orientation:'V',length:2}, // left wall
-        {anchor:{row:1,col:7},orientation:'V',length:2},{anchor:{row:4,col:7},orientation:'V',length:3}, // right wall
-        // Inner spiral walls
-        {anchor:{row:3,col:3},orientation:'H',length:2}, // inner top
-        {anchor:{row:5,col:4},orientation:'H',length:2}, // inner bottom
-        {anchor:{row:3,col:3},orientation:'V',length:1}, // inner left
-        {anchor:{row:4,col:5},orientation:'V',length:1}, // inner right
-      ]},
+      boardName:'THE CLOCKTOWER', boardDesc:'A 5×5 aura surrounds Wyrd. Movement cards cast inside the aura fizzle into nothing — exiled from your deck. Walk by foot, or slip free.',
+      // Phase 3 Slow Aura gimmick: 5×5 zone around Wyrd suppresses player
+      // movement cards (any card that would move the player). Cards played
+      // inside the aura fizzle and are exiled from the deck. Click-to-move
+      // (basic 1-tile walking) still works. Aura deactivates if Wyrd is
+      // bound (root trap, Desperation Sprint, Wrecking Ball penalty).
+      // Wyrd's CTPP gets a bonus for moves that keep the player inside the
+      // aura, weighted to roughly equal a 2-tile detour cost.
+      gimmick: 'slowAura',
+      preWalls: [],
+    },
   ],
   15: [
     { bossName:'Ozryn', bossTitle:'the Corridor Lord', faction:'Architects',
       passiveId:'magnus', ultimateId:'pushaman', // Master Mason walls + Breach teleport
       stats:{wallLimit:16, handSize:10, cardDraw:7, moveSpeed:2, energy:5, ultimateCost:3},
       deck:['AR1','AR1','AR1','AR11','AR15','AR15','BB','BB','CB','CB','AR2','AR3','AR5','AR9','AR9','RC','AV','AV','B08','B08'],
-      boardName:'THE FINAL ARENA', boardDesc:'A massive enclosed arena with internal barriers. Ozryn traps you inside.',
-      preWalls:[
-        // Outer box: top wall row 1, gap at col 4
-        {anchor:{row:1,col:0},orientation:'H',length:2},{anchor:{row:1,col:2},orientation:'H',length:2},
-        {anchor:{row:1,col:5},orientation:'H',length:2},{anchor:{row:1,col:7},orientation:'H',length:2},
-        // Outer box: bottom wall row 7, gap at col 4
-        {anchor:{row:7,col:0},orientation:'H',length:2},{anchor:{row:7,col:2},orientation:'H',length:2},
-        {anchor:{row:7,col:5},orientation:'H',length:2},{anchor:{row:7,col:7},orientation:'H',length:2},
-        // Left outer V wall
-        {anchor:{row:1,col:0},orientation:'V',length:3},{anchor:{row:4,col:0},orientation:'V',length:3},
-        // Right outer V wall
-        {anchor:{row:1,col:8},orientation:'V',length:3},{anchor:{row:4,col:8},orientation:'V',length:3},
-        // Internal cross walls — V walls creating inner chambers
-        {anchor:{row:2,col:3},orientation:'V',length:2},
-        {anchor:{row:5,col:3},orientation:'V',length:2},
-        {anchor:{row:2,col:5},orientation:'V',length:2},
-        {anchor:{row:5,col:5},orientation:'V',length:2},
-        // Mid H wall with gaps at edges for internal maze
-        {anchor:{row:4,col:1},orientation:'H',length:2},
-        {anchor:{row:4,col:6},orientation:'H',length:2},
-      ]},
+      boardName:'THE FINAL ARENA', boardDesc:'Three labyrinths, three reaches. Each time you touch the goal, Ozryn drops a fresh maze and pulls you back into it. Win the third race to escape.',
+      // Phase 3 Multi-phase gimmick: Ozryn replaces his static arena with a
+      // three-phase fight. Phase 1 is an open-board race. When the player
+      // first touches their goal row, a small reinforced labyrinth appears
+      // and the player teleports into it (phase 2). When they reach the
+      // goal again, all walls clear, a NEW labyrinth materializes, and
+      // Ozryn buffs hard (phase 3). Player must touch the goal a third
+      // time to actually win.
+      gimmick: 'multiPhase',
+      preWalls: [],
+    },
   ],
 };
 
@@ -4441,7 +4583,51 @@ function buildGauntletAIDeck(stage, faction) {
     const fallback = pool.length ? pool[Math.floor(Math.random() * pool.length)] : Object.values(CARDS)[0];
     deck.push({...fallback});
   }
-  return shuffle(deck.slice(0, 20));
+  const shuffled = shuffle(deck.slice(0, 20));
+
+  // ── STARTING-HAND MOVEMENT GUARANTEE (post-stage-15-regular readout) ──
+  // Stage-15 AI hand had 0 Movement cards across 3 turn snapshots even
+  // though the deck floor presumably inserted them — they just landed
+  // mid-deck and never reached opening hand. Result: AI moved at 1 tile/
+  // turn while a 6-relic player rushed at ~2 tiles/turn.
+  //
+  // Post-shuffle pass: if the top STARTING_HAND_SIZE cards have no
+  // Movement card and the deck has one further down, swap it forward.
+  // Prefer swapping with a lowest-rarity NON-WALL card in the opener
+  // since we don't want to undo the wall floor's work either.
+  const STARTING_HAND_SIZE = 5;
+  if (movementPool.length > 0) {
+    const openerHasMove = shuffled.slice(0, STARTING_HAND_SIZE)
+      .some(c => c?.type === 'Movement');
+    if (!openerHasMove) {
+      const laterMoveIdx = shuffled.findIndex((c, i) => i >= STARTING_HAND_SIZE && c?.type === 'Movement');
+      if (laterMoveIdx > 0) {
+        // Find the worst slot in the opener to swap. Prefer non-wall first
+        // (preserve wall floor); if everything in opener is a wall, fall
+        // back to lowest-rarity wall.
+        const rarityRank = { Common: 0, Uncommon: 1, Rare: 2, Legendary: 3 };
+        const findWorstSlot = (allowWalls) => {
+          let bestIdx = -1, worstRank = Infinity;
+          for (let i = 0; i < STARTING_HAND_SIZE; i++) {
+            const c = shuffled[i];
+            if (!c) continue;
+            if (!allowWalls && c.type === 'Wall') continue;
+            const r = rarityRank[c.rarity] ?? 0;
+            if (r < worstRank) { worstRank = r; bestIdx = i; }
+          }
+          return bestIdx;
+        };
+        let swapIdx = findWorstSlot(false);
+        if (swapIdx < 0) swapIdx = findWorstSlot(true);
+        if (swapIdx >= 0) {
+          const tmp = shuffled[swapIdx];
+          shuffled[swapIdx] = shuffled[laterMoveIdx];
+          shuffled[laterMoveIdx] = tmp;
+        }
+      }
+    }
+  }
+  return shuffled;
 }
 
 // ── State ───────────────────────────────────────────────────────────
@@ -5043,9 +5229,30 @@ function buildBlockedEdges(walls, moverPi) {
   // Phantom walls: BOTH players can physically move through them (walking through removes them).
   // They only serve as a visual bluff. So phantoms are never blocking for movement purposes.
   // When moverPi is undefined (BFS path-guarantee checks), phantoms are also ignored.
+  //
+  // Phase 3 Phantom King exception: phantoms with `_phantomKing: true` are
+  // mover-aware blockers — they BLOCK any mover who isn't the boss-AI owner.
+  // This is what makes Nira's gimmick work: the player's BFS sees these as
+  // walls (forcing them to guess which segment is phantom), but the boss-AI
+  // (owner = phantom's wall.owner) sees them as passable. When moverPi is
+  // undefined (path-guarantee checks during wall placement), we treat them
+  // as passable so legality checks still allow phantoms to "block" goals.
   const blocked = new Set();
   for (const wall of walls) {
-    if (wall.isPhantom) continue; // phantoms are always passable
+    if (wall.isPhantom) {
+      if (wall._phantomKing && moverPi !== undefined && moverPi !== wall.owner) {
+        // Block the player even though it's a phantom — they don't know yet.
+        for (const e of wallEdges(wall)) blocked.add(edgeKey(e.a, e.b));
+      }
+      continue;
+    }
+    // Phase 3 — Ghrel cage walls: passable for the boss-AI owner only.
+    // Players see a hard wall; Ghrel walks through. When moverPi is
+    // undefined (legality / path-guarantee checks), we treat as blocking
+    // so wall-placement legality calculations remain conservative.
+    if (wall._ghrelCage && moverPi !== undefined && moverPi === wall.owner) {
+      continue;
+    }
     for (const e of wallEdges(wall)) blocked.add(edgeKey(e.a, e.b));
   }
   return blocked;
@@ -5769,6 +5976,24 @@ function executeMove(to) {
   }
 
   if (isGoalReached(pi, to)) {
+    // Phase 3 — Ozryn multi-phase: when the PLAYER (pi=0) reaches their
+    // goal in phase 1 or 2, fire the phase transition INSTEAD of declaring
+    // victory. AI's goal-reach (pi=1) follows the normal win flow — boss
+    // can still win by racing past row 8 in any phase. Only the third
+    // player goal-reach (i.e., reach during phase 3) actually ends the match.
+    if (gameState._ozrynActive && pi === 0 && (gameState._ozrynPhase || 1) < 3) {
+      const nextPhase = (gameState._ozrynPhase || 1) + 1;
+      _ozrynPhaseTransition(nextPhase);
+      // Reset the move-flags for this turn so the player still takes the
+      // rest of their turn (or, if they've used their move, end-turn fires
+      // normally). Don't auto-end — they can still play cards if they have
+      // budget left.
+      hasMoved = true;
+      if (typeof isTurnDone === 'function' && isTurnDone()) {
+        gameState.phase = 'end_turn';
+      }
+      return;
+    }
     if (checkVictory(pi, to)) {
       // In FFA, the winner is the 1st place finisher
       gameState.winner = gameConfig.mode === 'ffa' ? (gameState._ffaPlacements?.[0]?.seat ?? pi) : pi;
@@ -7365,6 +7590,35 @@ function endTurn() {
       discard: [...gameState.players[pi].discard, ...remainingHand],
     };
     addLog(pi, 'system', `End of turn: discarded ${remainingHand.length} card(s)`);
+  }
+
+  // ── Phase 3 — Boss gimmick end-of-turn hooks ──────────────────────────
+  // Each boss-AI gimmick that ticks per-turn fires here, AFTER hand discard
+  // but BEFORE the activePlayer advances. This keeps the visual flow
+  // intuitive: the player sees the boss act, then the boss's gimmick fires,
+  // then the turn rotates.
+  // Ruk Treadmill: every 2 of Ruk's turns, all walls shift one row toward
+  // the player's start. Animation runs async but we don't await it — turn
+  // rotation continues; renderAll inside the shift refreshes after the slide.
+  if (typeof _rukShouldTreadmillFire === 'function' && _rukShouldTreadmillFire(pi)) {
+    if (typeof _rukApplyTreadmillShift === 'function') {
+      try { _rukApplyTreadmillShift(); } catch (e) { console.warn('[Ruk treadmill] failed:', e); }
+    }
+  }
+  // Vael Mirror: cooldown ticks each Vael turn; AI fires when ready and
+  // the mirror would be net-positive. (Cooldown decrement + fire decision
+  // both live in _vaelTickAndMaybeMirror.)
+  if (typeof _vaelTickAndMaybeMirror === 'function') {
+    try { _vaelTickAndMaybeMirror(pi); } catch (e) { console.warn('[Vael mirror] failed:', e); }
+  }
+  // Kael Living Wall: grows one segment per Kael turn, FIFO-evicts at len 5.
+  if (typeof _kaelGrowLivingWall === 'function') {
+    try { _kaelGrowLivingWall(pi); } catch (e) { console.warn('[Kael living wall] failed:', e); }
+  }
+  // Ghrel Cage Closes: every 3 Ghrel turns, the cage ring shrinks by one
+  // tier (7 → 5 → 3 → 7 reset).
+  if (typeof _ghrelTickAndMaybeShrink === 'function') {
+    try { _ghrelTickAndMaybeShrink(pi); } catch (e) { console.warn('[Ghrel cage] failed:', e); }
   }
 
   const next = getNextPlayer(pi);
@@ -12048,6 +12302,24 @@ async function runAI() {
     if (_ctppPort) {
       s += ctppScoreActionAcrossPlans(`move:${to.row},${to.col}`, _ctppPort) * CTPP_MOVE_WEIGHT;
     }
+    // Phase 3 — Wyrd Slow Aura: Wyrd prefers moves that keep the player
+    // standing inside his 5×5 aura (Chebyshev radius 2). Bonus is sized to
+    // roughly equal a 2-tile detour cost so race-to-goal still wins when
+    // the player is far from being catchable, but coverage wins on close
+    // calls. Aura is suppressed while Wyrd is bound — no bonus then.
+    if (gameState._wyrdActive && pi === gameState._wyrdSeat
+        && (typeof hasStatusEffect !== 'function' || !hasStatusEffect(pi, 'bound'))) {
+      const oppSeat = (pi === 0) ? 1 : 0;
+      const opp = gameState.players[oppSeat];
+      if (opp?.position) {
+        const dr = Math.abs(opp.position.row - to.row);
+        const dc = Math.abs(opp.position.col - to.col);
+        const radius = gameState._wyrdAuraRadius || 2;
+        if (Math.max(dr, dc) <= radius) {
+          s += 18; // ~2-tile-detour worth of value
+        }
+      }
+    }
     if (s > bestMoveScore) {
       secondBestMoveScore = bestMoveScore; secondBestMoveDest = bestMoveDest;
       bestMoveScore = s; bestMoveDest = to;
@@ -13218,7 +13490,7 @@ function _ctppCaptureGauntletMatchMeta(nodeType) {
   const champs = window._pendingCtppChampions || {};
   // Phase 4: include the relic-count buff applied to the AI so readouts
   // show whether the snowball-counter was active and what stat polish it
-  // added. null/undefined for regular battles where the buff doesn't apply.
+  // added. null when player has 0 relics (no buff to apply).
   const relicBuff = _gauntletRun?._lastRelicBuff || null;
   window.CtppHarness.telemetry.setMatchMeta({
     startedAt: new Date().toISOString(),
@@ -13274,7 +13546,7 @@ function startGauntletCombat(node) {
     initGauntletGame(_gauntletRun.champion, bossChamp, _gauntletRun.deck, bossDeck);
     aiDifficulty = getGauntletDifficulty(stage, 'boss');
     _ctppCaptureGauntletMatchMeta('boss');
-    applyBossBoard({ preWalls: b.preWalls });
+    applyBossBoard({ preWalls: b.preWalls, gimmick: b.gimmick, bossSeat: 1 });
     return;
   }
 
@@ -13290,14 +13562,18 @@ function startGauntletCombat(node) {
   // Stacks on top of RARITY_BUDGETS' base allocation. Applied BEFORE
   // initGauntletGame so createPlayer reads the buffed stats.
   applyAIChampionBuff(aiChamp);
-  // Phase 4: elite battles also get the relic-count snowball-counter buff
-  // (regular battles do not — they're tuned around rarity scaling alone).
-  let eliteRelicBuff = null;
-  if (node.type === 'elite') {
-    eliteRelicBuff = applyAIRelicCountBuff(aiChamp, playerRelicCount);
-    if (_gauntletRun) _gauntletRun._lastRelicBuff = eliteRelicBuff;
+  // Phase 4 (post-stage-15-regular readout): the snowball-counter buff now
+  // applies to regular battles too whenever the player has any relics. The
+  // original gating (elite/boss only) made sense at stages 1-8 when relic
+  // counts are 0-2 anyway, but at stage 15 a regular battle can face a
+  // 6-relic player who's just as dominant as a boss-fight player. The buff
+  // scales to 0 when relicCount=0 so early-game balance is unaffected.
+  let battleRelicBuff = null;
+  if (node.type === 'elite' || playerRelicCount > 0) {
+    battleRelicBuff = applyAIRelicCountBuff(aiChamp, playerRelicCount);
+    if (_gauntletRun) _gauntletRun._lastRelicBuff = battleRelicBuff;
   } else if (_gauntletRun) {
-    _gauntletRun._lastRelicBuff = null; // clear stale buff from prior boss/elite
+    _gauntletRun._lastRelicBuff = null; // clear stale buff from prior match
   }
   const aiDeck = buildGauntletAIDeck(deckStage, aiChamp.faction);
   // Store opponent info for elite card rewards
@@ -13314,22 +13590,1334 @@ function startGauntletCombat(node) {
   applyAIPreplacedWalls(aiChamp.rarity);
 }
 
+// ── Phase 3 — Phantom King gimmick ──────────────────────────────────────
+// Nira "the Phantom Queen" replaces her old maze layout with horizontal
+// barrier rows that stretch the full board width. Each barrier is split
+// into 3 segments of length 3 (covering all 9 cols). Half of all segments
+// across the barriers are phantoms — they look identical to real walls
+// from the player's perspective but are passable. The boss-AI knows which
+// is which (because it owns them); the player has to guess.
+//
+// Total walls: 4 barriers × 3 walls = 12. Phantoms: 6. Real: 6 (50/50).
+// Each barrier has 1-2 phantoms randomly distributed (alternating per row
+// to keep total at 50%).
+function _buildPhantomKingBarriers() {
+  const barriers = [];
+  // Barrier rows: anchors at 1, 3, 5, 7 (between rows 1-2, 3-4, 5-6, 7-8).
+  // Each barrier has H walls of length 3 at cols 0, 3, 6 (covers all 9 cols).
+  const rowAnchors = [1, 3, 5, 7];
+  // Phantom pattern per barrier (3 cells, 1 = phantom):
+  // Alternates 1-phantom rows with 2-phantom rows for 50% overall (1+2+1+2=6 of 12).
+  const phantomMasks = [
+    [false, true,  false],  // barrier 0: phantom at center
+    [true,  false, true ],  // barrier 1: phantoms at edges
+    [false, true,  false],  // barrier 2: phantom at center
+    [true,  false, true ],  // barrier 3: phantoms at edges
+  ];
+  // Shuffle each barrier's mask so it's not predictable across matches.
+  const _shuffleMask = (mask) => {
+    const out = [...mask];
+    for (let i = out.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [out[i], out[j]] = [out[j], out[i]];
+    }
+    return out;
+  };
+  for (let bi = 0; bi < rowAnchors.length; bi++) {
+    const row = rowAnchors[bi];
+    let mask = _shuffleMask(phantomMasks[bi % phantomMasks.length]);
+    // Invariant: every barrier row must have at least one phantom — that's
+    // the whole gimmick. If someone later edits phantomMasks to an all-real
+    // mask, force a phantom into the middle slot so the row stays guessable.
+    // Without this, an all-real row would render as an impassable barrier
+    // with no tentative-cross option for the player.
+    if (!mask.some(v => v)) {
+      console.warn('[PhantomKing] barrier mask had no phantoms — forcing center phantom');
+      mask = [false, true, false];
+    }
+    const colAnchors = [0, 3, 6];
+    for (let ci = 0; ci < colAnchors.length; ci++) {
+      barriers.push({
+        anchor: { row, col: colAnchors[ci] },
+        orientation: 'H',
+        length: 3,
+        phantom: mask[ci],
+      });
+    }
+  }
+  return barriers;
+}
+
+// ── Phase 3 — Ozryn multi-phase boss ─────────────────────────────────────
+// Three-phase fight. Phase 1 is open-board. Each phase transition triggers
+// when the player reaches their goal row. On transition: place a small
+// reinforced labyrinth, teleport the player into it, reset the AI to its
+// start. Phase 3 also clears all walls + buffs the AI hard.
+//
+// Total: player must reach the goal 3 times to win. AI's normal win
+// condition (reach row 8) is preserved — boss can win the race in any
+// phase. Boss buff fires on the second transition so it's a "real fight"
+// in phase 3.
+
+// Preset labyrinth layouts. Each is ~7-9 reinforced walls in the middle
+// rows of the board, designed to be a passable maze. Walls are anchored so
+// both players retain a path to their goal (validated at placement time).
+// Multiple presets so each match feels different.
+const _OZRYN_LABYRINTHS = [
+  // Layout 1: Vertical Zigzag — alternating long H walls forcing column shifts.
+  [
+    { anchor: { row: 2, col: 0 }, orientation: 'H', length: 3 },
+    { anchor: { row: 2, col: 5 }, orientation: 'H', length: 3 },
+    { anchor: { row: 4, col: 1 }, orientation: 'H', length: 4 },
+    { anchor: { row: 6, col: 0 }, orientation: 'H', length: 3 },
+    { anchor: { row: 6, col: 5 }, orientation: 'H', length: 3 },
+    { anchor: { row: 3, col: 4 }, orientation: 'V', length: 1 },
+    { anchor: { row: 5, col: 3 }, orientation: 'V', length: 1 },
+  ],
+  // Layout 2: Diagonal Spiral — staggered placement, more chaotic.
+  [
+    { anchor: { row: 2, col: 1 }, orientation: 'H', length: 3 },
+    { anchor: { row: 3, col: 5 }, orientation: 'H', length: 3 },
+    { anchor: { row: 5, col: 1 }, orientation: 'H', length: 3 },
+    { anchor: { row: 6, col: 4 }, orientation: 'H', length: 4 },
+    { anchor: { row: 2, col: 5 }, orientation: 'V', length: 2 },
+    { anchor: { row: 4, col: 3 }, orientation: 'V', length: 2 },
+    { anchor: { row: 5, col: 7 }, orientation: 'V', length: 1 },
+  ],
+  // Layout 3: Symmetric Choke — mirrored maze with central pinch points.
+  [
+    { anchor: { row: 2, col: 0 }, orientation: 'H', length: 3 },
+    { anchor: { row: 2, col: 5 }, orientation: 'H', length: 3 },
+    { anchor: { row: 4, col: 0 }, orientation: 'H', length: 3 },
+    { anchor: { row: 4, col: 5 }, orientation: 'H', length: 3 },
+    { anchor: { row: 6, col: 0 }, orientation: 'H', length: 3 },
+    { anchor: { row: 6, col: 5 }, orientation: 'H', length: 3 },
+    { anchor: { row: 3, col: 4 }, orientation: 'V', length: 1 },
+    { anchor: { row: 5, col: 4 }, orientation: 'V', length: 1 },
+  ],
+];
+
+// Pick a random labyrinth preset; optionally exclude one (so phase 3 can
+// avoid reusing the same layout as phase 2).
+function _pickOzrynLabyrinth(excludeIdx) {
+  const indices = _OZRYN_LABYRINTHS.map((_, i) => i).filter(i => i !== excludeIdx);
+  const pick = indices[Math.floor(Math.random() * indices.length)];
+  return { idx: pick, walls: _OZRYN_LABYRINTHS[pick] };
+}
+
+// Place a labyrinth's walls into gameState. All reinforced + immune +
+// permanent so neither player can remove them. Returns the IDs of walls
+// placed so phase 3 can identify which to clear.
+function _ozrynPlaceLabyrinth(walls, label) {
+  const placedIds = [];
+  for (const w of walls) {
+    if (!isWallLegal(w.anchor, w.orientation, w.length, gameState.walls,
+                     gameState.players[0].position, gameState.players[1].position, false)) {
+      console.warn(`[Ozryn ${label}] skipped illegal labyrinth wall:`, w);
+      continue;
+    }
+    const wall = {
+      id: gameState.nextWallId++,
+      owner: -1,
+      anchor: w.anchor, orientation: w.orientation, length: w.length,
+      isPhantom: false, durable: false, durableHits: 0,
+      immune: true, reinforced: true, permanent: true,
+      temporary: false, turnsRemaining: null,
+      placedOnTurn: gameState.turnNumber,
+      _bossWall: true, _ozrynLabyrinth: true,
+    };
+    gameState.walls.push(wall);
+    placedIds.push(wall.id);
+  }
+  return placedIds;
+}
+
+// Show a brief overlay announcing the phase transition. Auto-dismisses.
+function _ozrynShowPhaseOverlay(title, subtitle) {
+  if (typeof document === 'undefined') return;
+  const existing = document.getElementById('ozryn-phase-overlay');
+  if (existing) existing.remove();
+  const el = document.createElement('div');
+  el.id = 'ozryn-phase-overlay';
+  el.style.cssText = `
+    position: fixed; inset: 0; display: flex; align-items: center;
+    justify-content: center; flex-direction: column; gap: 12px;
+    background: rgba(20, 8, 30, 0.78);
+    z-index: 100002; pointer-events: none;
+    animation: ozrynPhaseFade 1.8s ease-out forwards;
+  `;
+  el.innerHTML = `
+    <style>
+      @keyframes ozrynPhaseFade {
+        0%   { opacity: 0; transform: scale(1.05); }
+        15%  { opacity: 1; transform: scale(1); }
+        70%  { opacity: 1; transform: scale(1); }
+        100% { opacity: 0; transform: scale(0.98); }
+      }
+    </style>
+    <div style="font-family:'Teko',sans-serif;font-size:64px;color:#fbbf24;letter-spacing:.1em;text-shadow:0 0 24px rgba(251,191,36,0.7);">
+      ${title}
+    </div>
+    <div style="font-family:monospace;font-size:14px;color:#d8b8ff;letter-spacing:.15em;">
+      ${subtitle}
+    </div>
+  `;
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 1900);
+}
+
+// Reset both players' positions to their respective starting rows + center
+// column. Player goes to row 4 col 4 (mid-labyrinth). AI returns to its
+// standard start (row 0 col 4) so the race is fair after each transition.
+function _ozrynResetPositions() {
+  const playerStartRow = 4;
+  const aiStartRow = 0;
+  const c = Math.floor(BOARD_COLS / 2);
+  if (gameState.players[0]) {
+    gameState.players[0] = { ...gameState.players[0], position: { row: playerStartRow, col: c } };
+  }
+  if (gameState.players[1]) {
+    gameState.players[1] = { ...gameState.players[1], position: { row: aiStartRow, col: c } };
+  }
+}
+
+// Apply Ozryn's phase-3 buff. Refreshes the AI's energy + draws a fresh
+// hand + bumps wall budget. Mid-match buff (different from start-of-match
+// applyAIRelicCountBuff). Persists for the rest of the match.
+function _ozrynApplyPhase3Buff() {
+  const ai = gameState.players[1];
+  if (!ai) return;
+  const newEnergyPerTurn = Math.min(15, (ai.energyPerTurn || 5) + 5);
+  const newWallLimit     = (ai.wallLimitCurrent || 8) + 5;
+  const newCardDraw      = Math.min(8, (ai.cardDraw || 5) + 3);
+  // Refresh hand: discard current hand, draw a fresh one of size handSize.
+  const handSize = ai.champion?.handSize || 7;
+  if (ai.hand && ai.hand.length) {
+    ai.discard = [...(ai.discard || []), ...ai.hand];
+    ai.hand = [];
+  }
+  gameState.players[1] = {
+    ...ai,
+    energyPerTurn: newEnergyPerTurn,
+    energyCurrent: newEnergyPerTurn,
+    wallLimitCurrent: newWallLimit,
+    cardDraw: newCardDraw,
+  };
+  if (typeof drawCards === 'function') {
+    try { drawCards(1, handSize); } catch (e) { console.warn('[Ozryn phase 3] drawCards failed:', e); }
+  }
+  addLog(1, 'system', 'Ozryn empowers himself! +5 energy, +5 walls, fresh hand');
+}
+
+// Main transition handler. Called from executeMove when player touches the
+// goal row in phase 1 or phase 2. Generates the next labyrinth, teleports
+// the player into it, resets the AI, and (for phase 3) buffs the boss.
+// Sets `gameState._ozrynPhase` to the new phase number.
+function _ozrynPhaseTransition(newPhase) {
+  if (!gameState?._ozrynActive) return;
+  const oldPhase = gameState._ozrynPhase || 1;
+
+  if (newPhase === 2) {
+    // Phase 2: spawn first labyrinth.
+    const { idx, walls } = _pickOzrynLabyrinth();
+    gameState._ozrynLastLabyrinthIdx = idx;
+    _ozrynPlaceLabyrinth(walls, 'phase 2');
+    _ozrynResetPositions();
+    gameState._ozrynPhase = 2;
+    addLog(0, 'system', 'OZRYN: "Not so fast..." — the floor reshapes itself');
+    _ozrynShowPhaseOverlay('PHASE 2', 'The First Labyrinth');
+  } else if (newPhase === 3) {
+    // Phase 3: clear ALL walls (incl. player + AI placements), spawn a
+    // new labyrinth, buff the boss.
+    gameState.walls = [];
+    if (gameState.players[0]) gameState.players[0].wallsInPlay = 0;
+    if (gameState.players[1]) gameState.players[1].wallsInPlay = 0;
+    const { idx, walls } = _pickOzrynLabyrinth(gameState._ozrynLastLabyrinthIdx);
+    gameState._ozrynLastLabyrinthIdx = idx;
+    _ozrynPlaceLabyrinth(walls, 'phase 3');
+    _ozrynResetPositions();
+    _ozrynApplyPhase3Buff();
+    gameState._ozrynPhase = 3;
+    addLog(0, 'system', 'OZRYN: "ENOUGH." — every wall vanishes; a new prison rises');
+    _ozrynShowPhaseOverlay('PHASE 3', 'The Final Stand');
+  }
+  // Force re-render so the new walls + positions appear immediately.
+  if (typeof renderAll === 'function') renderAll();
+}
+
+// ── Phase 3 — Wyrd Slow Aura gimmick ────────────────────────────────────
+// Wyrd "the Timeweaver" projects a 5×5 aura around himself (Chebyshev
+// distance ≤ 2). While the player is inside the aura, any movement card
+// they try to play fizzles and is exiled from the deck (gone for the rest
+// of the run). Click-to-move walking still works — but their fancy movement
+// cards can't be used to escape until they step out manually. The aura
+// deactivates while Wyrd is "bound" (root traps, Desperation Sprint
+// penalty, Wrecking Ball penalty), giving the player a window to play
+// movement cards safely.
+function _isInWyrdAura(r, c) {
+  if (!gameState?._wyrdActive) return false;
+  const seat = gameState._wyrdSeat;
+  if (seat == null) return false;
+  // Aura suppressed while Wyrd is bound (any source).
+  if (typeof hasStatusEffect === 'function' && hasStatusEffect(seat, 'bound')) return false;
+  const wyrd = gameState.players?.[seat];
+  if (!wyrd?.position) return false;
+  const radius = gameState._wyrdAuraRadius || 2;
+  const dr = Math.abs(r - wyrd.position.row);
+  const dc = Math.abs(c - wyrd.position.col);
+  return Math.max(dr, dc) <= radius;
+}
+
+// Convenience: is the player at seat `pi` standing inside Wyrd's aura right now?
+function _isPlayerInWyrdAura(pi) {
+  if (!gameState?._wyrdActive) return false;
+  const p = gameState.players?.[pi];
+  if (!p?.position) return false;
+  return _isInWyrdAura(p.position.row, p.position.col);
+}
+
+// ── Phase 3 — Ruk Treadmill gimmick ─────────────────────────────────────
+// Ruk "the Pit Fighter" turns the entire arena into a treadmill. Every 2
+// of Ruk's turns, EVERY wall on the board (his, the player's, doesn't
+// matter) shifts one row downward — toward the player's starting row.
+// Walls passing through the player's tile push the player with them
+// (per-turn momentum). Walls hitting the bottom edge fall off and are
+// destroyed. Walls that would collide with another wall just merge in
+// place (effectively no-op, since both edges occupy the same slot).
+//
+// Implementation note: walls store an `anchor: {row, col}` and the row of
+// every edge it spans is derived from the anchor. A "shift downward" is
+// simply `anchor.row += 1`. Both H and V walls work — H walls live
+// between row r and r+1, V walls live in row r between col c and c+1.
+// In both cases bumping anchor.row is the right transform.
+function _rukShouldTreadmillFire(pi) {
+  // Called at end of Ruk's turn. Increments the counter and returns true
+  // when the counter completes a 2-turn cycle.
+  if (!gameState?._rukActive) return false;
+  if (pi !== gameState._rukSeat) return false;
+  gameState._rukShiftCounter = (gameState._rukShiftCounter || 0) + 1;
+  if (gameState._rukShiftCounter >= 2) {
+    gameState._rukShiftCounter = 0;
+    return true;
+  }
+  return false;
+}
+
+// Show overlay during the treadmill slide.
+function _rukShowTreadmillFlash() {
+  if (typeof document === 'undefined') return;
+  const existing = document.getElementById('ruk-treadmill-overlay');
+  if (existing) existing.remove();
+  const el = document.createElement('div');
+  el.id = 'ruk-treadmill-overlay';
+  el.style.cssText = `
+    position: fixed; top: 28%; left: 50%; transform: translate(-50%, -50%);
+    z-index: 100002; pointer-events: none;
+    animation: rukTreadmillFade 1.4s ease-out forwards;
+  `;
+  el.innerHTML = `
+    <style>
+      @keyframes rukTreadmillFade {
+        0%   { opacity: 0; transform: translate(-50%, -55%); }
+        20%  { opacity: 1; transform: translate(-50%, -50%); }
+        70%  { opacity: 1; transform: translate(-50%, -50%); }
+        100% { opacity: 0; transform: translate(-50%, -45%); }
+      }
+    </style>
+    <div style="font-family:'Teko',sans-serif;font-size:48px;color:#f97316;letter-spacing:.1em;text-shadow:0 0 22px rgba(249,115,22,0.7);">
+      TREADMILL SHIFT
+    </div>
+  `;
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 1500);
+}
+
+// Apply the treadmill shift. Synchronous-ish — fires the visual animation
+// and applies state changes after a short delay so the slide is visible
+// before walls "snap" to their new logical positions. Returns a Promise
+// the caller can await if they need to defer follow-up logic.
+function _rukApplyTreadmillShift() {
+  if (!gameState?._rukActive) return Promise.resolve();
+  if (typeof document === 'undefined') {
+    // No DOM — just apply state changes immediately.
+    _rukCommitTreadmillShift();
+    return Promise.resolve();
+  }
+  _rukShowTreadmillFlash();
+  // Add the slide class to all wall elements so they animate via CSS.
+  const wallEls = document.querySelectorAll('#wall-layer .wall-segment');
+  // Cell pixel height + gap for the per-row offset.
+  const slidePx = (typeof CELL === 'number' ? CELL : 50) + (typeof GAP === 'number' ? GAP : 4);
+  wallEls.forEach(el => {
+    el.classList.add('ruk-shifting');
+    // Don't slide walls about to be destroyed (those at bottom edge) — but
+    // we don't know which ones from the DOM cheaply. The follow-up render
+    // will remove them anyway, so let them all animate together.
+    const cur = el.style.transform || '';
+    el.style.transform = `${cur} translateY(${slidePx}px)`.trim();
+  });
+  return new Promise(resolve => {
+    setTimeout(() => {
+      _rukCommitTreadmillShift();
+      if (typeof renderAll === 'function') renderAll();
+      resolve();
+    }, 420);
+  });
+}
+
+// Pure state mutation — shifts every wall down by 1 row, drags the player
+// when a wall passes through their tile, destroys walls that fall off the
+// bottom edge. Walls that would collide with another wall after shifting
+// just merge (we dedupe by edge-key after the shift).
+function _rukCommitTreadmillShift() {
+  if (!gameState?.walls) return;
+  const lastRow = (typeof BOARD_ROWS === 'number' ? BOARD_ROWS : 9) - 1;
+  // Identify which walls (by id) will pass through the player's tile so we
+  // can drag the player with the topmost one. We only consider H walls
+  // because only H walls cross horizontal edges, and the treadmill is a
+  // vertical shift. V walls live within a row and stay within a row when
+  // shifted — they never "cross over" the player.
+  const playerSeats = [0]; // seat 0 is the human in gauntlet boss fights
+  const playerPushes = {}; // seatId -> rows to push down (always 0 or 1)
+  for (const seat of playerSeats) {
+    const p = gameState.players?.[seat];
+    if (!p?.position) continue;
+    const pr = p.position.row, pc = p.position.col;
+    // Already at the bottom row — per design, the player stays put.
+    if (pr >= lastRow) continue;
+    // Find an H wall whose edge sits between (pr-1, pc) and (pr, pc) — i.e.
+    // anchor.row = pr - 1 and the wall covers col pc. This wall will shift
+    // down to between (pr, pc) and (pr+1, pc), passing through the player.
+    const dragger = gameState.walls.find(w =>
+      w.orientation === 'H' && w.anchor.row === pr - 1
+      && pc >= w.anchor.col && pc < w.anchor.col + w.length
+    );
+    if (dragger) playerPushes[seat] = 1;
+  }
+  // Shift every wall down by 1 row, destroying any whose new anchor row
+  // exceeds the bottom edge.
+  const newWalls = [];
+  const seenKeys = new Set();
+  for (const w of gameState.walls) {
+    const newAnchorRow = w.anchor.row + 1;
+    // H wall edges occupy rows [r, r+1] — falls off when r+1 > lastRow,
+    // i.e. r > lastRow - 1, i.e. r >= lastRow.
+    // V wall lives in row r — falls off when r > lastRow.
+    const fallsOff = (w.orientation === 'H')
+      ? (newAnchorRow > lastRow - 1)
+      : (newAnchorRow > lastRow);
+    if (fallsOff) continue;
+    const shifted = {
+      ...w,
+      anchor: { row: newAnchorRow, col: w.anchor.col },
+    };
+    // Dedupe by first-edge key — if two walls would land on identical
+    // edges they merge into one (we just keep the first).
+    const firstEdge = wallEdges(shifted)[0];
+    const k = `${shifted.orientation}:${edgeKey(firstEdge.a, firstEdge.b)}:${shifted.length}`;
+    if (seenKeys.has(k)) continue;
+    seenKeys.add(k);
+    newWalls.push(shifted);
+  }
+  gameState.walls = newWalls;
+  // Apply player pushes (clamp to bottom row).
+  for (const seatStr of Object.keys(playerPushes)) {
+    const seat = +seatStr;
+    const p = gameState.players?.[seat];
+    if (!p?.position) continue;
+    const newRow = Math.min(lastRow, p.position.row + playerPushes[seat]);
+    if (newRow !== p.position.row) {
+      gameState.players[seat] = { ...p, position: { ...p.position, row: newRow } };
+      addLog(seat, 'system', 'Treadmill shifts you one tile away from your goal!');
+    }
+  }
+}
+
+// ── Phase 3 — Kael Living Wall gimmick ──────────────────────────────────
+// Kael "the Wallwright" projects a 1-tile-thick "snake" wall that starts
+// in front of the player at match start and grows one segment per Kael
+// turn, always reaching toward the player's current north edge (the edge
+// between the player and their goal row 0).
+//
+// Data model: gameState._kaelWallSegments is an ordered list of edge
+// objects { row, col, orientation, _wallId } — newest at the END (head).
+// Each segment is rendered as its own length-1 wall in gameState.walls
+// with the flag _kaelLiving: true and owner = kaelSeat. We track the
+// in-game wall ids so we can detect when the player destroys a segment
+// (segment vanishes from gameState.walls but stays in our list — we
+// reconcile each turn).
+//
+// Growth algorithm:
+//   1. Reconcile the segment list against gameState.walls (drop destroyed).
+//   2. If list is empty, seed a new 1-tile wall at the player's current
+//      north edge (if reachable / legal).
+//   3. Find each contiguous "piece" of the snake. For each piece, take its
+//      head (newest segment) and find the NEXT segment by BFS on the edge
+//      adjacency graph from the head toward the player's front-edge.
+//   4. Each piece appends one segment in parallel.
+//   5. After all pieces have appended, FIFO-evict from the OLDEST piece
+//      until total length == 5.
+//   6. Special case: head already AT the player's front-edge → flank by
+//      growing laterally (E or W of player tile).
+
+function _kaelTargetFrontEdge() {
+  // The "front edge" the snake is trying to reach. For the human player
+  // (seat 0) marching toward row 0, that's the H edge between (pr-1, pc)
+  // and (pr, pc) — i.e. an H wall with anchor (pr-1, pc) length 1.
+  const player = gameState.players?.[0];
+  if (!player?.position) return null;
+  const pr = player.position.row, pc = player.position.col;
+  if (pr <= 0) return null; // player at goal row, nothing in front
+  return {
+    orientation: 'H',
+    anchor: { row: pr - 1, col: pc },
+    length: 1,
+  };
+}
+
+function _kaelSegmentEdgeKey(seg) {
+  // Stable key for a segment regardless of which "end" we read from.
+  if (seg.orientation === 'H') {
+    return `H:${seg.anchor.row},${seg.anchor.col}`;
+  } else {
+    return `V:${seg.anchor.row},${seg.anchor.col}`;
+  }
+}
+
+function _kaelEdgeAdjacent(a, b) {
+  // Two edges are adjacent if they share a vertex on the wall lattice.
+  // H edge at anchor (r,c) connects vertices (r+1, c) and (r+1, c+1).
+  // (Edges are between rows for H, between cols for V — we count vertices
+  // as the corners of the cells.)
+  // Actually, simpler rule for our purposes: two length-1 walls are
+  // adjacent if their wallEdges() share at least one tile-vertex.
+  // For H@(r,c): edge crosses vertically between (r,c) and (r+1,c).
+  //   The two endpoints (vertices) are (r+1, c) and (r+1, c+1).
+  // For V@(r,c): edge crosses horizontally between (r,c) and (r,c+1).
+  //   The two endpoints are (r, c+1) and (r+1, c+1).
+  const verts = (seg) => {
+    if (seg.orientation === 'H') {
+      return [`${seg.anchor.row + 1},${seg.anchor.col}`,
+              `${seg.anchor.row + 1},${seg.anchor.col + 1}`];
+    }
+    return [`${seg.anchor.row},${seg.anchor.col + 1}`,
+            `${seg.anchor.row + 1},${seg.anchor.col + 1}`];
+  };
+  const va = verts(a), vb = verts(b);
+  return va.some(v => vb.includes(v));
+}
+
+function _kaelEnumerateAdjacentEdges(seg) {
+  // Return all length-1 wall candidates that are vertex-adjacent to seg
+  // and in-bounds. Used as BFS expansion neighbors for the snake's growth.
+  const out = [];
+  if (seg.orientation === 'H') {
+    const r = seg.anchor.row, c = seg.anchor.col;
+    // Adjacent H edges (one to the left, one to the right) on the same row
+    if (c - 1 >= 0)              out.push({orientation:'H', anchor:{row:r, col:c-1}, length:1});
+    if (c + 1 <= BOARD_COLS - 1) out.push({orientation:'H', anchor:{row:r, col:c+1}, length:1});
+    // Adjacent V edges that share a vertex (4 total: above-left, above-right, below-left, below-right)
+    // H@(r,c) verts are (r+1, c) and (r+1, c+1). V edges with those verts:
+    //   V@(r, c-1)   verts: (r, c) and (r+1, c)              ← matches (r+1, c)? need r+1, this V has (r+1, c) yes
+    //   V@(r, c)     verts: (r, c+1) and (r+1, c+1)         ← matches (r+1, c+1)
+    //   V@(r+1, c-1) verts: (r+1, c) and (r+2, c)            ← matches (r+1, c)
+    //   V@(r+1, c)   verts: (r+1, c+1) and (r+2, c+1)        ← matches (r+1, c+1)
+    const candV = [
+      {row: r,     col: c - 1},
+      {row: r,     col: c    },
+      {row: r + 1, col: c - 1},
+      {row: r + 1, col: c    },
+    ];
+    for (const a of candV) {
+      if (a.row < 0 || a.row >= BOARD_ROWS) continue;
+      if (a.col < 0 || a.col >= BOARD_COLS - 1) continue;
+      out.push({orientation:'V', anchor:a, length:1});
+    }
+  } else {
+    const r = seg.anchor.row, c = seg.anchor.col;
+    // Adjacent V edges (one above, one below)
+    if (r - 1 >= 0)              out.push({orientation:'V', anchor:{row:r-1, col:c}, length:1});
+    if (r + 1 <= BOARD_ROWS - 1) out.push({orientation:'V', anchor:{row:r+1, col:c}, length:1});
+    // Adjacent H edges (similar derivation: V@(r,c) verts are (r, c+1), (r+1, c+1))
+    const candH = [
+      {row: r - 1, col: c    },
+      {row: r - 1, col: c + 1},
+      {row: r,     col: c    },
+      {row: r,     col: c + 1},
+    ];
+    for (const a of candH) {
+      if (a.row < 0 || a.row >= BOARD_ROWS - 1) continue;
+      if (a.col < 0 || a.col >= BOARD_COLS) continue;
+      out.push({orientation:'H', anchor:a, length:1});
+    }
+  }
+  return out;
+}
+
+function _kaelEdgeMidpoint(seg) {
+  // For BFS distance heuristic / target comparison. H edge midpoint is at
+  // (r + 0.5, c + 0.5). V edge midpoint is at (r + 0.5, c + 0.5) too,
+  // since the edge is between (r, c)→(r, c+1) for V (at the boundary).
+  // Distance between midpoints in cell-grid units.
+  if (seg.orientation === 'H') {
+    return { x: seg.anchor.col + 0.5, y: seg.anchor.row + 1.0 };
+  }
+  return { x: seg.anchor.col + 1.0, y: seg.anchor.row + 0.5 };
+}
+
+function _kaelEdgesEqual(a, b) {
+  return a.orientation === b.orientation
+      && a.anchor.row === b.anchor.row
+      && a.anchor.col === b.anchor.col;
+}
+
+function _kaelEdgeIsBlocked(seg, occupiedSet) {
+  // Check whether placing a length-1 wall here would conflict with another
+  // wall (any owner). We use a string-key set built from wallEdges() for
+  // each existing wall.
+  const edges = wallEdges(seg);
+  for (const e of edges) {
+    if (occupiedSet.has(edgeKey(e.a, e.b))) return true;
+  }
+  return false;
+}
+
+function _kaelBuildOccupancySet(extraSegs = []) {
+  // Returns a Set of edgeKey strings for every wall edge currently on the
+  // board. Used to detect when a candidate new segment would overlap.
+  // extraSegs lets us include the snake's own segments (so the snake
+  // doesn't try to grow into itself).
+  const set = new Set();
+  for (const w of gameState.walls) {
+    for (const e of wallEdges(w)) set.add(edgeKey(e.a, e.b));
+  }
+  for (const s of extraSegs) {
+    for (const e of wallEdges(s)) set.add(edgeKey(e.a, e.b));
+  }
+  return set;
+}
+
+function _kaelFindContiguousPieces(segments) {
+  // Group segments into contiguous pieces using the adjacency relation.
+  // Returns array of arrays, each inner array preserves age order.
+  const remaining = segments.map((s, i) => ({ ...s, _origIdx: i }));
+  const pieces = [];
+  while (remaining.length > 0) {
+    // Start from the OLDEST remaining segment so each piece is built in
+    // age order; head is the newest in each piece.
+    const seed = remaining.shift();
+    const piece = [seed];
+    let added = true;
+    while (added) {
+      added = false;
+      for (let i = remaining.length - 1; i >= 0; i--) {
+        if (piece.some(p => _kaelEdgeAdjacent(p, remaining[i]))) {
+          piece.push(remaining[i]);
+          remaining.splice(i, 1);
+          added = true;
+        }
+      }
+    }
+    // Sort piece by original age so the head (newest) is always last.
+    piece.sort((a, b) => a._origIdx - b._origIdx);
+    pieces.push(piece);
+  }
+  return pieces;
+}
+
+function _kaelPickGrowthSegment(headSeg, targetEdge) {
+  // BFS from headSeg's neighbors to find the next segment that gets us
+  // closest to targetEdge. Skip neighbors already occupied by another wall.
+  // Returns the chosen segment or null if nothing is legal.
+  if (!headSeg) return null;
+  // If head is already AT target, flank: pick a lateral V edge next to player.
+  if (targetEdge && _kaelEdgesEqual(headSeg, targetEdge)) {
+    const player = gameState.players?.[0];
+    if (player?.position) {
+      const pr = player.position.row, pc = player.position.col;
+      // Candidate flank edges: V at (pr-1, pc-1) [left of player tile, top half]
+      // or V at (pr-1, pc) [right]. Plus equivalents one row down.
+      const flanks = [
+        {orientation:'V', anchor:{row: pr - 1, col: pc - 1}, length: 1},
+        {orientation:'V', anchor:{row: pr - 1, col: pc    }, length: 1},
+        {orientation:'V', anchor:{row: pr,     col: pc - 1}, length: 1},
+        {orientation:'V', anchor:{row: pr,     col: pc    }, length: 1},
+      ].filter(f => f.anchor.row >= 0 && f.anchor.row <= BOARD_ROWS - 1
+                  && f.anchor.col >= 0 && f.anchor.col <= BOARD_COLS - 2);
+      const occ = _kaelBuildOccupancySet();
+      for (const f of flanks) {
+        if (!_kaelEdgeIsBlocked(f, occ)) return f;
+      }
+    }
+  }
+  if (!targetEdge) return null;
+  // BFS for shortest path of edges from head to targetEdge, then return
+  // the first step. Each node is an edge identity string.
+  const occ = _kaelBuildOccupancySet();
+  const targetKey = _kaelSegmentEdgeKey(targetEdge);
+  const headKey   = _kaelSegmentEdgeKey(headSeg);
+  if (headKey === targetKey) return null; // already there, no flanks legal — skip
+  const visited = new Map(); // edgeKey -> { seg, parentKey }
+  visited.set(headKey, { seg: headSeg, parentKey: null });
+  const queue = [headSeg];
+  let foundKey = null;
+  let bumpCount = 0;
+  while (queue.length && bumpCount < 200) {
+    bumpCount++;
+    const cur = queue.shift();
+    const nbrs = _kaelEnumerateAdjacentEdges(cur);
+    for (const nb of nbrs) {
+      const k = _kaelSegmentEdgeKey(nb);
+      if (visited.has(k)) continue;
+      // Block if occupied by an existing wall (the snake's OWN segments
+      // are in the occ set too, so it won't backtrack).
+      if (_kaelEdgeIsBlocked(nb, occ)) continue;
+      visited.set(k, { seg: nb, parentKey: _kaelSegmentEdgeKey(cur) });
+      if (k === targetKey) { foundKey = k; break; }
+      queue.push(nb);
+    }
+    if (foundKey) break;
+  }
+  if (!foundKey) {
+    // No path — pick any in-bounds neighbor that minimizes Manhattan to target.
+    const nbrs = _kaelEnumerateAdjacentEdges(headSeg)
+      .filter(n => !_kaelEdgeIsBlocked(n, occ));
+    if (!nbrs.length) return null;
+    const tgt = _kaelEdgeMidpoint(targetEdge);
+    nbrs.sort((a, b) => {
+      const ma = _kaelEdgeMidpoint(a), mb = _kaelEdgeMidpoint(b);
+      const da = Math.abs(ma.x - tgt.x) + Math.abs(ma.y - tgt.y);
+      const db = Math.abs(mb.x - tgt.x) + Math.abs(mb.y - tgt.y);
+      return da - db;
+    });
+    return nbrs[0];
+  }
+  // Walk parents back from foundKey to first-step-after-head.
+  let curK = foundKey;
+  let prevK = visited.get(curK).parentKey;
+  while (prevK && prevK !== headKey) {
+    curK = prevK;
+    prevK = visited.get(curK).parentKey;
+  }
+  return visited.get(curK).seg;
+}
+
+function _kaelReconcileSegments() {
+  // Drop any segments whose backing gameState.walls entry has been
+  // destroyed (by player RC/AV cards). Returns the reconciled list.
+  const wallById = new Map(gameState.walls.map(w => [w.id, w]));
+  return (gameState._kaelWallSegments || []).filter(s => wallById.has(s._wallId));
+}
+
+function _kaelMaterializeSegment(seg) {
+  // Push a new gameState.walls entry for this segment and return the wall id.
+  // owner: -1 (neutral / boss) so destruction doesn't affect Kael's
+  // wallsInPlay counter. The CSS .kael-living-wall class overrides the
+  // owner-boss visual.
+  const wall = {
+    id: gameState.nextWallId++,
+    owner: -1,
+    anchor: { ...seg.anchor },
+    orientation: seg.orientation,
+    length: 1,
+    isPhantom: false,
+    durable: false, durableHits: 0,
+    immune: false, // destructible
+    reinforced: false,
+    permanent: false,
+    temporary: false, turnsRemaining: null,
+    placedOnTurn: gameState.turnNumber,
+    _bossWall: true,
+    _kaelLiving: true,
+  };
+  gameState.walls.push(wall);
+  return wall.id;
+}
+
+function _kaelDestroyOldestForFifo() {
+  // If total snake length > max, evict the oldest segment from gameState.walls
+  // and from the segment list. Repeat until under the cap.
+  const max = gameState._kaelMaxLength || 5;
+  while ((gameState._kaelWallSegments || []).length > max) {
+    const oldest = gameState._kaelWallSegments.shift();
+    gameState.walls = gameState.walls.filter(w => w.id !== oldest._wallId);
+  }
+}
+
+function _kaelGrowLivingWall(pi) {
+  if (!gameState?._kaelActive) return;
+  if (pi !== gameState._kaelSeat) return;
+  // Reconcile: drop destroyed segments first.
+  gameState._kaelWallSegments = _kaelReconcileSegments();
+  const target = _kaelTargetFrontEdge();
+  // If completely destroyed (or never seeded), try to seed at the player's
+  // front edge.
+  if ((gameState._kaelWallSegments || []).length === 0) {
+    if (!target) return; // player at goal, can't seed
+    const occ = _kaelBuildOccupancySet();
+    if (_kaelEdgeIsBlocked(target, occ)) {
+      // Front edge already has a wall — try lateral seeds
+      const player = gameState.players?.[0];
+      if (!player?.position) return;
+      const pr = player.position.row, pc = player.position.col;
+      const fallback = [
+        {orientation:'V', anchor:{row: pr - 1, col: pc - 1}, length: 1},
+        {orientation:'V', anchor:{row: pr - 1, col: pc    }, length: 1},
+      ].filter(s => s.anchor.row >= 0 && s.anchor.col >= 0 && s.anchor.col <= BOARD_COLS - 2);
+      let seeded = false;
+      for (const s of fallback) {
+        if (!_kaelEdgeIsBlocked(s, occ)) {
+          const id = _kaelMaterializeSegment(s);
+          gameState._kaelWallSegments.push({...s, _wallId: id});
+          seeded = true; break;
+        }
+      }
+      if (!seeded) return;
+    } else {
+      const id = _kaelMaterializeSegment(target);
+      gameState._kaelWallSegments.push({...target, _wallId: id});
+    }
+    return;
+  }
+  // Normal growth: split into pieces, append one segment per piece.
+  const pieces = _kaelFindContiguousPieces(gameState._kaelWallSegments);
+  const additions = [];
+  for (const piece of pieces) {
+    const head = piece[piece.length - 1]; // newest in piece
+    const next = _kaelPickGrowthSegment(head, target);
+    if (next) additions.push(next);
+  }
+  // Materialize all additions into gameState.walls + segment list.
+  for (const a of additions) {
+    const id = _kaelMaterializeSegment(a);
+    gameState._kaelWallSegments.push({...a, _wallId: id});
+  }
+  // FIFO evict if over cap.
+  _kaelDestroyOldestForFifo();
+}
+
+function _kaelSeedInitialSegment() {
+  // Called from applyBossBoard after player positions are finalized.
+  const target = _kaelTargetFrontEdge();
+  if (!target) return;
+  const occ = _kaelBuildOccupancySet();
+  if (_kaelEdgeIsBlocked(target, occ)) return;
+  const id = _kaelMaterializeSegment(target);
+  gameState._kaelWallSegments = [{...target, _wallId: id}];
+}
+
+// ── Phase 3 — Ghrel Cage Closes gimmick ─────────────────────────────────
+// Ghrel "the Cage Master" surrounds the player with a closed-perimeter
+// ring of "cage" walls. Every 3 of Ghrel's turns, the ring shrinks one
+// tier: 7×7 interior → 5×5 → 3×3 → 7×7 (reset). The cage walls are
+// passable for Ghrel only — players see them as solid impassable walls
+// (handled by the mover-aware buildBlockedEdges() logic added below).
+// When the ring shrinks, if the player ends up outside the new interior,
+// they're clamped to the nearest interior tile (pushed toward center).
+function _ghrelRingSlots(size) {
+  // Returns per-tile slot specs for the cage ring. Each side is split into
+  // length-1 walls (one per slot) so the player can break individual slots
+  // and we can track which slots are gone. Returns:
+  //   { top: [{col, anchor, orientation}, ...],
+  //     bottom: [...], left: [{row, anchor, orientation}, ...], right: [...] }
+  // The slot key is a col (top/bottom) or a row (left/right).
+  const dim = (typeof BOARD_ROWS === 'number' ? BOARD_ROWS : 9);
+  const margin = (dim - size) / 2;
+  if (margin < 0 || !Number.isInteger(margin)) {
+    console.warn('[Ghrel ring] non-centered size:', size);
+    return { top: [], bottom: [], left: [], right: [] };
+  }
+  const topRow = margin - 1;
+  const botRow = dim - margin - 1;
+  const leftCol = margin - 1;
+  const rightCol = dim - margin - 1;
+  const interiorStart = margin;
+  const out = { top: [], bottom: [], left: [], right: [] };
+  for (let i = 0; i < size; i++) {
+    const c = interiorStart + i;
+    out.top.push({    side:'top',    slot:c, orientation:'H', anchor:{row: topRow, col: c} });
+    out.bottom.push({ side:'bottom', slot:c, orientation:'H', anchor:{row: botRow, col: c} });
+    const r = interiorStart + i;
+    out.left.push({   side:'left',   slot:r, orientation:'V', anchor:{row: r, col: leftCol} });
+    out.right.push({  side:'right',  slot:r, orientation:'V', anchor:{row: r, col: rightCol} });
+  }
+  return out;
+}
+
+function _ghrelInteriorBounds(size) {
+  // Returns { rowMin, rowMax, colMin, colMax } for the interior tiles
+  // of a centered ring. Tiles inside this range are NOT cage walls.
+  const dim = (typeof BOARD_ROWS === 'number' ? BOARD_ROWS : 9);
+  const margin = (dim - size) / 2;
+  return {
+    rowMin: margin,
+    rowMax: dim - margin - 1,
+    colMin: margin,
+    colMax: dim - margin - 1,
+  };
+}
+
+function _ghrelReconcileBrokenSlots() {
+  // For each slot we previously placed, check whether its wall id is still
+  // in gameState.walls. If not, the player destroyed it — record that slot
+  // in the broken set so the next ring carries the hole forward.
+  if (!gameState._ghrelCageSlotMap) return;
+  const wallIds = new Set(gameState.walls.map(w => w.id));
+  for (const idStr of Object.keys(gameState._ghrelCageSlotMap)) {
+    const id = +idStr;
+    if (wallIds.has(id)) continue;
+    const info = gameState._ghrelCageSlotMap[idStr];
+    if (!info) continue;
+    const set = gameState._ghrelBrokenSlots?.[info.side];
+    if (set) set.add(info.slot);
+  }
+}
+
+function _ghrelClearCage() {
+  // Drop all walls in our tracked cage list from gameState.walls. Before
+  // clearing, reconcile so any slots the player just destroyed get added
+  // to the broken set (otherwise we'd lose that record on shrink).
+  _ghrelReconcileBrokenSlots();
+  const ids = new Set(gameState._ghrelCageWallIds || []);
+  if (ids.size > 0) {
+    gameState.walls = gameState.walls.filter(w => !ids.has(w.id));
+  }
+  gameState._ghrelCageWallIds = [];
+  gameState._ghrelCageSlotMap = {};
+}
+
+function _ghrelResetBrokenSlots() {
+  // Called when the cycle resets back to ring 1 (size 7). Wipes all
+  // accumulated holes so the new outer ring starts fully closed.
+  gameState._ghrelBrokenSlots = {
+    top: new Set(), bottom: new Set(),
+    left: new Set(), right: new Set(),
+  };
+}
+
+function _ghrelPlaceRing(size) {
+  // Place the cage ring of the given size as per-tile length-1 walls.
+  // Filters out slots that are already broken (from prior ring damage).
+  // Walls are owned by Ghrel (mover-aware bypass) with _ghrelCage flag
+  // (buildBlockedEdges exception). NOT immune/reinforced/permanent — the
+  // player can destroy individual slots, and the holes carry forward to
+  // the next ring on shrink.
+  _ghrelClearCage();
+  gameState._ghrelCageSize = size;
+  const seat = gameState._ghrelSeat;
+  if (seat == null) return;
+  // Make sure broken-slot sets are real Sets (defensive — gameState may
+  // have been deserialized somewhere along the way).
+  if (!gameState._ghrelBrokenSlots) {
+    _ghrelResetBrokenSlots();
+  } else {
+    for (const k of ['top','bottom','left','right']) {
+      if (!(gameState._ghrelBrokenSlots[k] instanceof Set)) {
+        gameState._ghrelBrokenSlots[k] = new Set(gameState._ghrelBrokenSlots[k] || []);
+      }
+    }
+  }
+  const slots = _ghrelRingSlots(size);
+  const ids = [];
+  const slotMap = {};
+  for (const side of ['top', 'bottom', 'left', 'right']) {
+    const broken = gameState._ghrelBrokenSlots[side];
+    for (const sp of slots[side]) {
+      if (broken.has(sp.slot)) continue; // hole carried forward
+      const wall = {
+        id: gameState.nextWallId++,
+        owner: seat,
+        anchor: { ...sp.anchor },
+        orientation: sp.orientation,
+        length: 1,
+        isPhantom: false,
+        durable: false, durableHits: 0,
+        immune: false,       // destructible
+        reinforced: false,
+        permanent: false,
+        temporary: false, turnsRemaining: null,
+        placedOnTurn: gameState.turnNumber,
+        _bossWall: true,
+        _ghrelCage: true,
+      };
+      gameState.walls.push(wall);
+      ids.push(wall.id);
+      slotMap[wall.id] = { side: sp.side, slot: sp.slot };
+    }
+  }
+  gameState._ghrelCageWallIds = ids;
+  gameState._ghrelCageSlotMap = slotMap;
+  // Push player into the new interior if they're outside.
+  const bounds = _ghrelInteriorBounds(size);
+  for (const seatPi of [0]) {
+    const p = gameState.players?.[seatPi];
+    if (!p?.position) continue;
+    const newRow = Math.max(bounds.rowMin, Math.min(bounds.rowMax, p.position.row));
+    const newCol = Math.max(bounds.colMin, Math.min(bounds.colMax, p.position.col));
+    if (newRow !== p.position.row || newCol !== p.position.col) {
+      gameState.players[seatPi] = { ...p, position: { row: newRow, col: newCol } };
+      addLog(seatPi, 'system', `Cage shrinks — pushed to (${newRow},${newCol})`);
+    }
+  }
+}
+
+function _ghrelNextSize(current) {
+  // Cycle: 7 → 5 → 3 → 7 (reset).
+  if (current === 7) return 5;
+  if (current === 5) return 3;
+  return 7; // from 3 (or anything weird) back to 7
+}
+
+function _ghrelShowShrinkFlash(newSize) {
+  if (typeof document === 'undefined') return;
+  const existing = document.getElementById('ghrel-cage-overlay');
+  if (existing) existing.remove();
+  const el = document.createElement('div');
+  el.id = 'ghrel-cage-overlay';
+  el.style.cssText = `
+    position: fixed; top: 28%; left: 50%; transform: translate(-50%, -50%);
+    z-index: 100002; pointer-events: none;
+    animation: rukTreadmillFade 1.4s ease-out forwards;
+  `;
+  el.innerHTML = `
+    <div style="font-family:'Teko',sans-serif;font-size:48px;color:#c2410c;letter-spacing:.1em;text-shadow:0 0 22px rgba(194,65,12,0.7);">
+      CAGE CLOSES
+    </div>
+    <div style="font-family:monospace;font-size:11px;color:#fed7aa;letter-spacing:.15em;text-align:center;">
+      ${newSize}×${newSize}
+    </div>
+  `;
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 1500);
+}
+
+function _ghrelTickAndMaybeShrink(pi) {
+  if (!gameState?._ghrelActive) return;
+  if (pi !== gameState._ghrelSeat) return;
+  // Reconcile broken slots EVERY Ghrel turn (not just on shrink) so newly
+  // destroyed slots are recorded immediately. This also lets a status chip
+  // or audit reflect accurate damage state mid-cycle.
+  _ghrelReconcileBrokenSlots();
+  gameState._ghrelShiftCounter = (gameState._ghrelShiftCounter || 0) + 1;
+  if (gameState._ghrelShiftCounter < 3) return;
+  gameState._ghrelShiftCounter = 0;
+  const cur = gameState._ghrelCageSize || 7;
+  const next = _ghrelNextSize(cur);
+  // Cycle reset: when going from size 3 back to size 7 (the outer ring),
+  // wipe the broken-slot record. The new ring 1 spawns fully closed.
+  if (cur === 3 && next === 7) {
+    _ghrelResetBrokenSlots();
+    addLog(pi, 'system', 'GHREL: "Begin again." — the cage rebuilds, sealed anew');
+  } else {
+    addLog(pi, 'system', `GHREL: "Smaller." — the cage closes to ${next}×${next}`);
+  }
+  _ghrelPlaceRing(next);
+  _ghrelShowShrinkFlash(next);
+}
+
+// ── Phase 3 — Vael Mirror Shift gimmick ─────────────────────────────────
+// Vael "the Maze Keeper" builds his maze normally, then once per 3 of his
+// turns he can mirror every wall he's placed across the vertical axis
+// (col 4 on a 9-col board). Walls Vael placed at col 1 swap to col 7,
+// col 2 → col 6, etc. Walls Vael did NOT place are untouched. Walls that
+// would land on the player or in an illegal spot are skipped (not mirrored
+// that turn — they stay in place).
+//
+// AI decision logic: at end of Vael's turn when cooldown reaches 0, the
+// AI computes the net path-length impact of mirroring (player path delta
+// minus self path delta). Fires when delta ≥ 3, otherwise waits.
+function _vaelMirrorWallTransform(wall) {
+  // Returns a candidate mirrored wall (anchor.col flipped across vertical
+  // axis). Caller still needs to validate legality.
+  const cols = (typeof BOARD_COLS === 'number' ? BOARD_COLS : 9);
+  const axis = (cols - 1) / 2; // 4 on a 9-col board
+  let newCol;
+  if (wall.orientation === 'H') {
+    // H walls span [col, col + length - 1]. Mirror the rightmost cell to
+    // the leftmost cell across the axis: newCol = 2*axis - (col + length - 1).
+    newCol = Math.round(2 * axis - (wall.anchor.col + wall.length - 1));
+  } else {
+    // V walls span [col, col + 1] (between two adjacent cols). Mirror the
+    // gap: newCol = 2*axis - 1 - col, i.e. mirror the LEFT col-index of the
+    // edge gap. Symmetric across axis means the gap between (axis-1, axis)
+    // stays put when col == axis - 1; between (0, 1) maps to (cols-2, cols-1).
+    newCol = Math.round(2 * axis - 1 - wall.anchor.col);
+  }
+  return {
+    ...wall,
+    anchor: { row: wall.anchor.row, col: newCol },
+  };
+}
+
+function _vaelComputeMirrorPlan() {
+  // Returns { newWalls, kept, mirroredCount } — newWalls is the full new
+  // wall list to assign to gameState.walls if we commit. Walls Vael owns
+  // get mirrored when legal; if illegal, the original is kept in place.
+  // All non-Vael walls (player, neutral) are passed through untouched.
+  const seat = gameState._vaelSeat;
+  if (seat == null || !gameState?.walls) return null;
+  const playerPos0 = gameState.players?.[0]?.position;
+  const playerPos1 = gameState.players?.[1]?.position;
+  const others = gameState.walls.filter(w => w.owner !== seat);
+  const vaelWalls = gameState.walls.filter(w => w.owner === seat);
+  // First pass: build the candidate mirrored walls. Validate each against
+  // the OTHER walls + the still-unmirrored Vael walls (so collisions
+  // between the existing maze and a candidate are caught).
+  const candidates = vaelWalls.map(w => _vaelMirrorWallTransform(w));
+  const kept = [];
+  const mirroredAccepted = [];
+  for (let i = 0; i < vaelWalls.length; i++) {
+    const cand = candidates[i];
+    // Build the legality check world: all non-Vael walls + already-accepted
+    // mirrors + Vael walls we haven't tried yet (excluding the original i).
+    const worldWalls = [
+      ...others,
+      ...mirroredAccepted,
+      ...vaelWalls.filter((_, j) => j > i), // future ones still in original spot
+    ];
+    const legal = (typeof isWallLegal === 'function')
+      ? isWallLegal(cand.anchor, cand.orientation, cand.length, worldWalls,
+                    playerPos0, playerPos1, false)
+      : true;
+    if (legal) {
+      mirroredAccepted.push(cand);
+    } else {
+      kept.push(vaelWalls[i]);
+    }
+  }
+  return {
+    newWalls: [...others, ...mirroredAccepted, ...kept],
+    mirroredCount: mirroredAccepted.length,
+    keptCount: kept.length,
+  };
+}
+
+function _vaelEstimateMirrorValue() {
+  // Compute path-length delta if mirror fires now. Positive value =
+  // mirror is good for Vael (player path lengthens more than Vael's own).
+  const seat = gameState._vaelSeat;
+  if (seat == null) return 0;
+  const playerSeat = (seat === 0) ? 1 : 0;
+  const plan = _vaelComputeMirrorPlan();
+  if (!plan) return 0;
+  if (plan.mirroredCount === 0) return 0; // nothing legal to mirror — skip
+  const playerPos = gameState.players?.[playerSeat]?.position;
+  const vaelPos = gameState.players?.[seat]?.position;
+  if (!playerPos || !vaelPos) return 0;
+  const playerGoal = (playerSeat === 0) ? 0 : (BOARD_ROWS - 1);
+  const vaelGoal   = (seat === 0)       ? 0 : (BOARD_ROWS - 1);
+  const playerDistBefore = bfsDistance(playerPos, playerGoal, gameState.walls);
+  const vaelDistBefore   = bfsDistance(vaelPos,   vaelGoal,   gameState.walls);
+  const playerDistAfter  = bfsDistance(playerPos, playerGoal, plan.newWalls);
+  const vaelDistAfter    = bfsDistance(vaelPos,   vaelGoal,   plan.newWalls);
+  // Treat unreachable as "very long" (don't fire something that traps Vael).
+  const safe = (d) => (d === Infinity ? 999 : d);
+  const playerDelta = safe(playerDistAfter) - safe(playerDistBefore);
+  const vaelDelta   = safe(vaelDistAfter)   - safe(vaelDistBefore);
+  // If mirror would trap Vael (path becomes Infinity), reject hard.
+  if (vaelDistAfter === Infinity) return -999;
+  return playerDelta - vaelDelta;
+}
+
+function _vaelShowMirrorFlash() {
+  if (typeof document === 'undefined') return;
+  const existing = document.getElementById('vael-mirror-overlay');
+  if (existing) existing.remove();
+  const el = document.createElement('div');
+  el.id = 'vael-mirror-overlay';
+  el.style.cssText = `
+    position: fixed; top: 28%; left: 50%; transform: translate(-50%, -50%);
+    z-index: 100002; pointer-events: none;
+    animation: vaelMirrorFlash 1.4s ease-out forwards;
+  `;
+  el.innerHTML = `
+    <div style="font-family:'Teko',sans-serif;font-size:48px;color:#60a5fa;letter-spacing:.1em;text-shadow:0 0 22px rgba(96,165,250,0.7);">
+      MIRRORED
+    </div>
+  `;
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 1500);
+}
+
+// Called from endTurn at end of Vael's turn. Decrements cooldown; fires
+// when cooldown hits 0 AND the mirror would be net-positive.
+function _vaelTickAndMaybeMirror(pi) {
+  if (!gameState?._vaelActive) return;
+  if (pi !== gameState._vaelSeat) return;
+  // Decrement cooldown if not already ready.
+  if (gameState._vaelMirrorCooldown > 0) {
+    gameState._vaelMirrorCooldown -= 1;
+    return;
+  }
+  // Cooldown ready — evaluate firing.
+  const value = _vaelEstimateMirrorValue();
+  if (value >= 3) {
+    const plan = _vaelComputeMirrorPlan();
+    if (plan && plan.mirroredCount > 0) {
+      gameState.walls = plan.newWalls;
+      gameState._vaelMirrorCooldown = 3;
+      addLog(pi, 'system', `VAEL: "Reflect." — ${plan.mirroredCount} wall${plan.mirroredCount === 1 ? '' : 's'} mirrored across the axis`);
+      _vaelShowMirrorFlash();
+    }
+  }
+  // Otherwise: hold and re-evaluate next Vael turn (cooldown stays at 0).
+}
+
+// Show a brief overlay when a movement card fizzles.
+function _wyrdShowFizzleFlash(cardName) {
+  if (typeof document === 'undefined') return;
+  const existing = document.getElementById('wyrd-fizzle-overlay');
+  if (existing) existing.remove();
+  const el = document.createElement('div');
+  el.id = 'wyrd-fizzle-overlay';
+  el.style.cssText = `
+    position: fixed; top: 30%; left: 50%; transform: translate(-50%, -50%);
+    display: flex; flex-direction: column; align-items: center; gap: 6px;
+    z-index: 100002; pointer-events: none;
+    animation: wyrdFizzleFade 1.6s ease-out forwards;
+  `;
+  el.innerHTML = `
+    <style>
+      @keyframes wyrdFizzleFade {
+        0%   { opacity: 0; transform: translate(-50%, -55%) scale(0.95); }
+        20%  { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+        70%  { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+        100% { opacity: 0; transform: translate(-50%, -45%) scale(0.95); }
+      }
+    </style>
+    <div style="font-family:'Teko',sans-serif;font-size:42px;color:#c084fc;letter-spacing:.1em;text-shadow:0 0 18px rgba(192,132,252,0.7);">
+      FIZZLED
+    </div>
+    <div style="font-family:monospace;font-size:11px;color:#ddd6fe;letter-spacing:.15em;">
+      ${cardName} — EXILED
+    </div>
+  `;
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 1700);
+}
+
 function applyBossBoard(board) {
   // Optionally resize the board for this boss fight
   if (board.rows || board.cols) {
     setBoardSize(board.rows || DEFAULT_BOARD_ROWS, board.cols || DEFAULT_BOARD_COLS);
   }
 
-  // Pre-place indestructible boss walls
-  if (board.preWalls && board.preWalls.length > 0) {
-    for (const pw of board.preWalls) {
+  // Phase 3: gimmick dispatch. If a boss specifies a gimmick, generate its
+  // wall layout dynamically instead of using the static preWalls array.
+  // Falls through to legacy preWalls when no gimmick is set so non-gimmicked
+  // bosses (Kael, Vael, Ghrel, Ruk, Wyrd) keep working unchanged.
+  let preWalls = board.preWalls || [];
+  const bossSeat = (typeof board.bossSeat === 'number') ? board.bossSeat : 1;
+  // Reset all gimmick state flags before dispatching — prevents leakage
+  // between matches (e.g. a phantomKing flag from a Nira fight surviving
+  // into a later Ozryn fight).
+  gameState._phantomKingActive = false;
+  gameState._phantomKingBossSeat = null;
+  gameState._ozrynActive = false;
+  gameState._ozrynPhase = 0;
+  gameState._ozrynBossSeat = null;
+  // Phase 3 — Wyrd Slow Aura
+  gameState._wyrdActive = false;
+  gameState._wyrdSeat = null;
+  gameState._wyrdAuraRadius = 2; // 5×5 = radius 2 from center
+  // Phase 3 — Ruk Treadmill
+  gameState._rukActive = false;
+  gameState._rukSeat = null;
+  gameState._rukShiftCounter = 0;
+  // Phase 3 — Vael Mirror Shift
+  gameState._vaelActive = false;
+  gameState._vaelSeat = null;
+  gameState._vaelMirrorCooldown = 3;
+  // Phase 3 — Kael Living Wall
+  gameState._kaelActive = false;
+  gameState._kaelSeat = null;
+  gameState._kaelWallSegments = []; // ordered list of edge objects
+  gameState._kaelMaxLength = 5;
+  // Phase 3 — Ghrel Cage Closes
+  gameState._ghrelActive = false;
+  gameState._ghrelSeat = null;
+  gameState._ghrelCageSize = 7; // current ring size: 7, 5, 3 (cycle)
+  gameState._ghrelCageWallIds = [];          // currently-active cage wall ids
+  gameState._ghrelCageSlotMap = {};           // wall id → { side, slot }
+  gameState._ghrelBrokenSlots = {             // destroyed slots, carry across shrinks
+    top: new Set(), bottom: new Set(),       // cols
+    left: new Set(), right: new Set(),       // rows
+  };
+  gameState._ghrelShiftCounter = 0;
+  if (board.gimmick === 'phantomKing') {
+    preWalls = _buildPhantomKingBarriers();
+    gameState._phantomKingActive = true;
+    gameState._phantomKingBossSeat = bossSeat;
+  } else if (board.gimmick === 'multiPhase') {
+    // Phase 1 starts with NO walls. The labyrinths arrive on phase
+    // transitions. Track state so executeMove can intercept the
+    // goal-reach and fire _ozrynPhaseTransition.
+    preWalls = [];
+    gameState._ozrynActive = true;
+    gameState._ozrynPhase = 1;
+    gameState._ozrynBossSeat = bossSeat;
+  } else if (board.gimmick === 'slowAura') {
+    // Wyrd: empty board. Aura is computed dynamically from Wyrd's position.
+    preWalls = [];
+    gameState._wyrdActive = true;
+    gameState._wyrdSeat = bossSeat;
+  } else if (board.gimmick === 'treadmill') {
+    // Ruk: empty board. Walls created later (by either player) shift
+    // downward every 2 of Ruk's turns.
+    preWalls = [];
+    gameState._rukActive = true;
+    gameState._rukSeat = bossSeat;
+  } else if (board.gimmick === 'mirrorShift') {
+    // Vael: empty board. Once-per-3-turns ability mirrors his walls
+    // across the vertical axis (col 4).
+    preWalls = [];
+    gameState._vaelActive = true;
+    gameState._vaelSeat = bossSeat;
+    gameState._vaelMirrorCooldown = 3;
+  } else if (board.gimmick === 'livingWall') {
+    // Kael: empty board. A snake-like wall starts in front of the player
+    // and grows one tile per Kael turn. Capped at 5 segments (FIFO).
+    preWalls = [];
+    gameState._kaelActive = true;
+    gameState._kaelSeat = bossSeat;
+    gameState._kaelWallSegments = [];
+    // Initial seed segment placed below (after player position is finalized).
+  } else if (board.gimmick === 'cageCloses') {
+    // Ghrel: starts with the 7-wide cage ring already placed. Every 3
+    // Ghrel turns the ring shrinks: 7 → 5 → 3 → 7 (reset). Cage walls
+    // are passable for Ghrel only — players are blocked. Built below
+    // after gimmick state is set.
+    preWalls = [];
+    gameState._ghrelActive = true;
+    gameState._ghrelSeat = bossSeat;
+    gameState._ghrelCageSize = 7;
+    gameState._ghrelShiftCounter = 0;
+    // Initial cage placed below (after applyBossBoard finishes its own setup).
+  }
+
+  // Pre-place indestructible boss walls. Walls flagged as `phantom` (from a
+  // gimmick) are placed as boss-owned phantom walls — they look identical to
+  // real walls to the opponent but are passable for the boss-AI.
+  if (preWalls.length > 0) {
+    for (const pw of preWalls) {
+      const isPhantom = !!pw.phantom;
       const wall = {
-        id: gameState.nextWallId++, owner: -1, // neutral — no one owns them
+        id: gameState.nextWallId++,
+        // Phantom-king phantoms are owned by the boss-AI seat (so the
+        // per-mover blocking in buildBlockedEdges lets them pass). Real
+        // boss walls stay neutral (owner: -1).
+        owner: isPhantom ? bossSeat : -1,
         anchor: pw.anchor, orientation: pw.orientation, length: pw.length,
-        isPhantom: false, durable: false, durableHits: 0,
-        immune: true, reinforced: true, permanent: true,
+        isPhantom,
+        durable: false, durableHits: 0,
+        // Phantoms aren't immune/permanent — they dissolve on first cross.
+        immune: !isPhantom,
+        reinforced: !isPhantom,
+        permanent: !isPhantom,
         temporary: false, turnsRemaining: null,
-        placedOnTurn: 0, _bossWall: true,
+        placedOnTurn: 0,
+        _bossWall: true,
+        _phantomKing: isPhantom && board.gimmick === 'phantomKing',
       };
       gameState.walls.push(wall);
     }
@@ -13354,14 +14942,35 @@ function applyBossBoard(board) {
     }
   }
 
-  // Phase 2.3: same blocking-strength audit applied to boss boards. Boss
-  // walls are owner=-1 (neutral), but augmentation walls get owner=aiSeat=1
-  // so they consume the AI's wall budget like normal pre-placed walls.
-  // Stage-16 boss had 21 pre-walls and the player still walked the open
-  // center lane — this catches that. Boss `targetGain` matches stage scaling.
-  const _bossStage = _gauntletRun?.stage || 1;
-  const _bossTargetGain = _bossStage >= 12 ? 3 : (_bossStage >= 5 ? 2 : 1);
-  _ctppAugmentPreWallsForBlocking(0, _bossTargetGain, 1);
+  // Phase 3 — gimmicks that need to seed initial state AFTER the player
+  // positions have been finalized (above). Kael's living wall and Ghrel's
+  // cage both need the player to be in their final spot first.
+  if (board.gimmick === 'livingWall' && typeof _kaelSeedInitialSegment === 'function') {
+    try { _kaelSeedInitialSegment(); } catch (e) { console.warn('[Kael seed] failed:', e); }
+  }
+  if (board.gimmick === 'cageCloses' && typeof _ghrelPlaceRing === 'function') {
+    try { _ghrelPlaceRing(gameState._ghrelCageSize || 7); } catch (e) { console.warn('[Ghrel initial ring] failed:', e); }
+  }
+
+  // Skip audit + verifier for gimmick boards — the gimmick layout is the
+  // boss's identity and shouldn't be trimmed or augmented by generic logic.
+  if (!board.gimmick) {
+    // Phase 3 Step 1: audit boss preWalls — if the AI has been self-trapped
+    // (BFS path > PHASE3_MAX_BOSS_AI_PATH), iteratively remove the worst
+    // self-blocking walls. This runs BEFORE the verifier so the verifier
+    // doesn't pile additional walls onto an already-broken board.
+    _phase3AuditBossWalls(0, 1);
+
+    // Phase 2.3: same blocking-strength audit applied to boss boards. Boss
+    // walls are owner=-1 (neutral), but augmentation walls get owner=aiSeat=1
+    // so they consume the AI's wall budget like normal pre-placed walls.
+    // Stage-16 boss had 21 pre-walls and the player still walked the open
+    // center lane — this catches that. Boss `targetGain` matches stage scaling.
+    // Phase 3 Step 2: respects PHASE3_MAX_BOSS_TOTAL_WALLS cap.
+    const _bossStage = _gauntletRun?.stage || 1;
+    const _bossTargetGain = _bossStage >= 12 ? 3 : (_bossStage >= 5 ? 2 : 1);
+    _ctppAugmentPreWallsForBlocking(0, _bossTargetGain, 1, PHASE3_MAX_BOSS_TOTAL_WALLS);
+  }
 
   renderAll();
 }
@@ -15648,6 +17257,31 @@ function selectCard(cardId, idx) {
   // Bound: cannot play Movement cards
   if (card.type === 'Movement' && (gameState.players[pi].statusEffects || []).some(e => e.type === 'bound' && e.turnsRemaining > 0)) {
     showStatus('Bound! Movement cards are blocked this turn', 'error'); return;
+  }
+  // Phase 3 — Wyrd Slow Aura: Movement cards played while standing inside
+  // Wyrd's aura fizzle and are exiled (removed from the deck for the rest
+  // of the run). The card still counts as played for energy/turn-state
+  // purposes — Wyrd is robbing the player of tempo, not giving it back.
+  if (card.type === 'Movement' && gameState._wyrdActive && pi !== gameState._wyrdSeat
+      && _isPlayerInWyrdAura(pi)) {
+    const cardName = card.name || 'Movement card';
+    addLog(pi, 'card', `${cardName} fizzles in Wyrd's aura — exiled from your deck`);
+    showStatus(`${cardName} fizzles — exiled!`, 'error');
+    if (typeof _wyrdShowFizzleFlash === 'function') _wyrdShowFizzleFlash(cardName);
+    // Discard from hand (frees the slot), exile the card, count as played.
+    if (typeof exileCard === 'function') {
+      try { exileCard(pi, idx); } catch (e) { console.warn('[Wyrd fizzle] exileCard failed:', e); }
+    } else if (typeof discardCard === 'function') {
+      // Fallback: at least remove it from hand
+      try { discardCard(pi, idx); } catch (e) { console.warn('[Wyrd fizzle] discardCard failed:', e); }
+    }
+    if (typeof countCardPlayed === 'function') {
+      try { countCardPlayed(pi); } catch (e) { console.warn('[Wyrd fizzle] countCardPlayed failed:', e); }
+    }
+    selectedCard = null;
+    uiMode = 'idle';
+    if (typeof renderAll === 'function') renderAll();
+    return;
   }
   // Skip card phase (Warden's Decree, skip_full_turn, pit trap)
   if (isCardPhaseSkipped(pi)) {
@@ -19457,6 +21091,36 @@ function renderAIStatusStrip() {
       const detail = parts.length ? ` (${parts.join(' ')})` : '';
       oppExtraChips += `<span class="status-chip" style="border-color:#fbbf24;color:#fbbf24" title="Boss/elite is empowered by your ${rb.relicCount} relic${rb.relicCount===1?'':'s'}: ${parts.join(', ')}">EMPOWERED ×${rb.relicCount}${detail}</span>`;
     }
+    // Phase 3 — gimmick status chips. Surface boss-specific timers/state so
+    // the player can read what's happening. Only render for the boss seat.
+    if (gameState._vaelActive && pi === gameState._vaelSeat) {
+      if (gameState._vaelMirrorCooldown > 0) {
+        oppExtraChips += `<span class="status-chip" style="border-color:#60a5fa;color:#60a5fa" title="Vael will mirror his walls when ready and the angle is right">MIRROR IN ${gameState._vaelMirrorCooldown}t</span>`;
+      } else {
+        oppExtraChips += `<span class="status-chip" style="border-color:#fbbf24;color:#fbbf24;animation:wyrdAuraPulse 1.6s ease-in-out infinite" title="Vael's mirror is ready to fire">MIRROR READY</span>`;
+      }
+    }
+    if (gameState._rukActive && pi === gameState._rukSeat) {
+      const turnsTilShift = 2 - (gameState._rukShiftCounter || 0);
+      oppExtraChips += `<span class="status-chip" style="border-color:#f97316;color:#f97316" title="All walls shift one tile toward your starting row when this hits 0">TREADMILL ${turnsTilShift}t</span>`;
+    }
+    if (gameState._wyrdActive && pi === gameState._wyrdSeat) {
+      const wyrdBound = (typeof hasStatusEffect === 'function' && hasStatusEffect(pi, 'bound'));
+      if (wyrdBound) {
+        oppExtraChips += `<span class="status-chip" style="border-color:#94a3b8;color:#94a3b8" title="Wyrd is bound — the aura is suppressed">AURA SUPPRESSED</span>`;
+      } else {
+        oppExtraChips += `<span class="status-chip" style="border-color:#a855f7;color:#a855f7" title="Movement cards played inside the 5×5 aura around Wyrd are exiled">AURA 5×5</span>`;
+      }
+    }
+    if (gameState._ghrelActive && pi === gameState._ghrelSeat) {
+      const turnsTilShrink = 3 - (gameState._ghrelShiftCounter || 0);
+      const sz = gameState._ghrelCageSize || 7;
+      oppExtraChips += `<span class="status-chip" style="border-color:#c2410c;color:#c2410c" title="Cage shrinks every 3 turns. Ghrel walks through the bars.">CAGE ${sz}×${sz} · ${turnsTilShrink}t</span>`;
+    }
+    if (gameState._kaelActive && pi === gameState._kaelSeat) {
+      const segs = (gameState._kaelWallSegments || []).length;
+      oppExtraChips += `<span class="status-chip" style="border-color:#e25822;color:#e25822" title="A living wall grows in front of you. Capped at 5 segments.">LIVING WALL ${segs}/5</span>`;
+    }
     const oppAllChips = oppStatusChips + oppExtraChips;
     const isFinished = gameState._ffaFinished?.has(pi);
     const finishPlace = isFinished ? gameState._ffaPlacements?.find(x => x.seat === pi) : null;
@@ -19831,6 +21495,40 @@ function renderBoard() {
   }
   const legalSet = new Set(legalMoves.map(m=>`${m.row},${m.col}`));
 
+  // Phantom King tentative moves: tiles ADJACENT to the active player that
+  // are blocked ONLY by phantom-king phantoms. Player can attempt to "push
+  // through" — if the blocking wall is a phantom it dissolves and the move
+  // succeeds; if it turns out to be a real wall... well, with current setup
+  // there can't be a real wall here (we only mark tentative when the only
+  // blocker is a phantom-king phantom). The move IS guaranteed to succeed,
+  // but the player doesn't know in advance which crossings are tentative.
+  let tentativeSet = new Set();
+  if (gameState._phantomKingActive && uiMode === 'move' && !selectedCard) {
+    const me = gameState.players[gameState.activePlayer];
+    if (me) {
+      const dirs = [{r:-1,c:0},{r:1,c:0},{r:0,c:1},{r:0,c:-1}];
+      for (const d of dirs) {
+        const nb = { row: me.position.row + d.r, col: me.position.col + d.c };
+        if (nb.row < 0 || nb.row >= BOARD_ROWS || nb.col < 0 || nb.col >= BOARD_COLS) continue;
+        if (legalSet.has(`${nb.row},${nb.col}`)) continue;
+        // Other player on tile?
+        const otherOnTile = gameState.players.some((p, i) =>
+          i !== gameState.activePlayer && p && p.position.row === nb.row && p.position.col === nb.col);
+        if (otherOnTile) continue;
+        // Edge analysis: any real wall crossing this edge means not tentative.
+        const eK = edgeKey(me.position, nb);
+        const realBlocker = gameState.walls.some(w =>
+          !w.isPhantom && wallEdges(w).some(e => edgeKey(e.a, e.b) === eK));
+        if (realBlocker) continue;
+        const phantomKingBlocker = gameState.walls.some(w =>
+          w.isPhantom && w._phantomKing && wallEdges(w).some(e => edgeKey(e.a, e.b) === eK));
+        if (phantomKingBlocker) {
+          tentativeSet.add(`${nb.row},${nb.col}`);
+        }
+      }
+    }
+  }
+
   // Grapple Hook landing target (single tile)
   const grappleTargetKey = (uiMode==='grappleTarget' && gameState._grappleState?.target)
     ? `${gameState._grappleState.target.row},${gameState._grappleState.target.col}` : null;
@@ -19842,13 +21540,16 @@ function renderBoard() {
   for (let r=0; r<BOARD_ROWS; r++) {
     for (let c=0; c<BOARD_COLS; c++) {
       const isLegal = legalSet.has(`${r},${c}`);
+      const isTentative = tentativeSet.has(`${r},${c}`);
       const isTrapTarget = trapTargetSet.has(`${r},${c}`);
       const cell = document.createElement('div');
       // Check for Trailblazer's Mark on this tile
       const isTrailMark = !!(gameState._trailMarks && gameState._trailMarks.some(m => m.tile.row===r && m.tile.col===c));
       const _cr = Math.floor(BOARD_ROWS / 2), _cc = Math.floor(BOARD_COLS / 2);
       const isFFAGoalZone = gameConfig.mode === 'ffa' && r === _cr && c === _cc;
-      cell.className = `cell${isLegal?' legal-move':''}${isTrapTarget?' legal-move trap-place-target':''}${isTrailMark?' trail-mark':''}${r===0&&gameConfig.mode!=='ffa'?' goal-row-p0':''}${r===BOARD_ROWS-1&&gameConfig.mode!=='ffa'?' goal-row-p1':''}${isFFAGoalZone?' goal-zone':''}`;
+      // Phase 3 — Wyrd aura tint. Computed per-tile; cheap (radius check + flag).
+      const isWyrdAuraTile = (typeof _isInWyrdAura === 'function') && _isInWyrdAura(r, c);
+      cell.className = `cell${isLegal?' legal-move':''}${isTentative?' tentative-move':''}${isTrapTarget?' legal-move trap-place-target':''}${isTrailMark?' trail-mark':''}${r===0&&gameConfig.mode!=='ffa'?' goal-row-p0':''}${r===BOARD_ROWS-1&&gameConfig.mode!=='ffa'?' goal-row-p1':''}${isFFAGoalZone?' goal-zone':''}${isWyrdAuraTile?' wyrd-aura':''}`;
       if (isTrailMark) {
         const mark = gameState._trailMarks.find(m => m.tile.row===r && m.tile.col===c);
         const owner = mark ? mark.owner : 0;
@@ -19895,6 +21596,7 @@ function renderBoard() {
       const isGrappleTarget = (grappleTargetKey === `${r},${c}`);
       if (isGrappleTarget) cell.classList.add('grapple-target');
       if (isLegal) cell.onclick = () => handleCellClick(r, c);
+      else if (isTentative) cell.onclick = () => handleCellClick(r, c); // executeMove handles phantom dissolution
       else if (isTrapTarget) cell.onclick = () => handleTrapPlaceClick(r, c);
       else if (isGrappleTarget) cell.onclick = () => grappleExecute();
       else if (uiMode === 'wallGrandDesign') cell.onclick = () => finishGrandDesign();
@@ -20094,6 +21796,30 @@ function renderWalls() {
     if (wall.displacement) cls += ' wall-displacement';
     if (wall._paradox && wall.owner === localPlayer) cls += ' wall-paradox';
     if (wall.temporary && wall.owner === localPlayer) cls += ' wall-temporal';
+    // Phase 3 — gimmick wall styling. Kael's living-wall segments get a
+    // distinct crimson "alive" treatment with a wiggle animation; the head
+    // (newest segment in any contiguous piece) glows brighter to telegraph
+    // next growth direction. Ghrel's cage walls get an iron-bar pattern.
+    if (wall._kaelLiving) {
+      cls += ' kael-living-wall';
+      // Identify head: newest segment id whose wall id is the highest among
+      // the segment list entries that share the same contiguous piece.
+      const segs = gameState._kaelWallSegments || [];
+      const headIds = new Set();
+      // Cheap heuristic: mark the highest-id segment in each piece as head.
+      // Pieces are recomputed from the list each render — it's small (≤5).
+      if (segs.length > 0 && typeof _kaelFindContiguousPieces === 'function') {
+        try {
+          const pieces = _kaelFindContiguousPieces(segs);
+          for (const p of pieces) {
+            const head = p[p.length - 1];
+            if (head?._wallId != null) headIds.add(head._wallId);
+          }
+        } catch (e) { /* fall through */ }
+      }
+      if (headIds.has(wall.id)) cls += ' kael-head';
+    }
+    if (wall._ghrelCage) cls += ' ghrel-cage-wall';
     if (isPickable)       cls += ' wall-pickable';
     if (isRedirect)       cls += ' wall-pickable wall-redirect';
     if (isSealable)       cls += ' wall-pickable wall-sealable';
