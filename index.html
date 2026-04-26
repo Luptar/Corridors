@@ -2817,6 +2817,50 @@ function applyAIChampionBuff(champ) {
   return champ;
 }
 
+// ── Phase 4: Player-snowball counter ─────────────────────────────────────
+// The stage-12 boss (Legendary) and stage-13 elite readouts both showed the
+// AI losing decisively to a Common-rarity player carrying just 2-5 relics.
+// Rarity scaling caps out at Legendary; relic stacking has no cap. By the
+// late gauntlet, a snowballed player can out-tempo any boss regardless of
+// CTPP planning quality — the AI literally cannot draw cards or spend
+// energy fast enough to keep pace.
+//
+// Phase 4 grants the boss/elite AI a parallel buff scaled by the player's
+// relic count: each relic adds +1 energy, +2 wallLimit, +0.5 cardDraw, and
+// shaves -0.5 from ultimate cost (rounding accumulates). Capped per axis so
+// a 6-relic player at stage 16 doesn't get a +6 energy boss (it caps at +5).
+// NOT applied to regular battles — those use rarity scaling alone, since
+// they appear at every stage and shouldn't snowball with the player.
+const AI_RELIC_BUFF_PER_RELIC = { energy: 1, wallLimit: 2, cardDraw: 0.5, ultimateCost: -0.5 };
+const AI_RELIC_BUFF_MAX       = { energy: 5, wallLimit: 10, cardDraw: 3, ultimateCost: -3 };
+
+function computeRelicBuff(relicCount) {
+  if (!relicCount || relicCount <= 0) {
+    return { energy: 0, wallLimit: 0, cardDraw: 0, ultimateCost: 0, relicCount: 0 };
+  }
+  const clampSign = (v, max) => max < 0 ? Math.max(max, v) : Math.min(max, v);
+  return {
+    energy:       clampSign(Math.floor(AI_RELIC_BUFF_PER_RELIC.energy       * relicCount), AI_RELIC_BUFF_MAX.energy),
+    wallLimit:    clampSign(Math.floor(AI_RELIC_BUFF_PER_RELIC.wallLimit    * relicCount), AI_RELIC_BUFF_MAX.wallLimit),
+    cardDraw:     clampSign(Math.floor(AI_RELIC_BUFF_PER_RELIC.cardDraw     * relicCount), AI_RELIC_BUFF_MAX.cardDraw),
+    ultimateCost: clampSign(Math.ceil( AI_RELIC_BUFF_PER_RELIC.ultimateCost * relicCount), AI_RELIC_BUFF_MAX.ultimateCost),
+    relicCount,
+  };
+}
+
+// Apply the relic-count buff to an AI champion. Mutates in place. Returns
+// the buff object so callers can stash it for the matchMeta export and the
+// "empowered" status chip. Stacks on top of any rarity buff already applied.
+function applyAIRelicCountBuff(champ, relicCount) {
+  const buff = computeRelicBuff(relicCount);
+  if (!champ) return buff;
+  champ.wallLimit    = (champ.wallLimit   || 0) + buff.wallLimit;
+  champ.cardDraw     = Math.min(8, (champ.cardDraw || 1) + buff.cardDraw);
+  champ.energy       = Math.min(10, (champ.energy  || 3) + buff.energy);   // higher cap (10) than rarity-only path
+  champ.ultimateCost = Math.max(2,  (champ.ultimateCost || 5) + buff.ultimateCost);
+  return buff;
+}
+
 // Pre-placed AI walls for regular/elite gauntlet matches. Bosses have their
 // own preWalls; this is for the rest. Scaled by AI champion RARITY so a
 // Legendary opponent starts with a more substantial maze than a Common one.
@@ -8159,6 +8203,16 @@ function scoreAction(action, walls, aiPos, oppPos) {
       if (rowGain > 0) verticalBonus = rowGain * 4;      // +4 per row closed (was +2)
       else if (rowGain === 0) verticalBonus = -2;         // pure-lateral penalty
       else verticalBonus = rowGain * 4;                   // backward: rowGain<0, so -4 per row
+    } else if (obj.type === 'tile' && obj.target && action.to) {
+      // FFA race: same logic but on manhattan distance to the goal tile.
+      // Without this, FFA AI had no goalward bias for moves at all.
+      const tt = obj.target;
+      const dBefore = Math.abs(aiPos.row - tt.row) + Math.abs(aiPos.col - tt.col);
+      const dAfter  = Math.abs(action.to.row - tt.row) + Math.abs(action.to.col - tt.col);
+      const tileGain = dBefore - dAfter;
+      if (tileGain > 0) verticalBonus = tileGain * 4;
+      else if (tileGain === 0) verticalBonus = -2;
+      else verticalBonus = tileGain * 4;  // backward
     }
     return base + F.moveBonus + rushBonus + verticalBonus;
   }
@@ -8750,12 +8804,33 @@ function _ctppPathToObjectiveBypassAware(pos, walls, pi) {
     return aiPathToObjective(pos, walls, pi);
   }
   const obj = (typeof aiGetObjective === 'function') ? aiGetObjective(pi) : null;
-  if (!obj || obj.type !== 'row') {
-    // FFA / unknown objective — fall back to vanilla pathfinding.
+  if (!obj) return aiPathToObjective(pos, walls, pi);
+  // Build a goal-test function for either row-based (1v1, 2v2) OR tile-based
+  // (FFA race) objectives. Previously this fell back to vanilla pathfinding
+  // for anything non-row, which meant FFA gauntlet matches got no bypass
+  // benefit at all.
+  let goalFn = null;
+  if (obj.type === 'row') {
+    const goalRow = obj.target;
+    goalFn = (t) => t.row === goalRow;
+  } else if (obj.type === 'tile' && obj.target) {
+    const tt = obj.target;
+    goalFn = (t) => t.row === tt.row && t.col === tt.col;
+  } else {
     return aiPathToObjective(pos, walls, pi);
   }
-  const goalRow = obj.target;
-  return _ctppBfsPathWithBypass(pos, walls, (t) => t.row === goalRow, pi, bypassBudget);
+  return _ctppBfsPathWithBypass(pos, walls, goalFn, pi, bypassBudget);
+}
+
+// Mode-agnostic distance-to-objective helper. Returns BFS distance from
+// `pos` to the AI's goal — row-target for 1v1/2v2 OR tile-target for FFA.
+// Used throughout CTPP wall scoring + simulator so they don't silently
+// return Infinity in FFA (where getGoalRow returns -1).
+function _ctppDistanceToObjective(pos, walls, pi) {
+  if (typeof aiBfsToObjective === 'function') {
+    return aiBfsToObjective(pos, walls, pi);
+  }
+  return bfsDistanceFor(pos, getGoalRow(pi), walls, pi);
 }
 
 // Find the most impactful wall-anchor candidates for opponent-disruption walls.
@@ -8767,14 +8842,26 @@ function _ctppFindSiegeWalls(pi, opp, topK = 5, length = 2) {
   if (!me || !opp) return [];
   const walls = gameState.walls;
   const candidates = [];
-  const oppBaseDist = bfsDistanceFor(opp.position, getGoalRow(opp.index), walls, opp.index);
+  const oppBaseDist = _ctppDistanceToObjective(opp.position, walls, opp.index);
   if (!Number.isFinite(oppBaseDist)) return [];
 
-  // Walls ahead of opponent (between opp and its goal).
-  const oppGoal = getGoalRow(opp.index);
-  const rowDir = oppGoal > opp.position.row ? 1 : -1;
-  const rowLo = Math.min(opp.position.row, oppGoal);
-  const rowHi = Math.max(opp.position.row, oppGoal);
+  // Wall placement zone: in row-objective modes, walls ahead of opp; in FFA
+  // (tile objective), walls between opp and the center tile.
+  const oppObj = (typeof aiGetObjective === 'function') ? aiGetObjective(opp.index) : null;
+  let rowLo, rowHi;
+  if (oppObj?.type === 'row') {
+    const oppGoal = oppObj.target;
+    rowLo = Math.min(opp.position.row, oppGoal);
+    rowHi = Math.max(opp.position.row, oppGoal);
+  } else if (oppObj?.type === 'tile' && oppObj.target) {
+    // Search a band around the opp→tile axis. Use full board height since
+    // the opp may approach from any direction in FFA.
+    rowLo = 0;
+    rowHi = BOARD_SIZE - 1;
+  } else {
+    rowLo = 0;
+    rowHi = BOARD_SIZE - 1;
+  }
   for (let r = rowLo + 1; r <= rowHi; r++) {
     for (let c = 0; c < BOARD_SIZE - length + 1; c++) {
       const anchor = { row: r, col: c };
@@ -8788,11 +8875,11 @@ function _ctppFindSiegeWalls(pi, opp, topK = 5, length = 2) {
           id: '__sim__', owner: pi, anchor, orientation: orient,
           length, isPhantom: false, reinforced: false,
         }];
-        const newOppDist = bfsDistanceFor(opp.position, oppGoal, simWalls, opp.index);
+        const newOppDist = _ctppDistanceToObjective(opp.position, simWalls, opp.index);
         if (!Number.isFinite(newOppDist)) continue; // illegal — would cut opp off
-        const newMyDist  = bfsDistanceFor(me.position, getGoalRow(pi), simWalls, pi);
+        const newMyDist  = _ctppDistanceToObjective(me.position, simWalls, pi);
         if (!Number.isFinite(newMyDist)) continue;  // illegal — would cut me off
-        const myBaseDist = bfsDistanceFor(me.position, getGoalRow(pi), walls, pi);
+        const myBaseDist = _ctppDistanceToObjective(me.position, walls, pi);
         const oppGain = newOppDist - oppBaseDist;
         const myLoss  = Math.max(0, newMyDist - myBaseDist);
         // Patch (post-stage-12 readout): the AI was placing walls that
@@ -9925,15 +10012,28 @@ function ctppAdaptPlan(plan, pi) {
   // Rule 2: lateral-step ratio. Count how many steps in the new route make
   // forward progress toward the goal vs. lateral moves. Used below to scale
   // the post-adaptation health penalty.
-  const goalRow = (typeof getGoalRow === 'function') ? getGoalRow(pi) : null;
+  // Lateral-step ratio detection. Mode-aware: in row modes (1v1/2v2) we
+  // measure progress as decreasing row distance to the goal row. In FFA
+  // (tile goal) we measure as decreasing manhattan distance to the goal
+  // tile. Without the FFA branch, getGoalRow returned -1 and every step
+  // was scored as 'lateral' (forwardSteps stayed 0), tanking plan health.
+  const adaptObj = (typeof aiGetObjective === 'function') ? aiGetObjective(pi) : null;
   let forwardSteps = 0, lateralSteps = 0;
-  if (goalRow !== null) {
+  if (adaptObj?.type === 'row') {
+    const goalRow = adaptObj.target;
     for (let i = 1; i < newRoute.length; i++) {
       const prev = newRoute[i - 1], cur = newRoute[i];
       const towardGoal = (Math.abs(cur.row - goalRow) < Math.abs(prev.row - goalRow));
       if (towardGoal) forwardSteps++;
       else if (cur.row === prev.row) lateralSteps++;
-      // else: backward step (shouldn't happen with BFS but counted as non-forward)
+    }
+  } else if (adaptObj?.type === 'tile' && adaptObj.target) {
+    const tt = adaptObj.target;
+    const dManhattan = (p) => Math.abs(p.row - tt.row) + Math.abs(p.col - tt.col);
+    for (let i = 1; i < newRoute.length; i++) {
+      const prev = newRoute[i - 1], cur = newRoute[i];
+      if (dManhattan(cur) < dManhattan(prev)) forwardSteps++;
+      else lateralSteps++;
     }
   }
   const totalSteps = Math.max(1, forwardSteps + lateralSteps);
@@ -10071,11 +10171,13 @@ function ctppSimulateOpponentAgainstPlan(plan, pi) {
   const oppRemovalCards = oppAll.filter(c => c.selfRemove === true || c.id?.startsWith('WD')).length;
   const oppMovementFast = oppAll.filter(c => c.type === 'Movement' && (c.overrideSpeed || 0) >= 3).length;
 
-  // Opp's own progress race
-  const oppGoal = getGoalRow(opp.index);
-  const oppDist = bfsDistanceFor(opp.position, oppGoal, gameState.walls, opp.index);
+  // Opp's own progress race. Mode-agnostic: row-target for 1v1/2v2,
+  // tile-target for FFA. getGoalRow returns -1 for FFA which would make
+  // oppDist Infinity and corrupt all margin computations downstream.
+  const oppDist = _ctppDistanceToObjective(opp.position, gameState.walls, opp.index);
   const oppPace = Math.max(1, 1 + oppMovementFast * 0.3);  // rough: more fast-move cards → quicker
-  let oppWinTurn = gameState.turnNumber + Math.ceil(oppDist / oppPace);
+  const oppDistBounded = Number.isFinite(oppDist) ? oppDist : 99;
+  let oppWinTurn = gameState.turnNumber + Math.ceil(oppDistBounded / oppPace);
 
   // Archetype-specific vulnerability: how much opp's resources can slow the plan.
   const remainingTurns = Math.max(1, (plan.metrics?.expectedWinTurn || 10) - gameState.turnNumber);
@@ -10103,8 +10205,10 @@ function ctppSimulateOpponentAgainstPlan(plan, pi) {
         isPhantom: false, reinforced: false,
       }];
     }
-    const newOppDist = bfsDistanceFor(opp.position, oppGoal, simWalls, opp.index);
+    // Mode-agnostic: row goal (1v1, 2v2) OR tile goal (FFA) via the helper.
+    const newOppDist = _ctppDistanceToObjective(opp.position, simWalls, opp.index);
     if (!Number.isFinite(newOppDist)) return 0;
+    if (!Number.isFinite(oppDist)) return 0;
     return Math.max(0, newOppDist - oppDist);
   }
 
@@ -13112,6 +13216,10 @@ function confirmGauntletNode(nodeId) {
 function _ctppCaptureGauntletMatchMeta(nodeType) {
   if (!window.CtppHarness?.telemetry?.setMatchMeta) return;
   const champs = window._pendingCtppChampions || {};
+  // Phase 4: include the relic-count buff applied to the AI so readouts
+  // show whether the snowball-counter was active and what stat polish it
+  // added. null/undefined for regular battles where the buff doesn't apply.
+  const relicBuff = _gauntletRun?._lastRelicBuff || null;
   window.CtppHarness.telemetry.setMatchMeta({
     startedAt: new Date().toISOString(),
     gameMode: 'gauntlet',
@@ -13123,6 +13231,7 @@ function _ctppCaptureGauntletMatchMeta(nodeType) {
       { seat: 1, name: champs.ai?.name,     faction: champs.ai?.faction,     rarity: champs.ai?.rarity     },
     ],
     relics: [...(_gauntletRun?.relics || [])],
+    aiRelicBuff: relicBuff,
   });
   window._pendingCtppChampions = null;
 }
@@ -13133,6 +13242,12 @@ function startGauntletCombat(node) {
   // Store node info for board mods
   _gauntletRun._currentNode = node;
   if (_userProfile) saveUserProfile({ gauntlet_run: _gauntletRun });
+
+  // Phase 4: relic count for snowball-counter buff. Boss + elite paths use
+  // this to scale stat bonuses with the player's accumulated relic count.
+  // Regular battles intentionally skip this — they fire at every stage,
+  // and adding a relic-scaling buff there compounds with rarity scaling.
+  const playerRelicCount = _gauntletRun?.relics?.length || 0;
 
   // ── BOSS: use the pre-defined boss champion, deck, and board ──
   if (node.type === 'boss' && node.boss) {
@@ -13151,6 +13266,10 @@ function startGauntletCombat(node) {
       ultimateName: CHAMPIONS[b.ultimateId]?.ultimateName || 'Unknown',
       ultimateDesc: CHAMPIONS[b.ultimateId]?.ultimateDesc || '',
     };
+    // Phase 4: boss gets a relic-count buff layered on top of its hand-crafted
+    // stats. Stash the buff so we can surface it in matchMeta + status chip.
+    const bossRelicBuff = applyAIRelicCountBuff(bossChamp, playerRelicCount);
+    if (_gauntletRun) _gauntletRun._lastRelicBuff = bossRelicBuff;
     const bossDeck = b.deck.map(id => ({...CARDS[id]})).filter(Boolean);
     initGauntletGame(_gauntletRun.champion, bossChamp, _gauntletRun.deck, bossDeck);
     aiDifficulty = getGauntletDifficulty(stage, 'boss');
@@ -13171,6 +13290,15 @@ function startGauntletCombat(node) {
   // Stacks on top of RARITY_BUDGETS' base allocation. Applied BEFORE
   // initGauntletGame so createPlayer reads the buffed stats.
   applyAIChampionBuff(aiChamp);
+  // Phase 4: elite battles also get the relic-count snowball-counter buff
+  // (regular battles do not — they're tuned around rarity scaling alone).
+  let eliteRelicBuff = null;
+  if (node.type === 'elite') {
+    eliteRelicBuff = applyAIRelicCountBuff(aiChamp, playerRelicCount);
+    if (_gauntletRun) _gauntletRun._lastRelicBuff = eliteRelicBuff;
+  } else if (_gauntletRun) {
+    _gauntletRun._lastRelicBuff = null; // clear stale buff from prior boss/elite
+  }
   const aiDeck = buildGauntletAIDeck(deckStage, aiChamp.faction);
   // Store opponent info for elite card rewards
   _gauntletRun._lastOpponent = { champion: aiChamp, deckIds: aiDeck.map(c => c.id) };
@@ -15955,6 +16083,7 @@ function onWallPlaced(pi, fromCardId, _wasDelayedCard, _placedCard) {
     pc.id === 'PH3_real' ||
     (pc.id === 'PH4' && gameState._veilCount >= 2) ||
     (pc.id === 'PH10' && gameState._doppelgangerCount >= 1) ||
+    pc._salvagePlace ||  // B04 Salvage Parts: 2nd-wall placement after wall removal — same card play, energy already paid
     isCollapseChain
   );
   if (!isT2Phantom && !isSeizureChain && !isDelayedWall && !isChainedWall) countCardPlayed(pi);
@@ -19314,6 +19443,20 @@ function renderAIStatusStrip() {
       const emb = gameState._embargo[pi];
       oppExtraChips += `<span class="status-chip" style="border-color:var(--wall-ward);color:var(--wall-ward)">EMBARGO: ${emb.type.toUpperCase()} (${emb.turnsRemaining}t)</span>`;
     }
+    // Phase 4: surface the relic-count snowball-counter buff so the player
+    // can see why a boss with no obvious gimmick is hitting harder than
+    // expected. Shows the buff numbers (energy/walls/cards) so the effect
+    // is transparent rather than magical.
+    if (gameMode === 'gauntlet' && _gauntletRun?._lastRelicBuff && _gauntletRun._lastRelicBuff.relicCount > 0) {
+      const rb = _gauntletRun._lastRelicBuff;
+      const parts = [];
+      if (rb.energy)       parts.push(`+${rb.energy}E`);
+      if (rb.wallLimit)    parts.push(`+${rb.wallLimit}W`);
+      if (rb.cardDraw)     parts.push(`+${rb.cardDraw}D`);
+      if (rb.ultimateCost) parts.push(`${rb.ultimateCost}U`);
+      const detail = parts.length ? ` (${parts.join(' ')})` : '';
+      oppExtraChips += `<span class="status-chip" style="border-color:#fbbf24;color:#fbbf24" title="Boss/elite is empowered by your ${rb.relicCount} relic${rb.relicCount===1?'':'s'}: ${parts.join(', ')}">EMPOWERED ×${rb.relicCount}${detail}</span>`;
+    }
     const oppAllChips = oppStatusChips + oppExtraChips;
     const isFinished = gameState._ffaFinished?.has(pi);
     const finishPlace = isFinished ? gameState._ffaPlacements?.find(x => x.seat === pi) : null;
@@ -20316,11 +20459,15 @@ function pickWallForReconstruct(wall) {
   gameState.walls = gameState.walls.filter(w => w.id !== wall.id);
   gameState.players[pi] = {...gameState.players[pi], wallsInPlay: Math.max(0, gameState.players[pi].wallsInPlay - 1)};
   if (isSalvage) {
-    // Salvage Parts: after removing wall, enter 1-tile wall placement mode
+    // Salvage Parts: after removing wall, enter 1-tile wall placement mode.
+    // _salvagePlace marks this as the second half of a single card play —
+    // onWallPlaced uses this to skip the countCardPlayed() it would
+    // otherwise call for normal wall placements. Without it, B04 charged
+    // 1 energy on selectCard and another 1 on placement = 2 total.
     gameState._salvageCardId = null;
     gameState._reconstructCardIdx = null;
     addLog(pi, 'card', 'Salvage Parts: wall removed — place a 1-tile wall');
-    selectedCard = { id: 'B04', idx: -1, length: 1, isPhantom: false, isDurable: false };
+    selectedCard = { id: 'B04', idx: -1, length: 1, isPhantom: false, isDurable: false, _salvagePlace: true };
     uiMode = 'wall';
     renderAll();
     showStatus('Salvage Parts — now place a 1-tile wall anywhere legal', 'active');
