@@ -2912,6 +2912,16 @@ function _ctppAugmentPreWallsForBlocking(playerSeat, targetGain, wallOwnerSeat) 
   const oppPos = gameState.players[playerSeat].position;
   const aiPos  = gameState.players[aiSeat]?.position || { row: 0, col: 0 };
 
+  // Track AI's own BFS distance so we can avoid walls that hurt AI as much
+  // as (or more than) the player. Pre-stage-12 boss readout had verifier
+  // walls + boss-board walls + AI's own pre-walls combine to make the AI's
+  // BFS path to its goal absurdly long (~14 tiles to row 8 from row 0).
+  // The verifier's job is to BLOCK the player, not box in the AI.
+  const aiGoal = (typeof getGoalRow === 'function') ? getGoalRow(aiSeat) : null;
+  let aiCurDist = (aiGoal !== null && aiPlayer)
+    ? bfsDistanceFor(aiPlayer.position, aiGoal, gameState.walls, aiSeat)
+    : Infinity;
+
   const MAX_AUGMENT = 3;
   let placed = 0;
   while (curDist - manhattan < targetGain && placed < MAX_AUGMENT) {
@@ -2919,6 +2929,7 @@ function _ctppAugmentPreWallsForBlocking(playerSeat, targetGain, wallOwnerSeat) 
     if (aiPlayer && (aiPlayer.wallsInPlay || 0) >= (aiPlayer.wallLimitCurrent || 0)) break;
 
     let bestAnchor = null, bestOrient = null, bestGain = 0;
+    let bestAiDelta = 0;
     for (let r = rowLo; r <= rowHi; r++) {
       for (let c = 0; c < BOARD_SIZE; c++) {
         for (const orient of ['H', 'V']) {
@@ -2932,10 +2943,26 @@ function _ctppAugmentPreWallsForBlocking(playerSeat, targetGain, wallOwnerSeat) 
           const newDist = bfsDistanceFor(startPos, goalRow, simWalls, playerSeat);
           if (!Number.isFinite(newDist)) continue;
           const gain = newDist - curDist;
-          if (gain > bestGain) {
+          if (gain <= 0) continue;
+
+          // Symmetry check: how much does this wall slow the AI?
+          // Reject walls where AI delta >= player delta — they hurt the AI
+          // as much as or more than the player, defeating the purpose. AI's
+          // BFS may be Infinity (boxed in) if the wall fully cuts AI off,
+          // which we ALSO want to reject.
+          let aiDelta = 0;
+          if (aiGoal !== null && aiPlayer) {
+            const newAiDist = bfsDistanceFor(aiPlayer.position, aiGoal, simWalls, aiSeat);
+            if (!Number.isFinite(newAiDist)) continue; // wall would cut AI off entirely
+            aiDelta = newAiDist - aiCurDist;
+            if (aiDelta >= gain) continue; // hurts AI as much or more — skip
+          }
+
+          if (gain > bestGain || (gain === bestGain && aiDelta < bestAiDelta)) {
             bestGain = gain;
             bestAnchor = anchor;
             bestOrient = orient;
+            bestAiDelta = aiDelta;
           }
         }
       }
@@ -2951,6 +2978,7 @@ function _ctppAugmentPreWallsForBlocking(playerSeat, targetGain, wallOwnerSeat) 
     });
     if (aiPlayer) aiPlayer.wallsInPlay = (aiPlayer.wallsInPlay || 0) + 1;
     curDist += bestGain;
+    aiCurDist += bestAiDelta;  // keep symmetry baseline current for next iter
     placed++;
   }
 }
@@ -7419,6 +7447,75 @@ function aiBfsPath(from, walls, isGoalFn, moverPi) {
   return [];
 }
 
+// ── Bypass-aware BFS (post-stage-13 readout) ─────────────────────────────
+// CTPP plans were computing paths assuming all walls block movement, but the
+// AI commonly holds tunnel-through cards (PF15 Wall Vault, PF8 Vaulting
+// Strike, PF15 Unstoppable Charge) that let it pass through non-reinforced
+// walls. Without bypass-aware pathfinding, plans projected wall-detour
+// U-shapes (22-tile paths!) when the actual shortest path through walls was
+// 8-10 tiles. This routine performs multi-state BFS where each state is
+// (row, col, bypass_budget_remaining); each crossing of a non-reinforced
+// wall edge costs 1 budget. Returns the shortest path that uses at most
+// `bypassBudget` wall crossings.
+function _ctppGetTunnelableEdges(walls, pi) {
+  const set = new Set();
+  if (!walls) return set;
+  for (const w of walls) {
+    if (!w) continue;
+    if (w.reinforced) continue;  // tunnelThrough can't cross reinforced
+    if (w.permanent)  continue;  // boss walls are hard-coded immovable
+    if (w.immune)     continue;
+    // Phantoms are owner-pass-through already; opp phantoms can be tunneled
+    // but become real once crossed — model conservatively as crossable.
+    for (const e of (typeof wallEdges === 'function' ? wallEdges(w) : [])) {
+      set.add(edgeKey(e.a, e.b));
+    }
+  }
+  return set;
+}
+
+function _ctppBfsPathWithBypass(from, walls, isGoalFn, moverPi, bypassBudget) {
+  if (!Number.isFinite(bypassBudget) || bypassBudget <= 0) {
+    return aiBfsPath(from, walls, isGoalFn, moverPi);
+  }
+  const blocked    = buildBlockedEdges(walls, moverPi);
+  const tunnelable = _ctppGetTunnelableEdges(walls, moverPi);
+  const stateKey = (r, c, b) => `${r},${c},${b}`;
+  const visited = new Map();
+  visited.set(stateKey(from.row, from.col, bypassBudget), null);
+  const queue = [{ row: from.row, col: from.col, b: bypassBudget }];
+  const dirs = [{r:-1,c:0},{r:1,c:0},{r:0,c:1},{r:0,c:-1}];
+  while (queue.length) {
+    const cur = queue.shift();
+    if (isGoalFn(cur)) {
+      const path = [];
+      let node = cur;
+      // Reconstruct backward through state keys until we reach the start state.
+      while (node && !(node.row === from.row && node.col === from.col && node.b === bypassBudget)) {
+        path.unshift({ row: node.row, col: node.col });
+        node = visited.get(stateKey(node.row, node.col, node.b));
+      }
+      return path;
+    }
+    for (const d of dirs) {
+      const nb = { row: cur.row + d.r, col: cur.col + d.c };
+      if (nb.row < 0 || nb.row >= BOARD_SIZE || nb.col < 0 || nb.col >= BOARD_SIZE) continue;
+      let newB = cur.b;
+      if (isEdgeBlocked(cur, nb, blocked)) {
+        // Can only cross via a bypass card and only if the wall is non-reinforced.
+        if (!tunnelable.has(edgeKey(cur, nb))) continue;
+        if (newB <= 0) continue;
+        newB -= 1;
+      }
+      const k = stateKey(nb.row, nb.col, newB);
+      if (visited.has(k)) continue;
+      visited.set(k, cur);
+      queue.push({ row: nb.row, col: nb.col, b: newB });
+    }
+  }
+  return [];
+}
+
 // FFA objective: reach center tile of board.
 function _ffaCenter() {
   return { row: Math.floor(BOARD_ROWS / 2), col: Math.floor(BOARD_COLS / 2) };
@@ -8562,18 +8659,22 @@ const _ctppIsBypassCard      = (c) => c && (c.ownWallsPassthrough === true || c.
 const _ctppIsMovementCard    = (c) => c && c.type === 'Movement';
 
 // Fast-move predicate for race plans: orthogonal multi-tile movement cards
-// like Advance (overrideSpeed:2). Excludes diagonal-only, lateral-only,
-// tunnel/passthrough cards (those have their own archetypes), and special
-// cards (Shortcut, Wrecking Ball, etc — they have side-effects beyond move).
-// Stage-9 readout had 8+ Advance cards in hand that the AI never played
-// because the plan timetable only knew about base 1-tile moves.
+// like Advance (overrideSpeed:2). Excludes diagonal-only, lateral-only, and
+// special cards (Shortcut, Wrecking Ball, etc — they have side-effects
+// beyond move). Stage-9 readout had 8+ Advance cards in hand that the AI
+// never played because the plan timetable only knew about base 1-tile moves.
+//
+// Patch (post-stage-13 readout): tunnelThrough and ownWallsPassthrough cards
+// are NO LONGER excluded — they're also Movement cards with overrideSpeed
+// (e.g. PF15 Wall Vault is speed-2 with tunnel). They give the same per-turn
+// pace benefit as Advance, AND the bypass-aware BFS uses them to shorten
+// paths. Stage-13 had 3× PF15 in hand that produced a 22-tile detour path
+// because the plan computed routes assuming all walls block.
 const _ctppIsFastMoveCard = (c) =>
   _ctppIsMovementCard(c) &&
   (c.overrideSpeed || 1) >= 2 &&
   !c.diagonal &&
   !c.lateralOnly &&
-  !c.tunnelThrough &&
-  !c.ownWallsPassthrough &&
   !c.special;
 
 // Collect all fast-move cards (hand + deck) with arrival info, sorted by
@@ -8634,6 +8735,29 @@ function _ctppCountCards(pi, predicate) {
   return n;
 }
 
+// Wraps aiPathToObjective so plan generators get a path that accounts for
+// bypass cards (PF15 Wall Vault, PF8 Vaulting Strike, etc.). Each bypass
+// card in hand+deck adds 1 wall crossing the path can use. Falls back to
+// vanilla pathfinding when no bypass cards exist or when the objective is
+// not row-based (FFA's tile objective).
+//
+// Without this, plans for an AI holding 3× PF15 still BFS-route around
+// every wall — producing 22-tile detours when 8 tiles is achievable by
+// tunneling through 3 non-reinforced walls.
+function _ctppPathToObjectiveBypassAware(pos, walls, pi) {
+  const bypassBudget = _ctppCountCards(pi, _ctppIsBypassCard);
+  if (bypassBudget <= 0) {
+    return aiPathToObjective(pos, walls, pi);
+  }
+  const obj = (typeof aiGetObjective === 'function') ? aiGetObjective(pi) : null;
+  if (!obj || obj.type !== 'row') {
+    // FFA / unknown objective — fall back to vanilla pathfinding.
+    return aiPathToObjective(pos, walls, pi);
+  }
+  const goalRow = obj.target;
+  return _ctppBfsPathWithBypass(pos, walls, (t) => t.row === goalRow, pi, bypassBudget);
+}
+
 // Find the most impactful wall-anchor candidates for opponent-disruption walls.
 // Returns up to `topK` candidates ordered by how much they inflate opp distance
 // without breaking path-connectivity (isWallLegal handles that). Horizontal only
@@ -8665,13 +8789,23 @@ function _ctppFindSiegeWalls(pi, opp, topK = 5, length = 2) {
           length, isPhantom: false, reinforced: false,
         }];
         const newOppDist = bfsDistanceFor(opp.position, oppGoal, simWalls, opp.index);
+        if (!Number.isFinite(newOppDist)) continue; // illegal — would cut opp off
         const newMyDist  = bfsDistanceFor(me.position, getGoalRow(pi), simWalls, pi);
+        if (!Number.isFinite(newMyDist)) continue;  // illegal — would cut me off
         const myBaseDist = bfsDistanceFor(me.position, getGoalRow(pi), walls, pi);
         const oppGain = newOppDist - oppBaseDist;
         const myLoss  = Math.max(0, newMyDist - myBaseDist);
-        // Score: inflate opp path strongly, but don't hurt own path much.
-        const score = oppGain * 3 - myLoss * 2;
-        if (oppGain > 0) candidates.push({ anchor, orient, length, score, oppGain, myLoss });
+        // Patch (post-stage-12 readout): the AI was placing walls that
+        // helped opp by 1 and hurt itself by 1, scoring +1 net (3-2). The
+        // result was self-blocking maze layouts. New rules:
+        //   1. Skip outright if myLoss >= oppGain — wall is a wash or worse
+        //   2. Heavier self-loss weight: opp×3 − self×4 (was self×2)
+        //      so a wall that hurts both equally now scores -1 (rejected).
+        // The AI now strongly prefers walls that hurt opp more than it.
+        if (oppGain <= 0) continue;
+        if (myLoss >= oppGain) continue;
+        const score = oppGain * 3 - myLoss * 4;
+        if (score > 0) candidates.push({ anchor, orient, length, score, oppGain, myLoss });
       }
     }
   }
@@ -8683,14 +8817,23 @@ function _ctppFindSiegeWalls(pi, opp, topK = 5, length = 2) {
 // Phase 1.1: Blocker is a fallback archetype intended as a backup, not a
 // primary. Bias is set just below faction-preferred archetypes (~1.0) so it
 // shows up in the portfolio but doesn't usually beat archetype-aligned plans.
+//
+// Patch (post-stage-12 readout): Gate (wall-then-remove choke point) was
+// underused — biases below 1.1 across most factions meant it rarely won
+// candidate scoring, and the few times it did, plan health tanked because
+// the gate wall blocked the AI's own BFS (now fixed in ctppComputePlanHealth).
+// Bumped Gate baseline so non-wall factions can still consider it: nobody
+// goes below 1.0, and the "wall-naturally" factions (Architects, Wardens,
+// Trappers) get 1.3+. The strategy of "set up choke, walk through with RC"
+// is universally valuable — relax the bias so it actually gets played.
 const CTPP_FACTION_ARCHETYPE_BIAS = {
-  Architects:  { Rush: 0.9, Gate: 1.3, Tunnel: 0.8, Siege: 1.3, PhantomBait: 0.7, Scramble: 1.0, Blocker: 1.1 },
-  Pathfinders: { Rush: 1.3, Gate: 0.8, Tunnel: 1.3, Siege: 0.8, PhantomBait: 0.7, Scramble: 1.0, Blocker: 0.8 },
-  Wardens:     { Rush: 0.9, Gate: 1.1, Tunnel: 0.8, Siege: 1.2, PhantomBait: 0.7, Scramble: 1.4, Blocker: 1.1 },
-  Phantoms:    { Rush: 0.9, Gate: 1.1, Tunnel: 0.9, Siege: 0.9, PhantomBait: 1.4, Scramble: 1.0, Blocker: 0.9 },
-  Pushers:     { Rush: 1.2, Gate: 0.9, Tunnel: 0.9, Siege: 1.2, PhantomBait: 0.7, Scramble: 1.0, Blocker: 1.0 },
-  Trappers:    { Rush: 0.8, Gate: 1.2, Tunnel: 0.8, Siege: 1.2, PhantomBait: 0.7, Scramble: 1.0, Blocker: 1.0 },
-  Chronists:   { Rush: 1.0, Gate: 1.0, Tunnel: 1.0, Siege: 1.0, PhantomBait: 1.0, Scramble: 1.0, Blocker: 1.0 },
+  Architects:  { Rush: 0.9, Gate: 1.4, Tunnel: 0.8, Siege: 1.3, PhantomBait: 0.7, Scramble: 1.0, Blocker: 1.1 },
+  Pathfinders: { Rush: 1.3, Gate: 1.0, Tunnel: 1.3, Siege: 0.8, PhantomBait: 0.7, Scramble: 1.0, Blocker: 0.8 },
+  Wardens:     { Rush: 0.9, Gate: 1.3, Tunnel: 0.8, Siege: 1.2, PhantomBait: 0.7, Scramble: 1.4, Blocker: 1.1 },
+  Phantoms:    { Rush: 0.9, Gate: 1.2, Tunnel: 0.9, Siege: 0.9, PhantomBait: 1.4, Scramble: 1.0, Blocker: 0.9 },
+  Pushers:     { Rush: 1.2, Gate: 1.1, Tunnel: 0.9, Siege: 1.2, PhantomBait: 0.7, Scramble: 1.0, Blocker: 1.0 },
+  Trappers:    { Rush: 0.8, Gate: 1.3, Tunnel: 0.8, Siege: 1.2, PhantomBait: 0.7, Scramble: 1.0, Blocker: 1.0 },
+  Chronists:   { Rush: 1.0, Gate: 1.1, Tunnel: 1.0, Siege: 1.0, PhantomBait: 1.0, Scramble: 1.0, Blocker: 1.0 },
 };
 
 // Score a candidate plan — lower expectedWinTurn is better. Faction bias
@@ -8971,7 +9114,8 @@ function ctppGenRushPlan(pi, ctx) {
   // aiBfsPath returns the path EXCLUDING the start cell. Prepend current
   // position so path[0] = start, path[1] = first step, etc. This aligns
   // with ctppIsPlanStillValid's "at start of turn N, AI should be at path[N-createdTurn]" model.
-  const raw = aiPathToObjective(me.position, gameState.walls, pi);
+  // Bypass-aware: if AI holds tunnel cards, BFS may shortcut through walls.
+  const raw = _ctppPathToObjectiveBypassAware(me.position, gameState.walls, pi);
   if (!raw || raw.length < 1) return null; // no path or already at goal
   const path = [{ row: me.position.row, col: me.position.col }, ...raw.map(p => ({ row: p.row, col: p.col }))];
 
@@ -9095,7 +9239,7 @@ function ctppGenGatePlan(pi, ctx) {
   if (wallCard.arrivalTurn > _horizonGate || removeCard.arrivalTurn > _horizonGate) return null;
 
   // Path from AI to goal — wall is placed on this path at a future step.
-  const raw = aiPathToObjective(me.position, gameState.walls, pi);
+  const raw = _ctppPathToObjectiveBypassAware(me.position, gameState.walls, pi);
   if (!raw || raw.length < 3) return null;
   const path = [{ row: me.position.row, col: me.position.col },
                 ...raw.map(p => ({ row: p.row, col: p.col }))];
@@ -9177,7 +9321,9 @@ function ctppGenTunnelPlan(pi, ctx) {
   const bypass = _ctppFindCard(pi, _ctppIsBypassCard);
   if (!bypass) return null;
 
-  const raw = aiPathToObjective(me.position, gameState.walls, pi);
+  // Bypass-aware: this is the Tunnel archetype's whole point — let the path
+  // shortcut through non-reinforced walls.
+  const raw = _ctppPathToObjectiveBypassAware(me.position, gameState.walls, pi);
   if (!raw || raw.length < 2) return null;
   const path = [{ row: me.position.row, col: me.position.col }, ...raw.map(p => ({ row: p.row, col: p.col }))];
 
@@ -9298,7 +9444,7 @@ function ctppGenSiegePlan(pi, ctx) {
   const tier = ctppGetTier();
 
   // Path for the AI (they still advance between wall placements).
-  const raw = aiPathToObjective(me.position, gameState.walls, pi);
+  const raw = _ctppPathToObjectiveBypassAware(me.position, gameState.walls, pi);
   if (!raw || raw.length < 2) return null;
   const path = [{ row: me.position.row, col: me.position.col }, ...raw.map(p => ({ row: p.row, col: p.col }))];
 
@@ -9366,7 +9512,7 @@ function ctppGenPhantomBaitPlan(pi, ctx) {
 
   const curTurn = gameState.turnNumber;
   const tier = ctppGetTier();
-  const raw = aiPathToObjective(me.position, gameState.walls, pi);
+  const raw = _ctppPathToObjectiveBypassAware(me.position, gameState.walls, pi);
   if (!raw || raw.length < 2) return null;
   const path = [{ row: me.position.row, col: me.position.col }, ...raw.map(p => ({ row: p.row, col: p.col }))];
 
@@ -9421,7 +9567,7 @@ function ctppGenScramblePlan(pi, ctx) {
   if (!ab?.ultimate?.isScramble) return null;
   if (ab.ultimate.turnsUntilReady > 3) return null;
 
-  const raw = aiPathToObjective(me.position, gameState.walls, pi);
+  const raw = _ctppPathToObjectiveBypassAware(me.position, gameState.walls, pi);
   if (!raw || raw.length < 2) return null;
   const path = [{ row: me.position.row, col: me.position.col }, ...raw.map(p => ({ row: p.row, col: p.col }))];
 
@@ -9514,7 +9660,7 @@ function ctppGenBlockerPlan(pi, ctx) {
 
   const curTurn = gameState.turnNumber;
   const tier = ctppGetTier();
-  const raw = aiPathToObjective(me.position, gameState.walls, pi);
+  const raw = _ctppPathToObjectiveBypassAware(me.position, gameState.walls, pi);
   if (!raw || raw.length < 1) return null;
   const path = [{ row: me.position.row, col: me.position.col }, ...raw.map(p => ({ row: p.row, col: p.col }))];
 
@@ -9656,7 +9802,25 @@ function ctppComputePlanHealth(plan, pi) {
   if (typeof isGoalReached === 'function' && isGoalReached(pi, me.position)) return 1.0;
 
   // Path viability check — common to all path-based archetypes.
-  const currentPath = aiPathToObjective(me.position, gameState.walls, pi);
+  // Patch (post-stage-12 readout): for Gate plans, exclude the planned gate
+  // wall from the BFS so health reflects the path the AI will actually walk
+  // AFTER playing its self-remove card. Without this, the gate wall blocks
+  // the AI's own BFS, health tanks immediately, and the plan gets pruned
+  // before the remove sequence can play out — which is why we never saw the
+  // AI execute a wall-then-remove choke-point strategy. Now Gate plans stay
+  // healthy as long as their dependencies (wall card, remove card) hold.
+  let pathWalls = gameState.walls;
+  if (plan.archetype === 'Gate' && plan.gateWall) {
+    const gw = plan.gateWall;
+    pathWalls = gameState.walls.filter(w =>
+      !(w.owner === pi &&
+        w.anchor?.row === gw.anchor.row &&
+        w.anchor?.col === gw.anchor.col &&
+        w.orientation === gw.orient));
+  }
+  // Bypass-aware so health reflects the path the AI can ACTUALLY take given
+  // its tunnel cards, not the path assuming all walls block.
+  const currentPath = _ctppPathToObjectiveBypassAware(me.position, pathWalls, pi);
   if (!currentPath || currentPath.length === 0) return 0;
 
   const idx = gameState.turnNumber - plan.createdTurn;
@@ -9736,7 +9900,9 @@ function ctppAdaptPlan(plan, pi) {
   if (!me) return false;
   if ((plan.adaptCount || 0) >= CTPP_MAX_ADAPTS) return false;
 
-  const raw = aiPathToObjective(me.position, gameState.walls, pi);
+  // Bypass-aware so re-routes use the AI's actual movement options, not a
+  // path that wraps around walls the AI could tunnel through.
+  const raw = _ctppPathToObjectiveBypassAware(me.position, gameState.walls, pi);
   if (!raw || raw.length === 0) return false;
 
   const curTurn  = gameState.turnNumber;
@@ -10213,6 +10379,14 @@ function ctppRunLifecycle(pi, ctx) {
           expectedMargin:  p.metrics?.expectedMargin,
           oppDisruption:   p.oppModel?.disruption,
           selfDisruption:  p.oppModel?.selfDisruption,
+          // Path metadata — where the plan's full BFS route actually ends
+          // up. The timetable below only shows the lookahead window (~5
+          // turns), so without this it's impossible to tell from the export
+          // whether a plan that looks like it's heading away from goal in
+          // its first 5 turns is actually taking a long detour to the goal.
+          pathStart:   p.path?.[0] ? { ...p.path[0] } : null,
+          pathEnd:     p.path && p.path.length ? { ...p.path[p.path.length - 1] } : null,
+          pathLength:  p.path ? Math.max(0, p.path.length - 1) : 0,
           timetable: (p.timetable || []).map(e => ({
             turn: e.turn, role: e.role,
             actionKind: e.action?.kind,
@@ -10624,12 +10798,42 @@ function _ctppHealthBar(val) {
   return `<span class="ctpp-bar"><span class="ctpp-bar-fill ${cls}" style="width:${(v*100).toFixed(0)}%"></span></span>`;
 }
 
+// Verbose timetable entry renderer. Previously showed only the action kind
+// ("move", "wall", "play_card") which made it impossible to tell where the AI
+// was actually going each turn. Now shows the destination, wall placement,
+// or card-specific details so the user can read the plan at a glance.
 function _ctppFormatTimetableEntry(e) {
   const role = e.role || '?';
   const turn = (typeof e.turn === 'number') ? `T${e.turn}` : '?';
-  const action = e.action?.kind || '?';
-  const card = e.expectedCard?.id ? ` [${e.expectedCard.id}${e.expectedCard.arrivalProb < 1 ? '@' + (e.expectedCard.arrivalProb*100).toFixed(0) + '%' : ''}]` : '';
-  return `<div class="ctpp-tt-entry role-${role}">${turn} ${role}: ${action}${card}</div>`;
+  const a = e.action || {};
+  const arrivalProb = e.expectedCard?.arrivalProb;
+  const probSuffix = (arrivalProb != null && arrivalProb < 1)
+    ? `@${(arrivalProb * 100).toFixed(0)}%` : '';
+  const cardTag = e.expectedCard?.id ? `[${e.expectedCard.id}${probSuffix}]` : '';
+
+  let detail = a.kind || '?';
+  if (a.kind === 'move' && a.to) {
+    detail = `move → (${a.to.row},${a.to.col})`;
+  } else if (a.kind === 'wall' && a.anchor) {
+    const len = a.length || 2;
+    detail = `wall ${a.orientation || '?'}@(${a.anchor.row},${a.anchor.col}) len:${len} ${cardTag}`;
+  } else if (a.kind === 'phantom' && a.anchor) {
+    const len = a.length || 2;
+    detail = `phantom ${a.orientation || '?'}@(${a.anchor.row},${a.anchor.col}) len:${len} ${cardTag}`;
+  } else if (a.kind === 'play_card') {
+    const speedTag = a.overrideSpeed ? ` spd:${a.overrideSpeed}` : '';
+    const target = a.followUpMove
+      ? ` → (${a.followUpMove.row},${a.followUpMove.col})`
+      : (a.target ? ` → ${a.target}` : '');
+    const wallTarget = a.anchor
+      ? ` @(${a.anchor.row},${a.anchor.col})` : '';
+    detail = `play ${a.cardId || cardTag}${speedTag}${target}${wallTarget}`;
+  } else if (a.kind === 'ultimate') {
+    detail = `ultimate ${a.name || ''}`.trim();
+  } else if (cardTag) {
+    detail = `${a.kind || '?'} ${cardTag}`;
+  }
+  return `<div class="ctpp-tt-entry role-${role}">${turn} ${role}: ${detail}</div>`;
 }
 
 function _ctppRenderPlan(p, isPrimary) {
@@ -10653,10 +10857,29 @@ function _ctppRenderPlan(p, isPrimary) {
                     ` <span style="color:#888">(opp walls:${p.oppModel.oppWallCards}, rem:${p.oppModel.oppRemovalCards})</span>`;
   }
 
+  // Path summary — shows the plan's actual final destination + total tile
+  // count + detour ratio. Without this, the timetable's lookahead window
+  // can be misleading (e.g. a U-shaped detour around walls looks like the
+  // AI is heading the wrong direction when in fact the path eventually
+  // wraps around to the goal). Detour > 1.5× the manhattan distance gets
+  // a visual warning so heavy-wall layouts are obvious.
+  let pathLine = '';
+  if (p.path && p.path.length > 1) {
+    const start = p.path[0];
+    const end   = p.path[p.path.length - 1];
+    const tiles = p.path.length - 1;
+    const manhattan = Math.abs(end.row - start.row) + Math.abs(end.col - start.col);
+    const detour = tiles - manhattan;
+    const detourTag = detour >= 5
+      ? `<span style="color:#ffb864"> (${detour}-tile detour)</span>`
+      : (detour > 0 ? `<span style="color:#888"> (+${detour})</span>` : '');
+    pathLine = `<br><span style="color:#a0a8b4">path: (${start.row},${start.col}) → (${end.row},${end.col}) · ${tiles} tiles${detourTag}</span>`;
+  }
+
   return `<div class="${cls}">${tag} ${p.archetype || '?'} #${p.id || '?'}
     <br>health ${health} ${(p.health ?? 1).toFixed(2)}
     &nbsp;conf ${conf} ${(p.confidence ?? 1).toFixed(2)}
-    &nbsp;win@T${winTurn}${nightmareLine}
+    &nbsp;win@T${winTurn}${nightmareLine}${pathLine}
     <div class="ctpp-timetable">${tt || '<span class="ctpp-empty">(empty timetable)</span>'}</div>
   </div>`;
 }
