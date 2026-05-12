@@ -9200,9 +9200,27 @@ function _ctppScoreCandidatePlan(plan, pi) {
   if (useMarginScoring && plan.metrics?.expectedMargin !== null
       && plan.metrics?.expectedMargin !== undefined) {
     const margin = plan.metrics.expectedMargin;
-    if (margin < 0)      score -= 20;       // AI loses the race — catastrophic
-    else if (margin < 2) score -= 5;        // tight race — still concerning
-    else                 score += margin * 0.5; // comfortable lead
+    // Phase 6 Table A — Thompson-sampled aggression multiplier replaces the
+    // hardcoded 0.5 comfort-lead weight. Sampled arm picks one of
+    // [0.30, 0.50, 0.80, 1.20] per match; outcome updates the arm's Beta.
+    const aggression = (typeof aiObsAggression === 'function') ? aiObsAggression() : 0.5;
+    if (margin < 0)      score -= 20;
+    else if (margin < 2) score -= 5;
+    else                 score += margin * aggression;
+  }
+  // Phase 6 Table C — matchup multiplier from the archetype × player-faction
+  // grid. AI archetypes that historically win against the player's faction
+  // get a score boost; bad matchups get penalized. Confidence ramps over the
+  // first ~5 observations for that cell.
+  // Player is always seat 0 in SP / gauntlet (the only modes that learn).
+  const playerFaction = gameState?.players?.[0]?.champion?.faction;
+  if (playerFaction && typeof aiObsMatchupBias === 'function') {
+    const mu = aiObsMatchupBias(plan.archetype, playerFaction);
+    // Multiplicative: positive scores get amplified, negatives dampened.
+    // Use absolute-value scaling so a strongly negative score (penalty)
+    // isn't accidentally pushed toward zero by a bad-matchup multiplier <1.
+    if (score >= 0) score *= mu;
+    else            score *= (2 - mu); // 0.6 mult → 1.4× the penalty for bad matchups
   }
   return score;
 }
@@ -9321,8 +9339,11 @@ function ctppExpandPortfolio(pi, ctx) {
   }
 
   // If we lack a valid primary, softmax-pick from the portfolio.
+  // Phase 6 Table A — sampled softmax temperature replaces tier default
+  // when learning is on; falls through to tier.softmaxTemp otherwise.
   if (!port.primaryId || !port.plans.find(p => p.id === port.primaryId)) {
-    const primary = _ctppSoftmaxPick(port.plans, tier.softmaxTemp);
+    const temp = (typeof aiObsSoftmaxTemp === 'function') ? aiObsSoftmaxTemp(tier.softmaxTemp) : tier.softmaxTemp;
+    const primary = _ctppSoftmaxPick(port.plans, temp);
     if (primary) port.primaryId = primary.id;
   }
 }
@@ -9441,8 +9462,10 @@ function ctppPanicExpandIfLosing(pi, ctx) {
   // Re-evaluate primary: if the panic-spawned plan beats current primary on
   // candidate score, let softmax pick a new one (subject to switch hysteresis
   // applied later in the lifecycle).
+  // Phase 6 Table A — same sampled softmax temp as elsewhere.
   if (!port.primaryId || !port.plans.find(p => p.id === port.primaryId)) {
-    const primary = _ctppSoftmaxPick(port.plans, tier.softmaxTemp);
+    const temp = (typeof aiObsSoftmaxTemp === 'function') ? aiObsSoftmaxTemp(tier.softmaxTemp) : tier.softmaxTemp;
+    const primary = _ctppSoftmaxPick(port.plans, temp);
     if (primary) port.primaryId = primary.id;
   }
   return true;
@@ -10429,7 +10452,13 @@ function ctppSimulateOpponentAgainstPlan(plan, pi) {
   // tile-target for FFA. getGoalRow returns -1 for FFA which would make
   // oppDist Infinity and corrupt all margin computations downstream.
   const oppDist = _ctppDistanceToObjective(opp.position, gameState.walls, opp.index);
-  const oppPace = Math.max(1, 1 + oppMovementFast * 0.3);  // rough: more fast-move cards → quicker
+  // Phase 6 — per-user, FACTION-AWARE pace multiplier. Each gauntlet run
+  // may be a different faction with a different playstyle, so we prefer
+  // faction-specific EWMA stats and fall back to global. Returns 1.0 with
+  // <3 effective samples for this faction.
+  const _phase6OppFaction = opp?.champion?.faction || null;
+  const _phase6PaceMult = (typeof aiObsPaceMultiplier === 'function') ? aiObsPaceMultiplier(_phase6OppFaction) : 1.0;
+  const oppPace = Math.max(1, 1 + oppMovementFast * 0.3) * _phase6PaceMult;
   const oppDistBounded = Number.isFinite(oppDist) ? oppDist : 99;
   let oppWinTurn = gameState.turnNumber + Math.ceil(oppDistBounded / oppPace);
 
@@ -10502,6 +10531,12 @@ function ctppSimulateOpponentAgainstPlan(plan, pi) {
     disruption += 0;
   }
 
+  // Phase 6 — per-user, FACTION-AWARE disruption multiplier. Different
+  // factions have very different disruption profiles (Wardens destroy a lot,
+  // Phantoms barely any), so the AI consults the faction-specific EWMA when
+  // available and blends with global as a fallback. Clamped to [0.5, 2.0].
+  const _phase6Mult = (typeof aiObsDisruptionMultiplier === 'function') ? aiObsDisruptionMultiplier(_phase6OppFaction) : 1.0;
+  disruption *= _phase6Mult;
   return { disruption, selfDisruption, oppWinTurn, oppWallCards, oppRemovalCards, reinforcedCount: oppReinforced };
 }
 
@@ -10766,6 +10801,16 @@ function ctppRunLifecycle(pi, ctx) {
         },
       });
     } catch (e) { console.warn('[CTPP] portfolio snapshot failed:', e); }
+  }
+
+  // Phase 6 Table C — tally the primary plan's archetype this turn. The
+  // match-end update credits the dominant archetype with the AI's win/loss
+  // against the player's faction. Lazy-samples bandit arms on first call.
+  if (typeof aiObsSampleArmsForMatch === 'function') {
+    try { aiObsSampleArmsForMatch(); } catch (e) {}
+  }
+  if (primary?.archetype && typeof aiObsTallyArchetype === 'function') {
+    try { aiObsTallyArchetype(primary.archetype); } catch (e) {}
   }
 
   return primary;
@@ -11098,6 +11143,108 @@ function ctppOverlayBuildExport() {
   return JSON.stringify(data, null, 2);
 }
 
+// ── Phase 5 — Auto-export match readouts ─────────────────────────────────
+// At match end (win OR loss), capture the current CTPP readout and stash it
+// in localStorage under _ctppMatchHistory. Capped at 200 entries with FIFO
+// eviction so we don't blow the localStorage 5-10 MB quota. Each entry is
+// a stripped-down version of the full export — match meta, final turn
+// count, winner, AND the full portfolio snapshots. Total size per entry
+// is typically 50-200 KB, so 200 entries ≈ 10-40 MB — close to the quota
+// edge. We compress by dropping verbose timetable detail when the export
+// would exceed 250 KB.
+const CTPP_HISTORY_CAP = 200;
+const CTPP_HISTORY_KEY = '_ctppMatchHistory';
+const CTPP_HISTORY_MAX_ENTRY_KB = 250;
+
+function _ctppCompactSnapshot(snap) {
+  // Compress a snapshot if too verbose. Drop per-plan timetables (the
+  // largest contributor), keep plan-level metrics + path metadata.
+  return {
+    ...snap,
+    plans: (snap.plans || []).map(p => ({
+      id: p.id, archetype: p.archetype, health: p.health,
+      confidence: p.confidence, adaptCount: p.adaptCount,
+      stuckTurns: p.stuckTurns,
+      expectedWinTurn: p.expectedWinTurn,
+      expectedMargin: p.expectedMargin,
+      oppDisruption: p.oppDisruption,
+      selfDisruption: p.selfDisruption,
+      pathLength: p.pathLength,
+      // Drop timetable to save bytes
+    })),
+  };
+}
+
+function ctppAutoExportOnMatchEnd() {
+  try {
+    const tel = window.CtppHarness?.telemetry;
+    if (!tel) return; // CTPP wasn't active this match (medium tier and below)
+    const entry = {
+      finishedAt: new Date().toISOString(),
+      gameMode: typeof gameMode === 'string' ? gameMode : null,
+      stage: _gauntletRun?.stage ?? null,
+      nodeType: _gauntletRun?._currentNode?.type ?? null,
+      winner: gameState?.winner ?? null,
+      humanWon: gameState?.winner === 0,
+      finalTurn: gameState?.turnNumber ?? null,
+      matchMeta: tel.matchMeta || null,
+      // Trim large arrays; full export remains available via "Export readout"
+      // button while the match data is still in CtppHarness memory.
+      turnCount: (tel.turns || []).length,
+      snapshotCount: (tel.portfolioSnapshots || []).length,
+      // Keep the last 3 snapshots — usually enough for post-mortem.
+      tailSnapshots: (tel.portfolioSnapshots || []).slice(-3),
+      planLifecycleCount: (tel.planLifecycle || []).length,
+      commitmentSwitchCount: (tel.commitmentSwitches || []).length,
+    };
+    // Check size; if oversized, compact further.
+    let serialized = JSON.stringify(entry);
+    if (serialized.length / 1024 > CTPP_HISTORY_MAX_ENTRY_KB) {
+      entry.tailSnapshots = entry.tailSnapshots.map(_ctppCompactSnapshot);
+      serialized = JSON.stringify(entry);
+    }
+    // Load existing history, append, evict if over cap.
+    let history = [];
+    try {
+      const raw = localStorage.getItem(CTPP_HISTORY_KEY);
+      if (raw) history = JSON.parse(raw);
+      if (!Array.isArray(history)) history = [];
+    } catch (e) { history = []; }
+    history.push(entry);
+    if (history.length > CTPP_HISTORY_CAP) {
+      history = history.slice(-CTPP_HISTORY_CAP); // FIFO eviction
+    }
+    // Try to write. If quota exceeded, drop older entries until it fits.
+    try {
+      localStorage.setItem(CTPP_HISTORY_KEY, JSON.stringify(history));
+    } catch (quotaErr) {
+      console.warn('[CTPP history] localStorage quota hit, halving history');
+      history = history.slice(-Math.floor(CTPP_HISTORY_CAP / 2));
+      try {
+        localStorage.setItem(CTPP_HISTORY_KEY, JSON.stringify(history));
+      } catch (e2) {
+        console.warn('[CTPP history] still over quota — dropping save', e2);
+      }
+    }
+  } catch (e) {
+    console.warn('[CTPP auto-export] failed:', e);
+  }
+}
+
+// Read all stored match-history entries (sorted oldest-first).
+function ctppLoadMatchHistory() {
+  try {
+    const raw = localStorage.getItem(CTPP_HISTORY_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (e) { return []; }
+}
+
+function ctppClearMatchHistory() {
+  try { localStorage.removeItem(CTPP_HISTORY_KEY); } catch (e) {}
+}
+
 // Try clipboard first; if blocked (older browsers / non-secure contexts),
 // open a modal with a pre-selected textarea so the user can copy manually.
 function ctppOverlayExport() {
@@ -11129,6 +11276,76 @@ function _ctppShowExportToast(msg) {
   setTimeout(() => t.remove(), 2200);
 }
 
+// ── Phase 5 — Match history viewer ──────────────────────────────────────
+// Modal listing all auto-exported match entries in localStorage. Each row:
+// finish time, mode/stage, winner, turn count. Click to expand the full
+// entry JSON. Buttons: Copy all (clipboard), Clear, Close.
+function ctppShowMatchHistory() {
+  const history = ctppLoadMatchHistory();
+  const wrap = document.createElement('div');
+  wrap.setAttribute('data-ctpp-history', '');
+  wrap.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:100001;display:flex;align-items:center;justify-content:center;';
+  const fmt = (e, i) => {
+    const t = e.finishedAt ? new Date(e.finishedAt).toLocaleString() : '?';
+    const mode = e.gameMode || '?';
+    const stageTag = e.stage != null ? ` · stage ${e.stage}${e.nodeType ? '/' + e.nodeType : ''}` : '';
+    const winTag = e.humanWon ? '<span style="color:#9fd89f">WIN</span>' : (e.winner != null ? '<span style="color:#ff7f7f">LOSS</span>' : '<span style="color:#888">?</span>');
+    return `<div class="ctpp-hist-row" data-idx="${i}" style="display:flex;gap:10px;align-items:center;padding:4px 8px;border-bottom:1px solid #1c2a38;cursor:pointer;font:11px monospace;color:#c0c8d4;">
+      <span style="color:#888;width:130px;">${t}</span>
+      <span style="width:80px;">${mode}${stageTag}</span>
+      <span style="width:60px;">${winTag}</span>
+      <span style="color:#a0a8b4;">T${e.finalTurn ?? '?'} · ${e.snapshotCount} snaps · ${e.commitmentSwitchCount} switches</span>
+    </div>`;
+  };
+  const sizeKb = (JSON.stringify(history).length / 1024).toFixed(1);
+  wrap.innerHTML = `
+    <div style="background:#0e141c;border:1px solid #2a4560;border-radius:6px;padding:14px;width:90vw;max-width:1000px;max-height:88vh;display:flex;flex-direction:column;gap:8px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;color:#d8e6f2;font:11px monospace;gap:8px;">
+        <span>Match history — ${history.length} entries · ${sizeKb} KB total</span>
+        <div style="display:flex;gap:6px;">
+          <button onclick="ctppCopyMatchHistory(this)" style="cursor:pointer;background:#1c2a38;color:#9fd89f;border:1px solid #4a8a4a;padding:3px 10px;font:11px monospace;">Copy all</button>
+          <button onclick="if(confirm('Clear all ${history.length} stored match readouts?')){ctppClearMatchHistory();this.closest('[data-ctpp-history]').remove();}" style="cursor:pointer;background:#1c2a38;color:#ff9f9f;border:1px solid #8a4a4a;padding:3px 10px;font:11px monospace;">Clear</button>
+          <button onclick="this.closest('[data-ctpp-history]').remove()" style="cursor:pointer;background:#1c2a38;color:#d8e6f2;border:1px solid #4a6a90;padding:3px 10px;font:11px monospace;">Close</button>
+        </div>
+      </div>
+      <div id="ctpp-hist-list" style="overflow-y:auto;max-height:calc(88vh - 120px);border:1px solid #1c2a38;">
+        ${history.length ? history.map((e, i) => fmt(e, i)).reverse().join('') : '<div style="padding:20px;color:#888;font:11px monospace;text-align:center;">No match history yet. Play a few games — exports happen automatically at match end.</div>'}
+      </div>
+      <div id="ctpp-hist-detail" style="display:none;background:#000;color:#a8c4d8;border:1px solid #2a4560;font:10px/1.4 monospace;padding:8px;max-height:30vh;overflow:auto;white-space:pre;"></div>
+    </div>`;
+  document.body.appendChild(wrap);
+  // Wire row clicks to show full JSON below.
+  wrap.querySelectorAll('.ctpp-hist-row').forEach(row => {
+    row.addEventListener('click', () => {
+      const idx = +row.dataset.idx;
+      const entry = history[idx];
+      const detail = wrap.querySelector('#ctpp-hist-detail');
+      if (!entry || !detail) return;
+      detail.style.display = 'block';
+      detail.textContent = JSON.stringify(entry, null, 2);
+      wrap.querySelectorAll('.ctpp-hist-row').forEach(r => r.style.background = '');
+      row.style.background = '#1c2a38';
+    });
+  });
+}
+
+function ctppCopyMatchHistory(btnEl) {
+  const history = ctppLoadMatchHistory();
+  const json = JSON.stringify(history, null, 2);
+  const ok = () => {
+    if (btnEl) {
+      const orig = btnEl.textContent;
+      btnEl.textContent = 'Copied!';
+      setTimeout(() => { btnEl.textContent = orig; }, 1500);
+    }
+  };
+  if (navigator.clipboard?.writeText) {
+    navigator.clipboard.writeText(json).then(ok, () => {
+      console.warn('[CTPP history] clipboard blocked');
+    });
+  }
+}
+
 function _ctppShowExportFallback(json, counts, sizeKb) {
   const wrap = document.createElement('div');
   wrap.setAttribute('data-ctpp-export', '');
@@ -11148,6 +11365,744 @@ function _ctppShowExportFallback(json, counts, sizeKb) {
     const ta = wrap.querySelector('textarea');
     if (ta) { ta.focus(); ta.select(); }
   }, 50);
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+// Phase 6 — Adaptive AI: per-user observation profile (Table B)
+// ═════════════════════════════════════════════════════════════════════════
+// Tracks per-match behavior of the local human player using EWMA over
+// match-level summaries. Drives AI decision-making — specifically, scales
+// the `disruption` estimate in ctppSimulateOpponentAgainstPlan so the AI
+// expects the right amount of pushback from THIS player rather than an
+// average opponent.
+//
+// Profile schema (stored in _userProfile.ai_observations or localStorage):
+// {
+//   version: 1,
+//   matchesObserved: number,           // raw count, used for ramp-up
+//   nEffective: number,                // EWMA "effective sample size", capped
+//   stats: {
+//     pace:           number,          // avg tiles per turn (BFS-derived)
+//     wallRate:       number,          // walls placed per turn
+//     disruptionRate: number,          // AI walls destroyed / AI walls placed
+//     fastMoveRate:   number,          // fast-move cards / movement cards
+//   },
+//   factionUsage: { [faction]: count },
+//   wins: number,
+//   losses: number,
+//   lastUpdate: ISO string,
+// }
+//
+// EWMA update: new = α·observed + (1-α)·old, with α=0.3 (recency-biased
+// but stable). Multiplier returned to AI is clamped to [0.5, 2.0] and
+// ramped down to 1.0 for the first 3 matches (low confidence).
+
+const AI_OBS_VERSION = 3;             // v3: per-faction Table B partitioning
+const AI_OBS_EWMA_ALPHA = 0.3;
+const AI_OBS_N_EFFECTIVE_CAP = 100;
+const AI_OBS_RAMP_MATCHES = 3;       // below this, GLOBAL multipliers dampen to 1.0
+const AI_OBS_FACTION_RAMP = 3;       // matches in a faction before its stats fully outweigh global
+const AI_OBS_AB_MATCHES   = 30;      // A/B harness duration (50/50 learn-on/off)
+const AI_OBS_LS_KEY = '_aiObservations';
+
+// Table A — Thompson-sampling bandit on AI hyperparameters.
+// Each parameter has a set of arms (candidate values). At match start, one
+// arm is sampled per parameter via Beta(alpha, beta) draw. Match-end updates
+// alpha (win) or beta (loss) on the sampled arms.
+// Arms are tuned to bracket the existing tier defaults; sampling explores
+// nearby values to find what wins more reliably for this player.
+const AI_OBS_TABLE_A_ARMS = {
+  // Aggression: multiplier on the margin-comfort-lead bonus inside
+  // _ctppScoreCandidatePlan (default 0.5). Higher = AI cares more about
+  // comfortable leads; lower = AI cares less about lead size, more about
+  // raw winTurn.
+  aggression: ['0.30', '0.50', '0.80', '1.20'],
+  // Softmax temperature: lower = more deterministic plan picks, higher =
+  // more exploration. Bracket the hard-tier default (0.75) and the
+  // nightmare default (0.25).
+  softmaxTemp: ['0.25', '0.50', '0.75', '1.25'],
+};
+// Reverse lookup for actual numeric values.
+const AI_OBS_TABLE_A_VALUES = {
+  aggression: { '0.30': 0.30, '0.50': 0.50, '0.80': 0.80, '1.20': 1.20 },
+  softmaxTemp: { '0.25': 0.25, '0.50': 0.50, '0.75': 0.75, '1.25': 1.25 },
+};
+
+// Table C — archetype × player-faction matchup grid with Laplace smoothing.
+// Tracks (alpha, beta) for each combo of (AI archetype that was primary at
+// match end, player faction). Smoothed win-rate = alpha / (alpha + beta).
+// Used as a multiplicative bias on plan score so the AI gravitates toward
+// archetypes that historically beat THIS player's faction.
+const AI_OBS_ARCHETYPES = ['Rush', 'Gate', 'Tunnel', 'Siege', 'PhantomBait', 'Scramble', 'Blocker'];
+// Player factions come from CHAMPIONS data — we list all currently shipping
+// factions so the grid initializes cleanly.
+const AI_OBS_PLAYER_FACTIONS = ['Pathfinders', 'Architects', 'Wardens', 'Pushers', 'Chronists', 'Phantoms', 'Basic'];
+
+// Per-faction stat block (one entry inside profile.statsByFaction).
+// matchCount lets us ramp the faction-vs-global blend by sample size.
+function _aiObsDefaultFactionStats() {
+  return {
+    pace: 0.8,
+    wallRate: 0.4,
+    disruptionRate: 0.0,
+    fastMoveRate: 0.25,
+    matchCount: 0,
+  };
+}
+
+function aiObsDefaultProfile() {
+  // Initialize Table A arms at uninformative prior Beta(1, 1) = uniform.
+  const tableA = {};
+  for (const param of Object.keys(AI_OBS_TABLE_A_ARMS)) {
+    tableA[param] = {};
+    for (const arm of AI_OBS_TABLE_A_ARMS[param]) {
+      tableA[param][arm] = { alpha: 1, beta: 1 };
+    }
+  }
+  // Initialize Table C matchup grid at Beta(1, 1) per cell (Laplace prior).
+  // Key: `${archetype}|${faction}`.
+  const tableC = {};
+  for (const arch of AI_OBS_ARCHETYPES) {
+    for (const fac of AI_OBS_PLAYER_FACTIONS) {
+      tableC[`${arch}|${fac}`] = { alpha: 1, beta: 1 };
+    }
+  }
+  // Pre-seed per-faction stat slots so the AI Profile overlay can render
+  // them even before any matches are played in that faction.
+  const statsByFaction = {};
+  for (const fac of AI_OBS_PLAYER_FACTIONS) {
+    statsByFaction[fac] = _aiObsDefaultFactionStats();
+  }
+  return {
+    version: AI_OBS_VERSION,
+    matchesObserved: 0,
+    nEffective: 0,
+    // GLOBAL stats — average across all factions this user has played.
+    // Used as the fallback when the active faction has few samples.
+    stats: {
+      pace: 0.8,
+      wallRate: 0.4,
+      disruptionRate: 0.0,
+      fastMoveRate: 0.25,
+    },
+    // Per-faction stats — preferred over `stats` when faction has >=3 matches.
+    // Each gauntlet run can be a totally different playstyle (Pathfinders
+    // racer vs Architects builder vs Phantoms tricky), so blending these
+    // with global keeps the AI from over-fitting one playstyle onto another.
+    statsByFaction,
+    factionUsage: {},
+    wins: 0,
+    losses: 0,
+    tableA,
+    tableC,
+    abMode: {
+      // Records the running A/B comparison so we can detect if learning hurts.
+      learnOnSamples: 0,  learnOnWins: 0,
+      learnOffSamples: 0, learnOffWins: 0,
+    },
+    lastUpdate: null,
+  };
+}
+
+// Schema migration:
+//   v1 → v2: add tableA, tableC, abMode at defaults.
+//   v2 → v3: seed statsByFaction map from existing global stats (so prior
+//            data isn't lost — every faction starts at the user's observed
+//            global average, then diverges as faction-specific matches roll in).
+function aiObsMigrateProfile(p) {
+  if (!p) return aiObsDefaultProfile();
+  const def = aiObsDefaultProfile();
+  if (p.version === AI_OBS_VERSION) {
+    // Same version — still merge defaults for any newly added keys.
+    // Per-faction stats merge defensively so new factions get default entries.
+    const sbf = { ...def.statsByFaction };
+    if (p.statsByFaction && typeof p.statsByFaction === 'object') {
+      for (const fac of Object.keys(p.statsByFaction)) {
+        sbf[fac] = { ..._aiObsDefaultFactionStats(), ...(p.statsByFaction[fac] || {}) };
+      }
+    }
+    return {
+      ...def, ...p,
+      stats: { ...def.stats, ...(p.stats || {}) },
+      statsByFaction: sbf,
+      tableA: { ...def.tableA, ...(p.tableA || {}) },
+      tableC: { ...def.tableC, ...(p.tableC || {}) },
+      abMode: { ...def.abMode, ...(p.abMode || {}) },
+    };
+  }
+  // v1 → v3 (skip v2 intermediate, but same end-shape).
+  if (p.version === 1) {
+    console.log('[Phase 6] migrating ai_observations v1 → v3');
+    return {
+      ...def,
+      matchesObserved: p.matchesObserved || 0,
+      nEffective: p.nEffective || 0,
+      stats: { ...def.stats, ...(p.stats || {}) },
+      factionUsage: p.factionUsage || {},
+      wins: p.wins || 0,
+      losses: p.losses || 0,
+      lastUpdate: p.lastUpdate || null,
+      // statsByFaction stays at defaults — no per-faction history available.
+    };
+  }
+  // v2 → v3: existing Table A/C/B + AB data preserved; seed faction map from global.
+  if (p.version === 2) {
+    console.log('[Phase 6] migrating ai_observations v2 → v3');
+    const globalStats = { ...def.stats, ...(p.stats || {}) };
+    const sbf = { ...def.statsByFaction };
+    // Seed each known faction slot with the user's observed global stats
+    // as the starting point. matchCount stays at 0 so the blend prefers
+    // global until faction-specific data accumulates.
+    for (const fac of Object.keys(sbf)) {
+      sbf[fac] = { ...globalStats, matchCount: 0 };
+    }
+    return {
+      ...def, ...p,
+      version: AI_OBS_VERSION,
+      stats: globalStats,
+      statsByFaction: sbf,
+      tableA: { ...def.tableA, ...(p.tableA || {}) },
+      tableC: { ...def.tableC, ...(p.tableC || {}) },
+      abMode: { ...def.abMode, ...(p.abMode || {}) },
+    };
+  }
+  // Unknown future version — start fresh.
+  return def;
+}
+
+// Load profile: prefer _userProfile.ai_observations (Supabase-backed),
+// fall back to localStorage for offline users. Migrates older schema
+// versions in place via aiObsMigrateProfile.
+function aiObsLoadProfile() {
+  // Supabase-backed (signed-in) user: prefer profile-row data.
+  if (typeof _userProfile === 'object' && _userProfile?.ai_observations) {
+    return aiObsMigrateProfile(_userProfile.ai_observations);
+  }
+  // localStorage fallback (offline / unauthenticated).
+  try {
+    const raw = localStorage.getItem(AI_OBS_LS_KEY);
+    if (raw) return aiObsMigrateProfile(JSON.parse(raw));
+  } catch (e) {}
+  return aiObsDefaultProfile();
+}
+
+function aiObsSaveProfile(profile) {
+  if (!profile) return;
+  profile.lastUpdate = new Date().toISOString();
+  // Always write to localStorage as the source of truth + fallback.
+  try { localStorage.setItem(AI_OBS_LS_KEY, JSON.stringify(profile)); } catch (e) {}
+  // If signed in, also push to Supabase via saveUserProfile.
+  if (typeof _userProfile === 'object' && _userProfile && typeof saveUserProfile === 'function') {
+    _userProfile.ai_observations = profile;
+    try { saveUserProfile({ ai_observations: profile }); } catch (e) { /* fire-and-forget */ }
+  }
+}
+
+function aiObsResetProfile() {
+  const fresh = aiObsDefaultProfile();
+  aiObsSaveProfile(fresh);
+  return fresh;
+}
+
+// Derive per-match player stats from gameState. Run AT match end (before
+// players[] is cleared). Returns null if the match is not analyzable
+// (e.g., FFA, MP, no human seat, very short match).
+function aiObsComputeMatchStats(winner) {
+  if (!gameState?.players || !gameState.log) return null;
+  // Only analyze 1v1 SP/gauntlet matches where the local human is seat 0.
+  if (gameConfig?.mode === 'ffa' || gameConfig?.mode === '2v2') return null;
+  if (gameMode === 'mp') return null;
+  const human = gameState.players[0];
+  if (!human?.champion) return null;
+  const totalTurns = Math.max(1, gameState.turnNumber || 1);
+  // Walls placed by the human: count log entries where player==0, type=='card', message starts with a wall-name signature.
+  // More reliable: count current gameState.walls where owner==0 (still alive) + check log for destruction events.
+  const humanWallsAlive = (gameState.walls || []).filter(w => w.owner === 0 && !w.isPhantom).length;
+  // Estimate walls placed: scan log for 'wall placed' patterns (covers WD/AR/Pusher families).
+  let humanWallsPlaced = 0;
+  let aiWallsPlaced = 0;
+  let humanDestroyedAiWalls = 0;
+  let humanMovementCards = 0;
+  let humanFastMoveCards = 0;
+  for (const ev of (gameState.log || [])) {
+    if (typeof ev.message !== 'string') continue;
+    const m = ev.message.toLowerCase();
+    if (ev.type === 'card' && ev.player === 0) {
+      if (m.includes('wall') && (m.includes('placed') || m.includes('build') || m.includes('drop'))) humanWallsPlaced++;
+      // Fast-move detection by signature card names
+      if (m.includes('advance') || m.includes('sprint') || m.includes('blink') || m.includes('rush')) humanFastMoveCards++;
+      // Movement card heuristic: matches "moved", "stepped", "dashed", etc.
+      if (m.includes('move') || m.includes('step') || m.includes('dash') || m.includes('walk')) humanMovementCards++;
+    }
+    if (ev.type === 'card' && ev.player === 1 && m.includes('wall') && (m.includes('placed') || m.includes('build') || m.includes('drop'))) {
+      aiWallsPlaced++;
+    }
+    // Wall destruction events — log messages typically include "destroyed", "broken", or "removed wall"
+    if (ev.player === 0 && (m.includes('destroyed') || m.includes('broke') || m.includes('removed wall'))) {
+      humanDestroyedAiWalls++;
+    }
+  }
+  // Fallback: if the log heuristic underestimates (boss walls etc.), at least
+  // count the current alive walls as a floor.
+  humanWallsPlaced = Math.max(humanWallsPlaced, humanWallsAlive);
+  // Pace: human's distance traveled / turns. Rough — derived from position changes;
+  // for simplicity use (BOARD_ROWS - final_row) if they won, else (start_row - final_row).
+  const finalRow = human.position?.row ?? (BOARD_ROWS - 1);
+  const startRow = BOARD_ROWS - 1;
+  const tilesTraveled = Math.max(0, startRow - finalRow);
+  const pace = tilesTraveled / totalTurns;
+  const wallRate = humanWallsPlaced / totalTurns;
+  const disruptionRate = aiWallsPlaced > 0 ? humanDestroyedAiWalls / aiWallsPlaced : 0;
+  const fastMoveRate = humanMovementCards > 0 ? humanFastMoveCards / humanMovementCards : 0;
+  return {
+    pace,
+    wallRate,
+    disruptionRate,
+    fastMoveRate,
+    faction: human.champion?.faction || 'Unknown',
+    won: winner === 0,
+    totalTurns,
+  };
+}
+
+// Apply one match's observation to the profile: EWMA stats (Table B),
+// Thompson-bandit arm updates (Table A), matchup-grid updates (Table C),
+// and A/B harness bookkeeping. Idempotent — won't double-count thanks to
+// the `gameState._aiMatchSamples` guard inside aiObsSampleArmsForMatch.
+function aiObsUpdateFromMatch(winner) {
+  const stats = aiObsComputeMatchStats(winner);
+  if (!stats) return;
+  const profile = aiObsLoadProfile();
+  profile.matchesObserved += 1;
+  profile.nEffective = Math.min(AI_OBS_N_EFFECTIVE_CAP, profile.nEffective + 1);
+  // Table B — EWMA stats (global, AND per-faction so different gauntlet
+  // runs with different factions/playstyles get tracked separately).
+  const a = AI_OBS_EWMA_ALPHA;
+  profile.stats.pace           = a * stats.pace           + (1 - a) * profile.stats.pace;
+  profile.stats.wallRate       = a * stats.wallRate       + (1 - a) * profile.stats.wallRate;
+  profile.stats.disruptionRate = a * stats.disruptionRate + (1 - a) * profile.stats.disruptionRate;
+  profile.stats.fastMoveRate   = a * stats.fastMoveRate   + (1 - a) * profile.stats.fastMoveRate;
+  // Faction-specific update (the playstyle this user adopts when they're
+  // running THIS faction this gauntlet run).
+  if (!profile.statsByFaction) profile.statsByFaction = {};
+  if (!profile.statsByFaction[stats.faction]) {
+    profile.statsByFaction[stats.faction] = _aiObsDefaultFactionStats();
+  }
+  const fs = profile.statsByFaction[stats.faction];
+  fs.pace           = a * stats.pace           + (1 - a) * fs.pace;
+  fs.wallRate       = a * stats.wallRate       + (1 - a) * fs.wallRate;
+  fs.disruptionRate = a * stats.disruptionRate + (1 - a) * fs.disruptionRate;
+  fs.fastMoveRate   = a * stats.fastMoveRate   + (1 - a) * fs.fastMoveRate;
+  fs.matchCount     = (fs.matchCount || 0) + 1;
+  profile.factionUsage[stats.faction] = (profile.factionUsage[stats.faction] || 0) + 1;
+  if (stats.won) profile.wins += 1; else profile.losses += 1;
+  // Tables A + C + A/B — update arm posteriors and matchup grid.
+  if (typeof aiObsUpdateBanditsAndMatchups === 'function') {
+    try { aiObsUpdateBanditsAndMatchups(profile, stats.won, stats.faction); } catch (e) { console.warn('[Phase 6 bandit update]', e); }
+  }
+  aiObsSaveProfile(profile);
+  console.log('[Phase 6] AI profile updated:', {
+    matches: profile.matchesObserved,
+    stats: profile.stats,
+    arms: gameState?._aiMatchSamples?.armsPicked,
+    learnEnabled: gameState?._aiMatchSamples?.learnEnabled,
+    archDominant: gameState?._aiMatchSamples?.archetypeTallies,
+  });
+}
+
+// ── Phase 6 Tables A & C — Bandit + matchup grid ───────────────────────
+// Approximate Beta(alpha, beta) sampling via two Gamma samples (Marsaglia
+// & Tsang shape-parameter trick, or simple rejection for small shapes).
+// For our use case alpha/beta are typically small ints (1..50) so a quick
+// sum-of-uniforms approximation isn't accurate enough — use a proper sample.
+function _aiObsSampleGamma(shape) {
+  // Marsaglia-Tsang for shape >= 1. For shape < 1, use a boost trick.
+  if (shape < 1) {
+    return _aiObsSampleGamma(shape + 1) * Math.pow(Math.random(), 1 / shape);
+  }
+  const d = shape - 1 / 3;
+  const c = 1 / Math.sqrt(9 * d);
+  while (true) {
+    let x, v;
+    do {
+      // Box-Muller normal
+      const u1 = Math.random(), u2 = Math.random();
+      x = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+      v = 1 + c * x;
+    } while (v <= 0);
+    v = v * v * v;
+    const u = Math.random();
+    if (u < 1 - 0.0331 * x * x * x * x) return d * v;
+    if (Math.log(u) < 0.5 * x * x + d * (1 - v + Math.log(v))) return d * v;
+  }
+}
+function _aiObsSampleBeta(alpha, beta) {
+  const x = _aiObsSampleGamma(alpha);
+  const y = _aiObsSampleGamma(beta);
+  return x / (x + y);
+}
+
+// Sample arms for this match (one per Table A parameter). Stores the picks
+// on gameState._aiMatchSamples so they survive across turns and can be
+// referenced at match end for the bandit update. Also decides the A/B
+// learning flag: for the first AI_OBS_AB_MATCHES matches, 50/50 toggle.
+// Called once per match (lazily on first AI turn or match init).
+function aiObsSampleArmsForMatch() {
+  if (gameState._aiMatchSamples) return gameState._aiMatchSamples; // already sampled
+  const profile = aiObsLoadProfile();
+  const samples = { armsPicked: {}, learnEnabled: true };
+  // A/B harness: while we're still in the calibration window, flip a coin
+  // for learn-on vs learn-off. After AI_OBS_AB_MATCHES, always learn on.
+  if (profile.matchesObserved < AI_OBS_AB_MATCHES) {
+    samples.learnEnabled = Math.random() < 0.5;
+  }
+  if (samples.learnEnabled) {
+    // Thompson-sample each Table A parameter.
+    for (const param of Object.keys(AI_OBS_TABLE_A_ARMS)) {
+      let bestArm = AI_OBS_TABLE_A_ARMS[param][0];
+      let bestSample = -Infinity;
+      for (const arm of AI_OBS_TABLE_A_ARMS[param]) {
+        const ab = profile.tableA?.[param]?.[arm] || { alpha: 1, beta: 1 };
+        const s = _aiObsSampleBeta(ab.alpha, ab.beta);
+        if (s > bestSample) { bestSample = s; bestArm = arm; }
+      }
+      samples.armsPicked[param] = bestArm;
+    }
+  } else {
+    // Learn-off control: use mid-point arms (current tier defaults).
+    samples.armsPicked = { aggression: '0.50', softmaxTemp: '0.75' };
+  }
+  // Track which AI archetype is primary the most — used for Table C update.
+  // Reset each match.
+  samples.archetypeTallies = {};
+  gameState._aiMatchSamples = samples;
+  return samples;
+}
+
+// Getter: aggression multiplier for the current match (replaces the
+// hardcoded 0.5 inside _ctppScoreCandidatePlan). Returns 0.5 if profile/
+// match samples unavailable.
+function aiObsAggression() {
+  const s = gameState?._aiMatchSamples || aiObsSampleArmsForMatch();
+  const arm = s.armsPicked?.aggression || '0.50';
+  return AI_OBS_TABLE_A_VALUES.aggression[arm] ?? 0.5;
+}
+
+// Getter: softmax temperature for the current match. Falls through to the
+// tier default if no match sample is available.
+function aiObsSoftmaxTemp(tierDefault) {
+  const s = gameState?._aiMatchSamples || aiObsSampleArmsForMatch();
+  const arm = s.armsPicked?.softmaxTemp || null;
+  if (!arm) return (typeof tierDefault === 'number') ? tierDefault : 0.75;
+  return AI_OBS_TABLE_A_VALUES.softmaxTemp[arm] ?? tierDefault ?? 0.75;
+}
+
+// Getter: Table C matchup multiplier for (archetype, playerFaction).
+// Returns the Laplace-smoothed win-rate scaled to [0.6, 1.4] so good
+// matchups boost score by ~40% and bad ones penalize by ~40%. Falls back
+// to 1.0 if not in the grid or low confidence.
+function aiObsMatchupBias(archetype, playerFaction) {
+  if (!archetype || !playerFaction) return 1.0;
+  const profile = aiObsLoadProfile();
+  const cell = profile.tableC?.[`${archetype}|${playerFaction}`];
+  if (!cell) return 1.0;
+  // Confidence ramp: low sample → multiplier stays near 1.0.
+  const n = cell.alpha + cell.beta - 2; // subtract priors
+  const confidence = Math.min(1, n / 5); // full influence after 5 observed matches
+  // Win-rate around 0.5 → no bias. >0.5 → favor this archetype, <0.5 → penalize.
+  const winRate = cell.alpha / (cell.alpha + cell.beta);
+  const targetMult = 0.6 + 0.8 * winRate; // 0.5 win → 1.0, 1.0 win → 1.4, 0.0 win → 0.6
+  return 1.0 + confidence * (targetMult - 1.0);
+}
+
+// Tally a primary archetype for this turn — used at match end to identify
+// which archetype "owned" the match for the Table C update. Called from
+// the same code path that records primary-plan changes.
+function aiObsTallyArchetype(archetype) {
+  if (!archetype) return;
+  const s = gameState?._aiMatchSamples;
+  if (!s) return;
+  if (!s.archetypeTallies) s.archetypeTallies = {};
+  s.archetypeTallies[archetype] = (s.archetypeTallies[archetype] || 0) + 1;
+}
+
+// Apply Beta update to one arm based on win/loss outcome.
+function _aiObsUpdateArm(cell, isWin) {
+  if (!cell) return;
+  if (isWin) cell.alpha += 1; else cell.beta += 1;
+}
+
+// Match-end bandit + matchup update. Called from aiObsUpdateFromMatch.
+function aiObsUpdateBanditsAndMatchups(profile, isWin, playerFaction) {
+  const s = gameState?._aiMatchSamples;
+  if (!s) return;
+  // Table A update: credit each sampled arm with the match outcome.
+  // We update arms ONLY when learning was enabled this match — for the
+  // learn-off control runs, we just record the A/B sample below.
+  if (s.learnEnabled) {
+    for (const param of Object.keys(s.armsPicked || {})) {
+      const arm = s.armsPicked[param];
+      const cell = profile.tableA?.[param]?.[arm];
+      _aiObsUpdateArm(cell, isWin);
+    }
+  }
+  // Table C update: credit the most-played-archetype cell.
+  // From the AI's perspective: AI wins = isWin=false (winner != 0).
+  // So when isWin (human wins) is FALSE, the AI's archetype gets a "win"
+  // recorded against the player's faction.
+  const aiWon = !isWin;
+  if (playerFaction && s.archetypeTallies) {
+    const tallies = Object.entries(s.archetypeTallies);
+    if (tallies.length > 0) {
+      tallies.sort((a, b) => b[1] - a[1]);
+      const dominantArch = tallies[0][0];
+      const cell = profile.tableC?.[`${dominantArch}|${playerFaction}`];
+      _aiObsUpdateArm(cell, aiWon);
+    }
+  }
+  // A/B harness bookkeeping.
+  if (profile.matchesObserved <= AI_OBS_AB_MATCHES) {
+    if (s.learnEnabled) {
+      profile.abMode.learnOnSamples += 1;
+      if (aiWon) profile.abMode.learnOnWins += 1;
+    } else {
+      profile.abMode.learnOffSamples += 1;
+      if (aiWon) profile.abMode.learnOffWins += 1;
+    }
+  }
+}
+
+// Helper: blend faction-specific stat with global based on faction match count.
+// Each gauntlet run can be a different playstyle, so the AI should prefer
+// faction-specific stats once it has enough samples. With < AI_OBS_FACTION_RAMP
+// faction matches, the global stat carries weight as a fallback.
+//   w_faction = matchCount / (matchCount + AI_OBS_FACTION_RAMP)
+//   effective = w_faction · factionStat + (1 - w_faction) · globalStat
+// With matchCount=0, the blend is 100% global. With matchCount=AI_OBS_FACTION_RAMP,
+// it's 50/50. With matchCount=10, it's ~77% faction.
+function _aiObsEffectiveStat(profile, statName, playerFaction) {
+  const globalStat = profile.stats?.[statName];
+  if (globalStat === undefined) return null;
+  if (!playerFaction || !profile.statsByFaction?.[playerFaction]) return globalStat;
+  const fs = profile.statsByFaction[playerFaction];
+  const factionStat = fs?.[statName];
+  if (factionStat === undefined) return globalStat;
+  const n = fs.matchCount || 0;
+  const wFaction = n / (n + AI_OBS_FACTION_RAMP);
+  return wFaction * factionStat + (1 - wFaction) * globalStat;
+}
+
+// Effective sample count for confidence-ramp purposes. When we have lots of
+// faction data, ramp matters less; when we have only global data, the
+// global match count drives the ramp.
+function _aiObsEffectiveSampleCount(profile, playerFaction) {
+  const globalN = profile.matchesObserved || 0;
+  const factionN = profile.statsByFaction?.[playerFaction]?.matchCount || 0;
+  // Faction matches count more (they're directly relevant); global matches
+  // contribute partial credit.
+  return Math.max(globalN * 0.4, factionN * 1.0);
+}
+
+// AI-facing API: returns a multiplier in roughly [0.5, 2.0] to scale the
+// disruption estimate. Faction-aware — uses faction-specific EWMA when
+// enough samples exist, falling back to global otherwise. Ramps from 1.0
+// (no data) toward observed-based value as samples accumulate.
+function aiObsDisruptionMultiplier(playerFaction) {
+  const profile = aiObsLoadProfile();
+  const BASELINE_DISRUPTION = 0.10;
+  const observed = playerFaction
+    ? _aiObsEffectiveStat(profile, 'disruptionRate', playerFaction)
+    : profile.stats.disruptionRate;
+  const effN = _aiObsEffectiveSampleCount(profile, playerFaction);
+  const confidence = Math.min(1, effN / AI_OBS_RAMP_MATCHES);
+  const targetMult = (observed + 0.001) / (BASELINE_DISRUPTION + 0.001);
+  const blended = 1.0 + confidence * (targetMult - 1.0);
+  return Math.max(0.5, Math.min(2.0, blended));
+}
+
+// Same idea for pace — used in opponent win-turn estimate so AI factors in
+// "this player is fast, plan tighter" vs "this player turtles, slower race".
+// Faction-aware so e.g. Pathfinders run doesn't pollute Architects estimate.
+function aiObsPaceMultiplier(playerFaction) {
+  const profile = aiObsLoadProfile();
+  const BASELINE_PACE = 0.8;
+  const observed = playerFaction
+    ? _aiObsEffectiveStat(profile, 'pace', playerFaction)
+    : profile.stats.pace;
+  const effN = _aiObsEffectiveSampleCount(profile, playerFaction);
+  const confidence = Math.min(1, effN / AI_OBS_RAMP_MATCHES);
+  const targetMult = (observed + 0.01) / (BASELINE_PACE + 0.01);
+  const blended = 1.0 + confidence * (targetMult - 1.0);
+  return Math.max(0.5, Math.min(1.8, blended));
+}
+
+// Render a Table A arm: arm value · win-rate · sample count.
+function _aiObsRenderArmRow(armLabel, cell, sampledThisMatch) {
+  if (!cell) return '';
+  const n = cell.alpha + cell.beta - 2;
+  const winRate = cell.alpha / (cell.alpha + cell.beta);
+  const pct = (winRate * 100).toFixed(0);
+  const mark = sampledThisMatch ? ' <span style="color:#fbbf24;">◀ picked</span>' : '';
+  return `<div style="display:flex;justify-content:space-between;padding:2px 4px;">
+    <span>arm ${armLabel}</span>
+    <span style="color:#a0a8b4;">${pct}% win · n=${n}${mark}</span>
+  </div>`;
+}
+
+// Overlay panel: show the current profile + reset button + tables A/C/AB.
+function ctppShowAIProfile() {
+  const profile = aiObsLoadProfile();
+  // Multipliers are faction-aware as of v3 — pull the active match's player
+  // faction so the displayed numbers match what the AI is actually using.
+  const activeFaction = gameState?.players?.[0]?.champion?.faction || null;
+  const mult = aiObsDisruptionMultiplier(activeFaction);
+  const paceMult = aiObsPaceMultiplier(activeFaction);
+  const wrap = document.createElement('div');
+  wrap.setAttribute('data-ai-profile', '');
+  wrap.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:100001;display:flex;align-items:center;justify-content:center;';
+  const factionList = Object.entries(profile.factionUsage)
+    .sort((a, b) => b[1] - a[1])
+    .map(([f, n]) => `<div style="display:flex;justify-content:space-between;padding:2px 4px;"><span>${f}</span><span style="color:#9fd89f;">${n}</span></div>`)
+    .join('') || '<div style="color:#888;padding:2px 4px;">(none yet)</div>';
+  const ramp = Math.min(1, profile.matchesObserved / AI_OBS_RAMP_MATCHES);
+  const rampPct = (ramp * 100).toFixed(0);
+  wrap.innerHTML = `
+    <div style="background:#0e141c;border:1px solid #2a4560;border-radius:6px;padding:14px;width:520px;max-width:90vw;max-height:88vh;display:flex;flex-direction:column;gap:10px;font:11px monospace;color:#c0c8d4;">
+      <div style="display:flex;justify-content:space-between;align-items:center;">
+        <span style="color:#d8e6f2;font-weight:bold;">AI Player Profile (Table B)</span>
+        <div style="display:flex;gap:6px;">
+          <button onclick="if(confirm('Reset all AI observations? This wipes the per-user adaptation profile.')){aiObsResetProfile();this.closest('[data-ai-profile]').remove();ctppShowAIProfile();}" style="cursor:pointer;background:#1c2a38;color:#ff9f9f;border:1px solid #8a4a4a;padding:3px 10px;font:11px monospace;">Reset</button>
+          <button onclick="this.closest('[data-ai-profile]').remove()" style="cursor:pointer;background:#1c2a38;color:#d8e6f2;border:1px solid #4a6a90;padding:3px 10px;font:11px monospace;">Close</button>
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+        <div><span style="color:#888;">Matches observed:</span> <span style="color:#9fd89f;">${profile.matchesObserved}</span></div>
+        <div><span style="color:#888;">Effective sample (n):</span> <span style="color:#9fd89f;">${profile.nEffective}</span></div>
+        <div><span style="color:#888;">Wins:</span> <span style="color:#9fd89f;">${profile.wins}</span></div>
+        <div><span style="color:#888;">Losses:</span> <span style="color:#ff9f9f;">${profile.losses}</span></div>
+        <div><span style="color:#888;">Confidence ramp:</span> <span style="color:#9fd89f;">${rampPct}%</span></div>
+        <div><span style="color:#888;">Last update:</span> <span style="color:#9fd89f;">${profile.lastUpdate ? new Date(profile.lastUpdate).toLocaleString() : '(never)'}</span></div>
+      </div>
+      <hr style="border:none;border-top:1px solid #2a4560;">
+      <div style="color:#d8e6f2;font-weight:bold;">Observed EWMA stats — GLOBAL (all factions averaged)</div>
+      <div style="display:grid;grid-template-columns:auto 1fr auto;gap:4px 12px;align-items:center;">
+        <span>Pace (tiles/turn)</span>
+        <span style="color:#888;">baseline 0.80</span>
+        <span style="color:#9fd89f;">${profile.stats.pace.toFixed(3)}</span>
+        <span>Wall rate (walls/turn)</span>
+        <span style="color:#888;">—</span>
+        <span style="color:#9fd89f;">${profile.stats.wallRate.toFixed(3)}</span>
+        <span>Disruption rate</span>
+        <span style="color:#888;">baseline 0.10</span>
+        <span style="color:#9fd89f;">${profile.stats.disruptionRate.toFixed(3)}</span>
+        <span>Fast-move rate</span>
+        <span style="color:#888;">—</span>
+        <span style="color:#9fd89f;">${profile.stats.fastMoveRate.toFixed(3)}</span>
+      </div>
+      <hr style="border:none;border-top:1px solid #2a4560;">
+      <div style="color:#d8e6f2;font-weight:bold;">Per-faction stats (preferred over global once n≥${AI_OBS_FACTION_RAMP})</div>
+      <div style="background:#000;border:1px solid #1c2a38;padding:6px;max-height:200px;overflow-y:auto;">
+        ${(() => {
+          const sbf = profile.statsByFaction || {};
+          // Sort by matchCount desc — show most-played first.
+          const entries = Object.entries(sbf)
+            .map(([fac, s]) => ({ fac, ...s }))
+            .filter(e => (e.matchCount || 0) > 0)
+            .sort((a, b) => (b.matchCount || 0) - (a.matchCount || 0));
+          if (entries.length === 0) return '<div style="color:#888;">(no per-faction data yet — play a few matches in different factions)</div>';
+          let html = `<div style="display:grid;grid-template-columns:auto auto auto auto auto auto;gap:2px 10px;font-size:10px;">
+            <span style="color:#888;font-weight:bold;">Faction</span>
+            <span style="color:#888;font-weight:bold;">n</span>
+            <span style="color:#888;font-weight:bold;">pace</span>
+            <span style="color:#888;font-weight:bold;">wall/t</span>
+            <span style="color:#888;font-weight:bold;">disrupt</span>
+            <span style="color:#888;font-weight:bold;">fastMv</span>`;
+          for (const e of entries) {
+            const ramp = Math.min(1, (e.matchCount || 0) / AI_OBS_FACTION_RAMP);
+            const rampColor = ramp >= 1 ? '#9fd89f' : '#fbbf24';
+            html += `<span style="color:#fbbf24;">${e.fac}</span>
+              <span style="color:${rampColor};">${e.matchCount || 0}</span>
+              <span>${(e.pace || 0).toFixed(2)}</span>
+              <span>${(e.wallRate || 0).toFixed(2)}</span>
+              <span>${(e.disruptionRate || 0).toFixed(2)}</span>
+              <span>${(e.fastMoveRate || 0).toFixed(2)}</span>`;
+          }
+          html += `</div>`;
+          return html;
+        })()}
+      </div>
+      <hr style="border:none;border-top:1px solid #2a4560;">
+      <div style="color:#d8e6f2;font-weight:bold;">AI-facing multipliers (clamped — current match's player faction)</div>
+      <div style="display:grid;grid-template-columns:auto auto;gap:4px 12px;">
+        <span>Active player faction:</span>
+        <span style="color:#fbbf24;">${gameState?.players?.[0]?.champion?.faction || '(no active match)'}</span>
+        <span>Disruption multiplier:</span>
+        <span style="color:#fbbf24;">${mult.toFixed(3)}× ${mult > 1.05 ? '(player attacks AI walls)' : mult < 0.95 ? '(player ignores AI walls)' : '(neutral)'}</span>
+        <span>Pace multiplier:</span>
+        <span style="color:#fbbf24;">${paceMult.toFixed(3)}× ${paceMult > 1.05 ? '(racer)' : paceMult < 0.95 ? '(turtle)' : '(neutral)'}</span>
+      </div>
+      <hr style="border:none;border-top:1px solid #2a4560;">
+      <div style="color:#d8e6f2;font-weight:bold;">Faction usage (Table B)</div>
+      <div style="background:#000;border:1px solid #1c2a38;padding:6px;max-height:100px;overflow-y:auto;">${factionList}</div>
+      <hr style="border:none;border-top:1px solid #2a4560;">
+      <div style="color:#d8e6f2;font-weight:bold;">Table A — Bandit arms (Thompson sampling)</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+        ${(() => {
+          const samples = gameState?._aiMatchSamples;
+          const learnOn = samples?.learnEnabled !== false;
+          const arms = samples?.armsPicked || {};
+          let html = '';
+          for (const param of Object.keys(AI_OBS_TABLE_A_ARMS)) {
+            html += `<div style="background:#000;border:1px solid #1c2a38;padding:4px;">
+              <div style="color:#a0c8ff;font-weight:bold;">${param}</div>`;
+            for (const arm of AI_OBS_TABLE_A_ARMS[param]) {
+              const cell = profile.tableA?.[param]?.[arm];
+              const picked = learnOn && arms[param] === arm;
+              html += _aiObsRenderArmRow(arm, cell, picked);
+            }
+            html += `</div>`;
+          }
+          return html;
+        })()}
+      </div>
+      <hr style="border:none;border-top:1px solid #2a4560;">
+      <div style="color:#d8e6f2;font-weight:bold;">Table C — AI archetype × player faction (Laplace smoothing)</div>
+      <div style="background:#000;border:1px solid #1c2a38;padding:6px;max-height:200px;overflow-y:auto;">
+        ${(() => {
+          // Render only cells that have actual samples (n > 0). Sort by sample count desc.
+          const entries = Object.entries(profile.tableC || {})
+            .map(([key, cell]) => {
+              const [arch, fac] = key.split('|');
+              const n = (cell.alpha || 1) + (cell.beta || 1) - 2;
+              const wr = cell.alpha / (cell.alpha + cell.beta);
+              return { arch, fac, n, wr };
+            })
+            .filter(e => e.n > 0)
+            .sort((a, b) => b.n - a.n);
+          if (entries.length === 0) return '<div style="color:#888;">(no data yet — play matches against different factions to populate)</div>';
+          return entries.map(e => {
+            const pct = (e.wr * 100).toFixed(0);
+            const color = e.wr >= 0.6 ? '#9fd89f' : e.wr <= 0.4 ? '#ff9f9f' : '#a0a8b4';
+            return `<div style="display:flex;justify-content:space-between;padding:1px 4px;font-size:10px;">
+              <span><span style="color:#a0c8ff;">${e.arch}</span> vs <span style="color:#fbbf24;">${e.fac}</span></span>
+              <span style="color:${color};">${pct}% (n=${e.n})</span>
+            </div>`;
+          }).join('');
+        })()}
+      </div>
+      <hr style="border:none;border-top:1px solid #2a4560;">
+      <div style="color:#d8e6f2;font-weight:bold;">A/B validation harness (first ${AI_OBS_AB_MATCHES} matches)</div>
+      <div style="display:grid;grid-template-columns:auto auto;gap:4px 12px;">
+        <span>Learn-ON win rate:</span>
+        <span style="color:#9fd89f;">${profile.abMode.learnOnSamples > 0 ? ((profile.abMode.learnOnWins / profile.abMode.learnOnSamples) * 100).toFixed(0) + '% (' + profile.abMode.learnOnWins + '/' + profile.abMode.learnOnSamples + ')' : '(no data)'}</span>
+        <span>Learn-OFF win rate:</span>
+        <span style="color:#a0a8b4;">${profile.abMode.learnOffSamples > 0 ? ((profile.abMode.learnOffWins / profile.abMode.learnOffSamples) * 100).toFixed(0) + '% (' + profile.abMode.learnOffWins + '/' + profile.abMode.learnOffSamples + ')' : '(no data)'}</span>
+        <span>Status:</span>
+        <span style="color:${profile.matchesObserved < AI_OBS_AB_MATCHES ? '#fbbf24' : '#9fd89f'};">${profile.matchesObserved < AI_OBS_AB_MATCHES ? 'ACTIVE — ' + (AI_OBS_AB_MATCHES - profile.matchesObserved) + ' matches remaining' : 'COMPLETE — learning always on'}</span>
+      </div>
+      <div style="color:#888;font-size:10px;">Persisted to ${(_userProfile && _userProfile.id) ? 'Supabase (' + (_userProfile.username || _userProfile.id) + ') + localStorage' : 'localStorage only (sign in to sync)'}.</div>
+    </div>`;
+  document.body.appendChild(wrap);
 }
 
 function _ctppHealthBar(val) {
@@ -11311,6 +12266,57 @@ function _ctppRenderSeat(pi) {
   return `<div class="ctpp-seat">${body}</div>`;
 }
 
+// Phase 6 — One-line adaptive-AI status surface for the overlay header.
+// Shows: matches observed, current bandit-arm picks, A/B mode if active,
+// and the two summary multipliers (disruption / pace). All non-blocking
+// reads of the profile + match samples.
+function _ctppRenderAdaptiveStatus() {
+  try {
+    if (typeof aiObsLoadProfile !== 'function') return '';
+    const profile = aiObsLoadProfile();
+    const matches = profile.matchesObserved || 0;
+    // Faction-aware multipliers — pull from the active match's player faction
+    // so the numbers shown match what the AI is currently consuming.
+    const activeFaction = gameState?.players?.[0]?.champion?.faction || null;
+    const factionMatchCount = profile.statsByFaction?.[activeFaction]?.matchCount || 0;
+    const samples = gameState?._aiMatchSamples;
+    const learnOn = samples?.learnEnabled !== false;
+    const arms = samples?.armsPicked || {};
+    const disrupt = (typeof aiObsDisruptionMultiplier === 'function') ? aiObsDisruptionMultiplier(activeFaction) : 1.0;
+    const pace    = (typeof aiObsPaceMultiplier        === 'function') ? aiObsPaceMultiplier(activeFaction)        : 1.0;
+    const ramp = Math.min(1, matches / AI_OBS_RAMP_MATCHES);
+    const abActive = matches < AI_OBS_AB_MATCHES;
+    const armSummary = (arms.aggression || arms.softmaxTemp)
+      ? `agg ${arms.aggression || '?'} · soft ${arms.softmaxTemp || '?'}`
+      : 'unsampled';
+    const learnLabel = abActive
+      ? (learnOn ? '<span style="color:#9fd89f">A/B:ON</span>' : '<span style="color:#a0a8b4">A/B:OFF</span>')
+      : '<span style="color:#9fd89f">LEARN</span>';
+    const ab = profile.abMode || {};
+    const abN = (ab.learnOnSamples || 0) + (ab.learnOffSamples || 0);
+    const abTag = abActive && abN > 0
+      ? ` · A/B ${ab.learnOnWins || 0}/${ab.learnOnSamples || 0} vs ${ab.learnOffWins || 0}/${ab.learnOffSamples || 0}`
+      : '';
+    // Show the active faction + its match count so it's obvious which
+    // partitioned profile is currently driving the multipliers.
+    const factionTag = activeFaction
+      ? `<span title="Active match's player faction — multipliers use this faction's stats with ramp from global" style="color:#fbbf24;">${activeFaction} n=${factionMatchCount}</span>`
+      : '';
+    return `<div style="font:10px monospace;color:#888;padding:2px 0 4px 2px;display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
+      <span title="Total matches the AI has observed for this user (global)">M${matches}</span>
+      ${factionTag}
+      <span title="Confidence ramp (full influence at 3+ matches)">ramp ${(ramp*100).toFixed(0)}%</span>
+      ${learnLabel}
+      <span title="Thompson-sampled hyperparameter arms for this match">${armSummary}</span>
+      <span title="Disruption multiplier on opponent-disruption estimate (faction-aware)">×D ${disrupt.toFixed(2)}</span>
+      <span title="Pace multiplier on opponent win-turn estimate (faction-aware)">×P ${pace.toFixed(2)}</span>
+      ${abTag ? `<span style="margin-left:auto;color:#a0a8b4;">${abTag.trim()}</span>` : ''}
+    </div>`;
+  } catch (e) {
+    return '';
+  }
+}
+
 function ctppOverlayRender() {
   if (!_ctppOverlayEl || !_ctppOverlayEl.classList.contains('visible')) return;
   const body = _ctppOverlayEl.querySelector('#ctpp-overlay-body');
@@ -11323,8 +12329,10 @@ function ctppOverlayRender() {
     <span class="ctpp-flag-btn ${testCls}" onclick="ctppOverlayToggleTest()" title="Toggle CTPP test mode (seeded RNG / AI-vs-AI)">Test: ${window._ctppTestMode ? 'ON' : 'OFF'}</span>
     <span class="ctpp-action-btn" onclick="ctppOverlayInitNow()" title="Seed portfolios for AI seats now (also flips CTPP on)">Init portfolios</span>
     <span class="ctpp-action-btn" onclick="ctppOverlayExport()" title="Copy the full match readout (every turn's portfolio snapshot, lifecycle events, and switches) as JSON">Export readout</span>
+    <span class="ctpp-action-btn" onclick="ctppShowMatchHistory()" title="View all match readouts auto-saved to localStorage (last ${CTPP_HISTORY_CAP})">History</span>
+    <span class="ctpp-action-btn" onclick="ctppShowAIProfile()" title="View / reset the per-user AI observation profile">AI Profile</span>
     <span style="margin-left:auto;color:#888;">Turn ${gameState?.turnNumber ?? '?'}</span>
-  </div>`;
+  </div>${_ctppRenderAdaptiveStatus()}`;
 
   let seatsHtml = '';
   if (gameState?.players) {
@@ -22973,6 +23981,13 @@ async function saveGameRecordUnified(winner, mode, mpGameId) {
 }
 
 function showVictory(winner) {
+  // ── Phase 5 — Auto-export CTPP readout to localStorage._ctppMatchHistory.
+  // Phase 6 — Update the per-user AI observation profile (EWMA stats).
+  // Both hooks fire BEFORE mode-specific branches so they capture every match
+  // regardless of mode (SP / gauntlet / MP / tutorial). Wrapped in try/catch
+  // so a telemetry failure can't block the victory UI.
+  try { if (typeof ctppAutoExportOnMatchEnd === 'function') ctppAutoExportOnMatchEnd(); } catch (e) { console.warn('[Phase 5 hook]', e); }
+  try { if (typeof aiObsUpdateFromMatch === 'function') aiObsUpdateFromMatch(winner); } catch (e) { console.warn('[Phase 6 hook]', e); }
   // ── Gauntlet FFA race: intercept before normal victory ──
   if (gameState._gauntletFFAReturn && _gauntletRun) {
     if (handleGauntletFFAResult()) return;
